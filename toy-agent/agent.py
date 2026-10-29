@@ -293,8 +293,38 @@ class ChatLLM:
         self.key = key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        # 累计服务端报告的实际用量；不拿字符数冒充 token 数。
+        self.usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.usage_calls = 0
+        self.usage_unknown = 0
 
-    def _post(self, payload: dict) -> dict:
+    def _record_usage(self, usage: dict | None, purpose: str) -> None:
+        """记录一次响应的用量。缺失或不完整时标记未知，不按零计算。"""
+        self.usage_calls += 1
+        valid = isinstance(usage, dict) and all(
+            type(usage.get(key)) is int and usage[key] >= 0
+            for key in self.usage_totals
+        )
+        if valid:
+            for key in self.usage_totals:
+                self.usage_totals[key] += usage[key]
+            print(dim(f"  [token][{purpose}] 本次：输入 {usage['prompt_tokens']}"
+                      f" / 输出 {usage['completion_tokens']} / 合计 {usage['total_tokens']}"))
+        else:
+            self.usage_unknown += 1
+            print(dim(f"  [token][{purpose}] 本次：未知（API 未返回完整有效的 usage）"))
+
+        if self.usage_calls == self.usage_unknown:
+            print(dim(f"  [token] 累计：未知（{self.usage_unknown} 次调用用量未知）"))
+            return
+
+        label = "已知累计" if self.usage_unknown else "累计"
+        note = f"（另有 {self.usage_unknown} 次调用用量未知，未计入）" if self.usage_unknown else ""
+        totals = self.usage_totals
+        print(dim(f"  [token] {label}：输入 {totals['prompt_tokens']}"
+                  f" / 输出 {totals['completion_tokens']} / 合计 {totals['total_tokens']}{note}"))
+
+    def _post(self, payload: dict, purpose: str = "决策") -> dict:
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -312,6 +342,7 @@ class ChatLLM:
             raise SystemExit(red(f"API 报错 {e.code}: {body}"))
         except urllib.error.URLError as e:
             raise SystemExit(red(f"连不上 API: {e.reason}"))
+        self._record_usage(data.get("usage"), purpose)
         return data["choices"][0]["message"]
 
     def chat(self, messages: list) -> dict:
@@ -332,7 +363,7 @@ class ChatLLM:
                 {"role": "user", "content": transcript},
             ],
             "temperature": 0,
-        })
+        }, purpose="记忆摘要")
         return (msg.get("content") or "").strip()
 
 
