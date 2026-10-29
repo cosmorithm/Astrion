@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+toy-agent —— 一个可以完整看懂的最小智能体（零依赖，标准库实现）
+
+它只做一件事：把「模型 + 工具 + 循环」跑通，并把每一步打印出来，
+让你能亲眼看见 ReAct 的三段式：think → act → obs。
+
+用法:
+    python3 agent.py "看看 data.txt 里数字的和是多少"   # 调真模型
+
+配置（优先级从高到低）:
+    1. 命令行    --model / --base-url
+    2. 环境变量  AGENT_API_KEY / AGENT_BASE_URL / AGENT_MODEL
+                 （也认 DEEPSEEK_API_KEY、OPENAI_API_KEY 作为 key 的别名）
+    3. .env 文件 从脚本所在目录起向上找，最多 3 层，越近的优先
+
+也就是说：.env 里写一次，之后直接 python3 agent.py "任务" 就行。
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import operator as _op
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+# ---------------------------------------------------------------- 终端样式
+
+TTY = sys.stdout.isatty()
+
+
+def _wrap(code: str, s: str) -> str:
+    return f"\033[{code}m{s}\033[0m" if TTY else s
+
+
+def dim(s):   return _wrap("2", s)
+def bold(s):  return _wrap("1", s)
+def cyan(s):  return _wrap("36", s)
+def green(s): return _wrap("32", s)
+def red(s):   return _wrap("31", s)
+
+
+# ---------------------------------------------------------------- .env 读取
+# 只用标准库，不引入 python-dotenv。逻辑很短，值得逐行看懂。
+
+
+def find_env_files(start: Path, max_up: int = 3) -> list[Path]:
+    """从 start 向上找 .env，返回由近到远的列表。
+
+    这样无论 .env 放在 toy-agent/ 还是上一层的 Multi Agent/，都能被找到。
+    """
+    found: list[Path] = []
+    cur = start.resolve()
+    for _ in range(max_up + 1):
+        cand = cur / ".env"
+        if cand.is_file():
+            found.append(cand)
+        if cur.parent == cur:      # 到根了
+            break
+        cur = cur.parent
+    return found
+
+
+def load_env(files: list[Path]) -> list[Path]:
+    """解析 KEY=VALUE 写进 os.environ。
+
+    规则：已经存在的环境变量不会被覆盖 —— 和 python-dotenv 的默认行为一致，
+    这样 shell 里临时 export 的值总是赢过文件。
+    """
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            if k.startswith("export "):
+                k = k[len("export "):].strip()
+            v = v.strip().strip('"').strip("'")     # 去掉包裹的引号
+            if k and k not in os.environ:
+                os.environ[k] = v
+    return files
+
+
+def first_nonempty(*values) -> str:
+    for v in values:
+        if v and v.strip():
+            return v.strip()
+    return ""
+
+
+def mask(secret: str) -> str:
+    """打印密钥时永远脱敏。日志会被人截图、贴进 issue，这一步不能省。"""
+    return secret[:6] + "…" + secret[-4:] if len(secret) >= 12 else "***"
+
+
+# ---------------------------------------------------------------- 沙箱
+
+SANDBOX = Path(__file__).resolve().parent / "sandbox"
+
+
+def safe_path(raw: str) -> Path:
+    """把用户/模型给的路径钉死在 sandbox/ 里，越界直接报错。"""
+    root = SANDBOX.resolve()
+    target = (root / raw).resolve()
+    if target != root and root not in target.parents:
+        raise PermissionError(f"路径越界，只允许访问 {root}")
+    return target
+
+
+# ---------------------------------------------------------------- 工具实现
+
+
+def list_files(path: str = ".") -> str:
+    p = safe_path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"{path} 不存在")
+    entries = []
+    for child in sorted(p.iterdir()):
+        entries.append(child.name + ("/" if child.is_dir() else ""))
+    return json.dumps({"path": path, "entries": entries}, ensure_ascii=False)
+
+
+def read_file(path: str) -> str:
+    p = safe_path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"{path} 不是文件")
+    text = p.read_text(encoding="utf-8")
+    if len(text) > 8000:
+        text = text[:8000] + f"\n...（已截断，原长 {len(text)} 字符）"
+    return json.dumps({"path": path, "content": text}, ensure_ascii=False)
+
+
+def write_file(path: str, content: str) -> str:
+    p = safe_path(path)
+    if len(content) > 100_000:
+        raise ValueError("内容太大")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    return json.dumps({"ok": True, "path": path, "bytes": len(content.encode())}, ensure_ascii=False)
+
+
+_BINOPS = {
+    ast.Add: _op.add,
+    ast.Sub: _op.sub,
+    ast.Mult: _op.mul,
+    ast.Div: _op.truediv,
+    ast.FloorDiv: _op.floordiv,
+    ast.Mod: _op.mod,
+    ast.Pow: _op.pow,
+}
+
+
+def _eval_node(node):
+    if isinstance(node, ast.Expression):
+        return _eval_node(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+        left, right = _eval_node(node.left), _eval_node(node.right)
+        if isinstance(node.op, ast.Pow) and abs(right) > 100:
+            raise ValueError("指数太大")
+        return _BINOPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        return -_eval_node(node.operand)
+    raise ValueError("只支持数字和 + - * / // % ** 和括号")
+
+
+def calculator(expression: str) -> str:
+    if len(expression) > 200:
+        raise ValueError("表达式太长")
+    value = _eval_node(ast.parse(expression, mode="eval"))
+    return json.dumps({"expression": expression, "result": value}, ensure_ascii=False)
+
+
+def finish(answer: str) -> str:
+    """终止信号。把它做成工具，比让模型'自己说完了'可靠得多。"""
+    return answer
+
+
+# ---------------------------------------------------------------- 工具清单
+# schema 是给模型看的说明书；TOOL_IMPL 是真正执行的代码。
+# 两者分开，是为了将来能换成远程工具、加权限检查而不动模型那一侧。
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "列出 sandbox 目录下的文件和子目录",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "相对 sandbox 的路径，默认 '.'"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "读取 sandbox 内一个文本文件的全部内容",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string", "description": "相对路径"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "把内容写入 sandbox 内的文件，会覆盖已有文件",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "相对路径"},
+                    "content": {"type": "string", "description": "要写入的完整内容"},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculator",
+            "description": "计算一个算术表达式，例如 '3+1+4' 或 '(2+3)*4'",
+            "parameters": {
+                "type": "object",
+                "properties": {"expression": {"type": "string", "description": "算术表达式"}},
+                "required": ["expression"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finish",
+            "description": "任务完成时调用，把最终结论交给用户。调用它之后循环结束",
+            "parameters": {
+                "type": "object",
+                "properties": {"answer": {"type": "string", "description": "给用户的最终回答"}},
+                "required": ["answer"],
+            },
+        },
+    },
+]
+
+TOOL_IMPL = {
+    "list_files": list_files,
+    "read_file": read_file,
+    "write_file": write_file,
+    "calculator": calculator,
+    "finish": finish,
+}
+
+SYSTEM_PROMPT = """你是一个最小智能体，只能通过工具来观察和改变 sandbox/ 目录。
+
+规则：
+1. 一次只做一个动作，等观察结果回来再决定下一步。
+2. 不要凭空猜测文件内容，先读。
+3. 任务完成时调用 finish 工具。
+4. 用中文思考和回答。"""
+
+
+# ---------------------------------------------------------------- 模型客户端
+
+
+class ChatLLM:
+    """OpenAI 兼容的 /chat/completions 客户端（DeepSeek、OpenAI、通义等都适用）。"""
+
+    def __init__(self, key: str, base_url: str, model: str):
+        self.key = key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+
+    def chat(self, messages: list) -> dict:
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0,
+        }
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")[:500]
+            raise SystemExit(red(f"API 报错 {e.code}: {body}"))
+        except urllib.error.URLError as e:
+            raise SystemExit(red(f"连不上 API: {e.reason}"))
+        return data["choices"][0]["message"]
+
+
+# ---------------------------------------------------------------- 主循环
+
+
+def run(task: str, llm, max_steps: int = 10) -> str:
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": task},
+    ]
+
+    print(bold(f"\n任务: {task}"))
+    print(dim(f"沙箱: {SANDBOX}\n"))
+
+    for step in range(1, max_steps + 1):
+        print(bold(f"[{step}]"))
+
+        msg = llm.chat(messages)
+        messages.append(msg)
+
+        thought = (msg.get("content") or "").strip()
+        calls = msg.get("tool_calls") or []
+
+        if thought:
+            print(f"  {dim('think:')} {thought}")
+
+        # 没有工具调用 = 模型选择直接说话。这是一个隐式终止点。
+        if not calls:
+            print(green("\n  = 模型没有再调用工具，结束"))
+            return thought
+
+        for call in calls:
+            name = call["function"]["name"]
+            try:
+                args = json.loads(call["function"].get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+
+            print(f"  {cyan('act:  ')} {name}({json.dumps(args, ensure_ascii=False)})")
+
+            if name == "finish":
+                answer = str(args.get("answer", ""))
+                print(green(f"\n  = {answer}"))
+                print(dim(f"\n  共 {step} 步"))
+                return answer
+
+            try:
+                observation = TOOL_IMPL[name](**args)
+                print(f"  {dim('obs:  ')} {observation}")
+            except Exception as e:  # 工具失败也是一种观察，回填给模型让它自己纠
+                observation = f"ERROR: {type(e).__name__}: {e}"
+                print(f"  {red('obs:  ')} {observation}")
+
+            messages.append(
+                {"role": "tool", "tool_call_id": call["id"], "content": str(observation)}
+            )
+
+    print(red(f"\n  ! 达到最大步数 {max_steps}，强制停止"))
+    return "（超出步数预算）"
+
+
+# ---------------------------------------------------------------- 入口
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="一个最小可读的智能体")
+    parser.add_argument("task", nargs="?", default="读取 data.txt，算出所有数字的和，把结果写入 result.txt")
+    parser.add_argument("--steps", type=int, default=10, help="最大步数")
+    parser.add_argument("--model", default="", help="临时覆盖 AGENT_MODEL")
+    parser.add_argument("--base-url", default="", help="临时覆盖 AGENT_BASE_URL")
+    args = parser.parse_args()
+
+    # 先加载 .env，再用统一的方式读配置
+    env_files = load_env(find_env_files(Path(__file__).resolve().parent))
+
+    key = first_nonempty(
+        os.environ.get("AGENT_API_KEY"),
+        os.environ.get("DEEPSEEK_API_KEY"),
+        os.environ.get("OPENAI_API_KEY"),
+    )
+    base_url = args.base_url or os.environ.get("AGENT_BASE_URL") or "https://api.deepseek.com"
+    model = args.model or os.environ.get("AGENT_MODEL") or "deepseek-chat"
+
+    if not key:
+        hint = env_files[0] if env_files else Path(__file__).resolve().parent.parent / ".env"
+        print(red("错误: 没有可用的 API key，无法启动。"), file=sys.stderr)
+        print(dim(f"      把 key 填到这个文件的 AGENT_API_KEY= 后面: {hint}"), file=sys.stderr)
+        raise SystemExit(1)
+
+    source = f"来自 {env_files[0]}" if env_files else "来自 shell 环境变量"
+    print(dim(f"模型: {model} @ {base_url}"))
+    print(dim(f"密钥: {mask(key)}（{source}）"))
+    llm = ChatLLM(key=key, base_url=base_url, model=model)
+
+    run(args.task, llm, max_steps=args.steps)
+
+
+if __name__ == "__main__":
+    main()

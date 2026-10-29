@@ -1,0 +1,15 @@
+# 密钥：绝对不能进版本库
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# 运行产物（会话记忆、临时测试文件）
+session*.json
+_demo_memory.json
