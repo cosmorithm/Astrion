@@ -30,6 +30,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from memory import Memory
+
 # ---------------------------------------------------------------- 终端样式
 
 TTY = sys.stdout.isatty()
@@ -273,6 +275,13 @@ SYSTEM_PROMPT = """你是一个最小智能体，只能通过工具来观察和�
 3. 任务完成时调用 finish 工具。
 4. 用中文思考和回答。"""
 
+SUMMARIZE_PROMPT = """你在压缩一段智能体的执行记录。
+把下面的内容写成不超过 200 字的备忘，必须保留：
+1. 用户的任务目标
+2. 已完成的操作和结果（文件名、数字、结论）
+3. 还没做完的事
+只输出备忘本身，不要评论。"""
+
 
 # ---------------------------------------------------------------- 模型客户端
 
@@ -285,14 +294,7 @@ class ChatLLM:
         self.base_url = base_url.rstrip("/")
         self.model = model
 
-    def chat(self, messages: list) -> dict:
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "tools": TOOLS,
-            "tool_choice": "auto",
-            "temperature": 0,
-        }
+    def _post(self, payload: dict) -> dict:
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -312,24 +314,53 @@ class ChatLLM:
             raise SystemExit(red(f"连不上 API: {e.reason}"))
         return data["choices"][0]["message"]
 
+    def chat(self, messages: list) -> dict:
+        return self._post({
+            "model": self.model,
+            "messages": messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0,
+        })
+
+    def summarize(self, transcript: str) -> str:
+        """把一段旧对话压成备忘。这次不带 tools —— 压缩不是决策。"""
+        msg = self._post({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": SUMMARIZE_PROMPT},
+                {"role": "user", "content": transcript},
+            ],
+            "temperature": 0,
+        })
+        return (msg.get("content") or "").strip()
+
 
 # ---------------------------------------------------------------- 主循环
 
 
-def run(task: str, llm, max_steps: int = 10) -> str:
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": task},
-    ]
+def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> str:
+    memory.add_user(task)
 
     print(bold(f"\n任务: {task}"))
-    print(dim(f"沙箱: {SANDBOX}\n"))
+    print(dim(f"沙箱: {SANDBOX}"))
+
+    def report() -> None:
+        print(dim(f"  [记忆] {len(memory)} 条消息 / {memory.chars()} 字符"
+                  f" / 压缩 {memory.compactions} 次"))
 
     for step in range(1, max_steps + 1):
+        if memory.needs_compaction():
+            print(dim(f"  [记忆] {memory.chars()} 字符 > 预算 {memory.budget_chars}，压缩最旧的轮次…"))
+            if memory.compact(llm.summarize):
+                print(dim(f"  [记忆] 压缩后 {memory.chars()} 字符"))
+            else:
+                print(dim("  [记忆] 最近几轮压不动，交给步数预算兜底"))
+
         print(bold(f"[{step}]"))
 
-        msg = llm.chat(messages)
-        messages.append(msg)
+        msg = llm.chat(memory.for_model())
+        memory.add_assistant(msg)
 
         thought = (msg.get("content") or "").strip()
         calls = msg.get("tool_calls") or []
@@ -337,9 +368,9 @@ def run(task: str, llm, max_steps: int = 10) -> str:
         if thought:
             print(f"  {dim('think:')} {thought}")
 
-        # 没有工具调用 = 模型选择直接说话。这是一个隐式终止点。
         if not calls:
             print(green("\n  = 模型没有再调用工具，结束"))
+            report()
             return thought
 
         for call in calls:
@@ -355,20 +386,20 @@ def run(task: str, llm, max_steps: int = 10) -> str:
                 answer = str(args.get("answer", ""))
                 print(green(f"\n  = {answer}"))
                 print(dim(f"\n  共 {step} 步"))
+                report()
                 return answer
 
             try:
                 observation = TOOL_IMPL[name](**args)
                 print(f"  {dim('obs:  ')} {observation}")
-            except Exception as e:  # 工具失败也是一种观察，回填给模型让它自己纠
+            except Exception as e:
                 observation = f"ERROR: {type(e).__name__}: {e}"
                 print(f"  {red('obs:  ')} {observation}")
 
-            messages.append(
-                {"role": "tool", "tool_call_id": call["id"], "content": str(observation)}
-            )
+            memory.add_tool(call["id"], str(observation))
 
     print(red(f"\n  ! 达到最大步数 {max_steps}，强制停止"))
+    report()
     return "（超出步数预算）"
 
 
@@ -379,6 +410,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="一个最小可读的智能体")
     parser.add_argument("task", nargs="?", default="读取 data.txt，算出所有数字的和，把结果写入 result.txt")
     parser.add_argument("--steps", type=int, default=10, help="最大步数")
+    parser.add_argument("--budget", type=int, default=12000, help="记忆预算（字符），超出后压缩最旧的轮次")
     parser.add_argument("--model", default="", help="临时覆盖 AGENT_MODEL")
     parser.add_argument("--base-url", default="", help="临时覆盖 AGENT_BASE_URL")
     args = parser.parse_args()
@@ -405,7 +437,8 @@ def main() -> None:
     print(dim(f"密钥: {mask(key)}（{source}）"))
     llm = ChatLLM(key=key, base_url=base_url, model=model)
 
-    run(args.task, llm, max_steps=args.steps)
+    memory = Memory(SYSTEM_PROMPT, budget_chars=args.budget)
+    run(args.task, llm, memory, max_steps=args.steps)
 
 
 if __name__ == "__main__":
