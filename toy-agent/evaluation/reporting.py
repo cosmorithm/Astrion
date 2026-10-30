@@ -11,11 +11,12 @@ from pathlib import Path
 DEFAULT_REPORT_DIR = Path(__file__).resolve().parent.parent / "eval_reports"
 
 
-def save_report(report: dict, report_dir: Path | str | None = None) -> Path:
+def save_report(report: dict, report_dir: Path | str | None = None, *, filename_prefix: str | None = None) -> Path:
     """保存完整报告，使用唯一文件名和独占创建，避免覆盖旧结果。"""
     directory = Path(report_dir if report_dir is not None else DEFAULT_REPORT_DIR).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
-    case_id = re.sub(r"[^A-Za-z0-9_-]+", "_", report["case_id"]).strip("_-")[:48] or "case"
+    source = filename_prefix if filename_prefix is not None else report["case_id"]
+    case_id = re.sub(r"[^A-Za-z0-9_-]+", "_", source).strip("_-")[:48] or "case"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     for _ in range(5):
         path = directory / f"{case_id}_{timestamp}_{uuid.uuid4().hex}.json"

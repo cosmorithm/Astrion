@@ -2,5 +2,6 @@
 
 from .judges import JudgeRegistry, default_registry
 from .runner import evaluate_case
+from .suite import summarize_suite
 
-__all__ = ["JudgeRegistry", "default_registry", "evaluate_case"]
+__all__ = ["JudgeRegistry", "default_registry", "evaluate_case", "summarize_suite"]

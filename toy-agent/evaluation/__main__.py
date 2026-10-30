@@ -12,6 +12,7 @@ from pathlib import Path
 import agent
 
 from .runner import evaluate_case
+from .suite import summarize_suite
 
 
 def main() -> None:
@@ -78,14 +79,25 @@ def main() -> None:
                     print(f"报告保存失败（{report['case_id']}）: {error['type']}: {error['message']}")
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
+    summary = summarize_suite(reports, report_dir=args.report_dir)
+    rate = summary["pass_rate_percent"]
+    rate_text = f"{rate:.2f}%" if rate is not None else "无样例"
+    print(f"评测汇总：通过 {summary['passed_cases']}/{summary['total_cases']}（{rate_text}）；"
+          f"失败 {summary['failed_cases']}；待判定 {summary['unresolved_cases']}；"
+          f"运行异常 {summary['run_error_cases']}", file=sys.stderr)
+    if summary["report_path"] is not None:
+        print(f"总报告已保存: {summary['report_path']}", file=sys.stderr)
+    else:
+        error = summary["report_error"]
+        print(f"总报告保存失败: {error['type']}: {error['message']}", file=sys.stderr)
     try:
-        output = json.dumps({"reports": reports}, ensure_ascii=False, indent=2, allow_nan=False)
+        output = json.dumps({"reports": reports, "summary": summary}, ensure_ascii=False, indent=2, allow_nan=False)
     except (TypeError, ValueError) as exc:
         print(f"评测结果无法输出为 JSON: {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(1)
     print(output)
     failures = [report for report in reports if report["report_error"] is not None]
-    if failures:
+    if failures or summary["report_error"] is not None:
         raise SystemExit(1)
 
 

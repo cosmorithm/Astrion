@@ -72,15 +72,22 @@ python3 -m evaluation --list
 | `nested_sum` | 读取及写入子目录 |
 | `sum_and_count` | 求和、计数，并由两个裁判分别检查文件 |
 
-从 `toy-agent/` 目录运行：
+从 `toy-agent/` 目录运行单个样例，或一次运行任务文件中的全部样例：
 
 ```bash
+# 只运行一个任务
 python3 -m evaluation --case sum_001
+
+# 不传 --case：顺序运行默认 cases.json 的全部 10 个任务
+python3 -m evaluation
 ```
 
 这会使用与 `agent.py` 相同的 API 配置，调用真实模型。每个评测任务结束后会**自动保存一份 JSON 报告**到 `toy-agent/eval_reports/`，
 文件名包含任务 ID、UTC 时间和唯一标识；重复运行不会覆盖之前的报告。
-运行日志及保存成功的报告路径输出到 stderr，stdout 仍输出 JSON，其中 `report_path` 也给出本次报告的绝对路径。
+全部任务结束后还会自动保存一个 `suite_` 开头的**总报告**，其中包含通过率、各任务结果和单任务报告路径。
+运行日志、通过率和报告路径输出到 stderr，stdout 仍输出 JSON，包含 `reports` 和 `summary`。
+
+不带 `--cases` 时，程序读取的是 `evaluation/cases.json` 中的任务列表，不会自动扫描目录里的其他 JSON 文件。
 
 ```bash
 # 使用自定义报告目录
@@ -96,6 +103,7 @@ agent 运行报错或评测环境准备失败时，也会尝试保存报告：�
 会直接报错，不会生成单任务报告。如果报告因目录或磁盘问题保存失败，且结果可序列化，stdout 仍给出运行结果，
 其中 `report_path` 为 `null`、`report_error` 说明原因；CLI 同时在 stderr 提示并以非零状态退出。
 如果结果本身不能转换为 JSON，CLI 会在 stderr 说明，无法提供 JSON 输出。
+单任务报告或总报告保存失败都会使 CLI 以非零状态退出；裁判判定 `fail` 本身不会改变 CLI 退出码。
 普通 `unittest` 测试结果仍显示在终端；其自动报告测试使用临时目录并在结束后清理。
 
 其他常用参数：`--cases` 指定任务 JSON 文件，省略 `--case` 时顺序运行该文件的全部任务；
@@ -107,14 +115,23 @@ agent 运行报错或评测环境准备失败时，也会尝试保存报告：�
 1. **准备任务**：为本次任务创建临时沙箱，只写入 `initial_files`。裁判参考答案保存在任务配置中，不随任务消息发给模型。
 2. **运行 agent**：记录模型决策、摘要请求与结果、工具结果和结束状态；运行记录与可压缩的 `Memory` 分开。
 3. **保存运行事实**：统计 `run()` 的耗时、已知 token 用量、最终文件快照和运行状态，然后清理临时沙箱。
-4. **赛后评判和报告**：每个已注册裁判获取任务和运行记录的独立副本，返回自己的结论；多个结论分别保留，不强行合成总分。最终报告自动写入文件。
+4. **赛后评判和报告**：每个已注册裁判获取任务和运行记录的独立副本，返回自己的结论；每项任务的报告和整批的总报告分别写入文件。
+
+总报告中的通过率按**任务样例**计算，而非按裁判个数计算：
+
+- 一个样例的所有裁判都 `pass`，该样例才算通过；只要有裁判明确 `fail`，该样例就算失败。
+- 没有裁判，或没有 `fail` 但存在 `unknown`、`pending`、`error`，该样例为待判定；裁判错误不会自动当作 agent 失败。
+- `pass_rate_percent` = 通过数 ÷ 全部样例数；`scored_pass_rate_percent` = 通过数 ÷（通过数 + 失败数）。没有可判定样例时，后者为 `null`。
+- 两个比例都只根据裁判结论计算。`run_status_counts` 和 `run_error_cases` 独立显示 agent 的结束状态和运行异常；例如最终文件正确但运行途中报错，也可能由裁判判为通过，运行异常仍会显示。
+
+例如 10 个样例中通过 7 个、失败 2 个、待判定 1 个，总样例通过率是 70%，可判定样例通过率约为 77.78%。这些数字只是解释统计口径，不是实际评测结果。
 
 运行时间使用 `time.perf_counter()`，从调用 `run()` 前开始，到其返回或抛出异常为止；
 它包括模型等待、工具执行、记忆压缩和同步事件记录，**不包括**准备环境、生成文件快照或裁判评测。
 每个裁判的 `duration_seconds` 单独记录。目前只记录时间，**没有任务时间上限，也没有时间通过阈值**。
 原有的 agent `--steps` 步数限制和单次 HTTP 请求的 120 秒超时仍然存在。
 
-JSON 报告主要包含 `case`（完整评测配置）、`run`（`result`、`duration_seconds`、
+每份单任务 JSON 报告包含 `case`（完整评测配置）、`run`（`result`、`duration_seconds`、
 `model`、`agent_config`、`token_usage`、`trace`、`artifacts` 和 `artifact_errors`）、
 `judgments`（各裁判的结果和耗时）及 `report_path` / `report_error`（保存结果）。`run.result.status` 是运行状态；
 `judgments` 中的 `pass` 或 `fail` 是裁判判断，两者独立。裁判错误是 `error`，
@@ -148,11 +165,12 @@ JSON 可序列化的 `reason`、`evidence`、`score` 等字段。裁判函数报
 该裁判记录为 `error`，其他裁判继续执行。CLI 当前只自动注册内置的 `file_equals`；
 外部脚本、模型或人工裁判需要先封装并注册，人工复核工作流尚未实现。
 `report["case"]` 和 `report["run"]` 也可以交给 `registry.evaluate(...)`，无需再次运行 agent。
+如果通过 Python 接口得到多份单任务报告，可以调用 `summarize_suite(reports, report_dir=...)` 生成并保存总报告。
 
 离线验证（使用模拟模型和 HTTP 响应，不访问网络）：
 
 ```bash
-python3 -B -m unittest -v test_evaluation test_run_lifecycle test_token_usage
+python3 -B -m unittest -v test_evaluation_summary test_evaluation test_run_lifecycle test_token_usage
 ```
 
 ## 输出怎么看

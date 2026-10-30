@@ -315,6 +315,9 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn("任务:", stderr.getvalue())
         self.assertIn("报告已保存", stderr.getvalue())
         self.assertIn(report["reports"][0]["report_path"], stderr.getvalue())
+        self.assertEqual(report["summary"]["total_cases"], 1)
+        self.assertEqual(report["summary"]["failed_cases"], 1)
+        self.assertEqual(json.loads(Path(report["summary"]["report_path"]).read_text(encoding="utf-8")), report["summary"])
         self.assertNotIn("test-key", stdout.getvalue())
 
     def test_each_run_automatically_saves_a_distinct_complete_report(self):
@@ -444,10 +447,14 @@ class EvaluationTests(unittest.TestCase):
              redirect_stdout(stdout), redirect_stderr(stderr):
             evaluation_main()
 
-        reports = json.loads(stdout.getvalue())["reports"]
+        output = json.loads(stdout.getvalue())
+        reports = output["reports"]
         self.assertEqual([report["case_id"] for report in reports], ["first", "second"])
         self.assertEqual(len({report["report_path"] for report in reports}), 2)
-        self.assertEqual(stderr.getvalue().count("报告已保存"), 2)
+        self.assertEqual(stderr.getvalue().count("报告已保存（"), 2)
+        self.assertEqual(output["summary"]["pass_rate_percent"], 100.0)
+        self.assertEqual(len(list(custom_dir.glob("*.json"))), 3)
+        self.assertEqual(json.loads(Path(output["summary"]["report_path"]).read_text(encoding="utf-8")), output["summary"])
         for report in reports:
             path = Path(report["report_path"])
             self.assertEqual(path.parent, custom_dir)
@@ -466,10 +473,41 @@ class EvaluationTests(unittest.TestCase):
              redirect_stdout(stdout), redirect_stderr(stderr):
             evaluation_main()
 
-        reports = json.loads(stdout.getvalue())["reports"]
+        output = json.loads(stdout.getvalue())
+        reports = output["reports"]
         self.assertEqual([report["run"]["result"]["status"] for report in reports], ["setup_error", "completed"])
         self.assertEqual([report["judgments"][0]["status"] for report in reports], ["unknown", "pass"])
         self.assertTrue(all(Path(report["report_path"]).is_file() for report in reports))
+        self.assertEqual(output["summary"]["unresolved_cases"], 1)
+        self.assertEqual(output["summary"]["pass_rate_percent"], 50.0)
+        self.assertEqual(output["summary"]["scored_pass_rate_percent"], 100.0)
+
+    def test_cli_default_runs_all_ten_cases_and_saves_a_summary(self):
+        cases_path = Path(__file__).resolve().parent / "evaluation" / "cases.json"
+        cases = json.loads(cases_path.read_text(encoding="utf-8"))
+        llms = []
+        for case in cases:
+            replies = [tool_message("write_file", {"path": spec["path"], "content": spec["expected"]},
+                                    f"write-{index}") for index, spec in enumerate(case["judges"])]
+            replies.append(tool_message("finish", {"answer": "完成"}, "finish"))
+            llms.append(ScriptedLLM(replies))
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch("sys.argv", ["evaluation"]), \
+             patch.dict(os.environ, {"AGENT_API_KEY": "test-key"}), \
+             patch("agent.load_env"), patch("agent.ChatLLM", side_effect=llms), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            evaluation_main()
+
+        output = json.loads(stdout.getvalue())
+        self.assertEqual(len(output["reports"]), 10)
+        self.assertEqual(output["summary"]["total_cases"], 10)
+        self.assertEqual(output["summary"]["passed_cases"], 10)
+        self.assertEqual(output["summary"]["pass_rate_percent"], 100.0)
+        self.assertEqual(len(list(self.reports_dir.glob("*.json"))), 11)
+        self.assertTrue(all(Path(report["report_path"]).is_file() for report in output["reports"]))
+        self.assertTrue(Path(output["summary"]["report_path"]).is_file())
+        self.assertIn("通过 10/10", stderr.getvalue())
 
     def test_cli_returns_nonzero_but_keeps_json_when_saving_fails(self):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -488,6 +526,24 @@ class EvaluationTests(unittest.TestCase):
         self.assertIsNone(report["report_path"])
         self.assertIn("磁盘不可用", report["report_error"]["message"])
         self.assertIn("报告保存失败", stderr.getvalue())
+
+    def test_cli_summary_save_failure_keeps_individual_report_and_results(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        llm = ScriptedLLM([tool_message("finish", {"answer": "结束"}, "finish-1")])
+        with patch("sys.argv", ["evaluation", "--case", "sum_001"]), \
+             patch.dict(os.environ, {"AGENT_API_KEY": "test-key"}), \
+             patch("agent.load_env"), patch("agent.ChatLLM", return_value=llm), \
+             patch("evaluation.suite.save_report", side_effect=OSError("汇总目录不可用")), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as exc:
+                evaluation_main()
+
+        self.assertEqual(exc.exception.code, 1)
+        output = json.loads(stdout.getvalue())
+        self.assertTrue(Path(output["reports"][0]["report_path"]).is_file())
+        self.assertIsNone(output["summary"]["report_path"])
+        self.assertIn("汇总目录不可用", output["summary"]["report_error"]["message"])
+        self.assertIn("总报告保存失败", stderr.getvalue())
 
     def test_cli_explains_when_a_result_cannot_be_serialized(self):
         stdout, stderr = io.StringIO(), io.StringIO()
