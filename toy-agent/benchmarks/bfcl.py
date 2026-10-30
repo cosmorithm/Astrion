@@ -39,11 +39,15 @@ PACKAGE_NAME = "bfcl-eval"
 BENCHMARK_NAME = "BFCL"
 BENCHMARK_VERSION = "V4"
 DEFAULT_MODEL = "DeepSeek-V3.2-Exp-FC"
-DEFAULT_MANIFEST = (
-    Path(__file__).resolve().parent
-    / "manifests"
-    / "bfcl_v4_single_turn_baseline_200.json"
-)
+MANIFESTS_DIR = Path(__file__).resolve().parent / "manifests"
+BUILTIN_BENCHMARKS = {
+    "baseline-200": MANIFESTS_DIR / "bfcl_v4_single_turn_baseline_200.json",
+    "smoke-20": MANIFESTS_DIR / "bfcl_v4_single_turn_smoke.json",
+    "trial-3": MANIFESTS_DIR / "bfcl_v4_single_turn_trial_3.json",
+    "all-scoring": MANIFESTS_DIR / "bfcl_v4_all_scoring_full.json",
+}
+DEFAULT_BENCHMARK = "baseline-200"
+DEFAULT_MANIFEST = BUILTIN_BENCHMARKS[DEFAULT_BENCHMARK]
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parent.parent / "benchmark_runs" / "bfcl"
 
 CommandRunner = Callable[[list[str], dict[str, str], Path], dict]
@@ -51,7 +55,7 @@ CommandRunner = Callable[[list[str], dict[str, str], Path], dict]
 
 @dataclass(frozen=True)
 class BFCLManifest:
-    """一组固定的官方 BFCL case id。"""
+    """固定 case id 子集或官方 collection 基准。"""
 
     path: Path
     name: str
@@ -59,10 +63,23 @@ class BFCLManifest:
     benchmark_version: str
     harness_version: str
     categories: dict[str, list[str]]
+    category_counts: dict[str, int]
+    selection_mode: str
+    official_collection: str | None
+    expected_generation_entries: int
+    expected_scored_cases: int
 
     @property
     def case_ids(self) -> list[str]:
         return [case_id for ids in self.categories.values() for case_id in ids]
+
+    @property
+    def uses_run_ids(self) -> bool:
+        return self.selection_mode == "case_ids"
+
+    @property
+    def case_count(self) -> int:
+        return self.expected_generation_entries
 
 
 def load_bfcl_env(start: Path | str | None = None) -> list[Path]:
@@ -124,6 +141,58 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> BFCLManifest:
             f"当前适配器要求 {PINNED_BFCL_VERSION}"
         )
 
+    selection = data.get("selection")
+    selection_mode = "case_ids"
+    official_collection = None
+    expected_scored_cases = 0
+    if selection is not None:
+        if not isinstance(selection, dict):
+            raise ValueError("selection 必须是 JSON 对象")
+        selection_mode = _require_text(selection.get("mode"), "selection.mode")
+
+    if selection_mode == "official_collection":
+        official_collection = _require_text(
+            selection.get("collection"), "selection.collection"
+        )
+        if official_collection != "all_scoring":
+            raise ValueError("当前只支持官方 collection 'all_scoring'")
+        expected_generation_entries = selection.get("expected_generation_entries")
+        expected_scored_cases = selection.get("expected_scored_cases")
+        if type(expected_generation_entries) is not int or expected_generation_entries < 1:
+            raise ValueError("selection.expected_generation_entries 必须是正整数")
+        if (
+            type(expected_scored_cases) is not int
+            or expected_scored_cases < 1
+            or expected_scored_cases > expected_generation_entries
+        ):
+            raise ValueError("selection.expected_scored_cases 必须是有效正整数")
+        raw_counts = data.get("category_counts")
+        if not isinstance(raw_counts, dict) or not raw_counts:
+            raise ValueError("official_collection manifest 需要 category_counts")
+        category_counts = {}
+        for raw_category, raw_count in raw_counts.items():
+            category = _require_text(raw_category, "category_counts category")
+            if type(raw_count) is not int or raw_count < 1:
+                raise ValueError(f"类别 {category!r} 的数量必须是正整数")
+            category_counts[category] = raw_count
+        if sum(category_counts.values()) != expected_generation_entries:
+            raise ValueError("category_counts 总和与 expected_generation_entries 不一致")
+        return BFCLManifest(
+            path=target,
+            name=name,
+            profile=profile,
+            benchmark_version=benchmark_version,
+            harness_version=harness_version,
+            categories={},
+            category_counts=category_counts,
+            selection_mode=selection_mode,
+            official_collection=official_collection,
+            expected_generation_entries=expected_generation_entries,
+            expected_scored_cases=expected_scored_cases,
+        )
+    if selection_mode != "case_ids":
+        raise ValueError(f"不支持的 selection.mode: {selection_mode!r}")
+
     raw_categories = data.get("categories")
     if not isinstance(raw_categories, dict) or not raw_categories:
         raise ValueError("categories 必须是非空对象")
@@ -144,6 +213,9 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> BFCLManifest:
     if len(set(all_ids)) != len(all_ids):
         raise ValueError("BFCL manifest 中的 case id 不能重复")
 
+    category_counts = {category: len(ids) for category, ids in categories.items()}
+    expected_generation_entries = len(all_ids)
+
     return BFCLManifest(
         path=target,
         name=name,
@@ -151,11 +223,18 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> BFCLManifest:
         benchmark_version=benchmark_version,
         harness_version=harness_version,
         categories=categories,
+        category_counts=category_counts,
+        selection_mode=selection_mode,
+        official_collection=None,
+        expected_generation_entries=expected_generation_entries,
+        expected_scored_cases=expected_generation_entries,
     )
 
 
 def official_id_payload(manifest: BFCLManifest) -> dict[str, list[str]]:
     """转换成 BFCL 官方 ``--run-ids`` 所需的纯 category -> ids 格式。"""
+    if not manifest.uses_run_ids:
+        raise ValueError("official_collection 基准不使用 test_case_ids_to_generate.json")
     return {category: list(ids) for category, ids in manifest.categories.items()}
 
 
@@ -212,12 +291,19 @@ def build_commands(
         "generate",
         "--model",
         model,
-        "--run-ids",
+    ]
+    if manifest.uses_run_ids:
+        generate.append("--run-ids")
+        evaluate_category = ",".join(manifest.categories)
+    else:
+        generate.extend(["--test-category", manifest.official_collection])
+        evaluate_category = manifest.official_collection
+    generate.extend([
         "--temperature",
         str(temperature),
         "--num-threads",
         str(num_threads),
-    ]
+    ])
     if allow_overwrite:
         generate.append("--allow-overwrite")
     evaluate = [
@@ -226,9 +312,10 @@ def build_commands(
         "--model",
         model,
         "--test-category",
-        ",".join(manifest.categories),
-        "--partial-eval",
+        evaluate_category,
     ]
+    if manifest.uses_run_ids:
+        evaluate.append("--partial-eval")
     return generate, evaluate
 
 
@@ -529,7 +616,7 @@ def run_bfcl(
     env: dict[str, str] | None = None,
     command_runner: CommandRunner = _default_command_runner,
 ) -> dict:
-    """运行固定 BFCL 子集，并始终尝试保存编排报告。"""
+    """运行所选 BFCL 子集或官方 collection，并始终尝试保存编排报告。"""
     manifest = load_manifest(manifest_path)
     root = (
         Path(output_dir).expanduser().resolve()
@@ -538,7 +625,7 @@ def run_bfcl(
     )
     root.mkdir(parents=True, exist_ok=False)
     log_dir = root / "logs"
-    id_file = write_official_id_file(manifest, root)
+    id_file = write_official_id_file(manifest, root) if manifest.uses_run_ids else None
     generate_command, evaluate_command = build_commands(
         bfcl_bin, model, manifest, temperature=temperature,
         num_threads=num_threads, allow_overwrite=allow_overwrite,
@@ -557,10 +644,14 @@ def run_bfcl(
             "name": BENCHMARK_NAME,
             "version": manifest.benchmark_version,
             "profile": manifest.profile,
-            "subset": True,
+            "subset": manifest.uses_run_ids,
+            "selection_mode": manifest.selection_mode,
+            "official_collection": manifest.official_collection,
             "manifest_name": manifest.name,
             "manifest_path": str(manifest.path),
-            "case_count": len(manifest.case_ids),
+            "case_count": manifest.case_count,
+            "expected_scored_cases": manifest.expected_scored_cases,
+            "category_counts": dict(manifest.category_counts),
             "categories": {key: list(value) for key, value in manifest.categories.items()},
         },
         "official_harness": {
@@ -578,7 +669,7 @@ def run_bfcl(
         },
         "toy_agent_commit": _git_commit(repo_root),
         "project_root": str(root),
-        "official_id_file": _relative(id_file, root),
+        "official_id_file": _relative(id_file, root) if id_file is not None else None,
         "commands": {
             "generate": {"command": generate_command, "command_display": shlex.join(generate_command)},
             "evaluate": {"command": evaluate_command, "command_display": shlex.join(evaluate_command)},
@@ -662,10 +753,19 @@ def main(argv: list[str] | None = None) -> int:
     doctor_parser.add_argument("--model", default=DEFAULT_MODEL)
     doctor_parser.add_argument("--credential-env", default="DEEPSEEK_API_KEY")
 
-    run_parser = subparsers.add_parser("run", help="运行固定子集并调用官方 scorer")
+    run_parser = subparsers.add_parser("run", help="运行所选基准并调用官方 scorer")
     run_parser.add_argument("--bfcl-bin", default=_default_bfcl_bin())
     run_parser.add_argument("--model", default=DEFAULT_MODEL)
-    run_parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    selection_group = run_parser.add_mutually_exclusive_group()
+    selection_group.add_argument(
+        "--benchmark",
+        choices=tuple(BUILTIN_BENCHMARKS),
+        default=DEFAULT_BENCHMARK,
+        help="选择内置基准；默认 baseline-200",
+    )
+    selection_group.add_argument(
+        "--manifest", type=Path, default=None, help="使用自定义 manifest"
+    )
     run_parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     run_parser.add_argument("--output-dir", type=Path, default=None)
     run_parser.add_argument("--temperature", type=float, default=0.001)
@@ -688,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
     result = run_bfcl(
         model=args.model,
         bfcl_bin=args.bfcl_bin,
-        manifest_path=args.manifest,
+        manifest_path=args.manifest or BUILTIN_BENCHMARKS[args.benchmark],
         runs_dir=args.runs_dir,
         output_dir=args.output_dir,
         temperature=args.temperature,

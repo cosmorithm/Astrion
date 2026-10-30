@@ -150,7 +150,7 @@ python3 -m benchmarks bfcl run
 
 ```bash
 python3 -m benchmarks bfcl run \
-  --manifest benchmarks/manifests/bfcl_v4_single_turn_smoke.json
+  --benchmark smoke-20
 ```
 
 最小真实试跑 manifest 位于
@@ -159,8 +159,37 @@ python3 -m benchmarks bfcl run \
 
 ```bash
 python3 -m benchmarks bfcl run \
-  --manifest benchmarks/manifests/bfcl_v4_single_turn_trial_3.json
+  --benchmark trial-3
 ```
+
+### 4.1 官方全部正式计分类基准
+
+内置短名称 `all-scoring` 对应
+`benchmarks/manifests/bfcl_v4_all_scoring_full.json`，直接使用官方 collection，
+不枚举或复制 5,217 个 ID：
+
+```bash
+# 只核对命令和报告元数据，不读取密钥、不调用模型
+python3 -m benchmarks bfcl run --benchmark all-scoring --dry-run
+
+# 正式运行；成本和时间都可能很高
+python3 -m benchmarks bfcl run --benchmark all-scoring
+```
+
+它覆盖官方 `ALL_SCORING_CATEGORIES` 的 22 个类别，排除非计分的
+`format_sensitivity`。官方生成链路涉及 5,217 个条目，其中 memory 类别含 111 个
+维持上下文所需的 prerequisite 条目；这些前置条目不作为独立目标计分，所以预计
+最终计分 case 为 5,106 个。
+
+该模式的命令语义与 case-id 子集不同：
+
+- generate 使用 `--test-category all_scoring`，不使用 `--run-ids`；
+- evaluate 使用相同 collection，且不使用 `--partial-eval`；
+- 报告的 `case_count=5217` 表示生成条目数，`expected_scored_cases=5106` 表示预计
+  计分目标数；实际完成后仍以官方 score 文件中的总数为准。
+
+内置选择名称共有 `baseline-200`（默认）、`smoke-20`、`trial-3` 和
+`all-scoring`。自定义实验仍可使用 `--manifest <路径>`，它与 `--benchmark` 互斥。
 
 每次创建独立的 `benchmark_runs/bfcl/<run-id>/`。其中包括官方要求的
 `test_case_ids_to_generate.json`、官方 `result/`、官方 `score/`、命令日志和

@@ -80,6 +80,7 @@ def summarize_report(report: dict, report_path: Path | str) -> dict:
         "model": report.get("model"),
         "profile": benchmark.get("profile"),
         "case_count": benchmark.get("case_count"),
+        "expected_scored_cases": benchmark.get("expected_scored_cases"),
         "score": outputs.get("derived_subset_micro_accuracy"),
         "correct_cases": outputs.get("correct_cases"),
         "scored_cases": outputs.get("scored_cases"),
@@ -138,12 +139,20 @@ def format_summary(summary: dict) -> str:
     correct = summary.get("correct_cases")
     scored = summary.get("scored_cases")
     count_text = f"{correct}/{scored}" if correct is not None and scored is not None else "暂无"
+    expected_scored = summary.get("expected_scored_cases")
+    if expected_scored is not None and expected_scored != summary.get("case_count"):
+        range_text = (
+            f"{summary.get('profile')}（生成条目 {summary.get('case_count')}，"
+            f"预计计分 {expected_scored}）"
+        )
+    else:
+        range_text = f"{summary.get('profile')}（配置 {summary.get('case_count')} 条）"
     lines = [
         "BFCL 成绩",
         f"运行 ID：{summary.get('run_id')}",
         f"状态：{summary.get('status')}",
         f"模型：{summary.get('model')}",
-        f"范围：{summary.get('profile')}（配置 {summary.get('case_count')} 条）",
+        f"范围：{range_text}",
         f"总分：{_percent(summary.get('score'))}（{count_text}）",
     ]
 

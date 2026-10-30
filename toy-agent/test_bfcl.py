@@ -10,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from benchmarks.bfcl import (
+    BUILTIN_BENCHMARKS,
+    DEFAULT_BENCHMARK,
     DEFAULT_MANIFEST,
     PINNED_BFCL_VERSION,
     _bfcl_python,
@@ -109,6 +111,10 @@ class BFCLTests(unittest.TestCase):
     def test_default_manifest_is_a_fixed_two_hundred_case_subset(self):
         manifest = load_manifest()
 
+        self.assertEqual(DEFAULT_BENCHMARK, "baseline-200")
+        self.assertEqual(set(BUILTIN_BENCHMARKS), {
+            "baseline-200", "smoke-20", "trial-3", "all-scoring",
+        })
         self.assertEqual(manifest.path, DEFAULT_MANIFEST.resolve())
         self.assertEqual(manifest.harness_version, PINNED_BFCL_VERSION)
         self.assertEqual(manifest.benchmark_version, "V4")
@@ -117,6 +123,9 @@ class BFCLTests(unittest.TestCase):
         self.assertTrue(all(len(ids) == 40 for ids in manifest.categories.values()))
         self.assertEqual(len(manifest.case_ids), 200)
         self.assertEqual(len(set(manifest.case_ids)), 200)
+        self.assertTrue(manifest.uses_run_ids)
+        self.assertEqual(manifest.case_count, 200)
+        self.assertEqual(manifest.expected_scored_cases, 200)
 
         smoke = load_manifest(
             DEFAULT_MANIFEST.with_name("bfcl_v4_single_turn_smoke.json")
@@ -131,6 +140,17 @@ class BFCLTests(unittest.TestCase):
             trial.case_ids,
             ["simple_python_0", "multiple_0", "irrelevance_0"],
         )
+
+        full = load_manifest(
+            DEFAULT_MANIFEST.with_name("bfcl_v4_all_scoring_full.json")
+        )
+        self.assertFalse(full.uses_run_ids)
+        self.assertEqual(full.official_collection, "all_scoring")
+        self.assertEqual(full.case_count, 5217)
+        self.assertEqual(full.expected_scored_cases, 5106)
+        self.assertEqual(len(full.category_counts), 22)
+        self.assertEqual(sum(full.category_counts.values()), 5217)
+        self.assertEqual(full.case_ids, [])
 
     def test_manifest_rejects_duplicate_and_mismatched_ids(self):
         data = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
@@ -156,6 +176,20 @@ class BFCLTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_manifest(path)
 
+        full_data = json.loads(
+            BUILTIN_BENCHMARKS["all-scoring"].read_text(encoding="utf-8")
+        )
+        full_data["selection"]["expected_generation_entries"] = 5216
+        path.write_text(json.dumps(full_data), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            load_manifest(path)
+
+        full_data["selection"]["expected_generation_entries"] = 5217
+        full_data["selection"]["collection"] = "all"
+        path.write_text(json.dumps(full_data), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            load_manifest(path)
+
     def test_official_id_file_contains_only_the_bfcl_mapping(self):
         manifest = load_manifest()
         path = write_official_id_file(manifest, self.root)
@@ -164,6 +198,10 @@ class BFCLTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")),
                          official_id_payload(manifest))
         self.assertNotIn("harness", json.loads(path.read_text(encoding="utf-8")))
+
+        full = load_manifest(DEFAULT_MANIFEST.with_name("bfcl_v4_all_scoring_full.json"))
+        with self.assertRaises(ValueError):
+            official_id_payload(full)
 
     def test_commands_use_official_generate_then_partial_evaluate(self):
         manifest = load_manifest()
@@ -180,6 +218,17 @@ class BFCLTests(unittest.TestCase):
         self.assertIn("--partial-eval", evaluate)
         categories = evaluate[evaluate.index("--test-category") + 1].split(",")
         self.assertEqual(categories, list(manifest.categories))
+
+        full = load_manifest(DEFAULT_MANIFEST.with_name("bfcl_v4_all_scoring_full.json"))
+        full_generate, full_evaluate = build_commands("bfcl", MODEL, full)
+        self.assertNotIn("--run-ids", full_generate)
+        self.assertEqual(
+            full_generate[full_generate.index("--test-category") + 1], "all_scoring"
+        )
+        self.assertEqual(
+            full_evaluate[full_evaluate.index("--test-category") + 1], "all_scoring"
+        )
+        self.assertNotIn("--partial-eval", full_evaluate)
 
     def test_doctor_checks_version_model_and_credential_without_model_call(self):
         project = self.root / "project"
@@ -328,6 +377,22 @@ class BFCLTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertTrue((output / "test_case_ids_to_generate.json").is_file())
         self.assertEqual(json.loads((output / "bfcl_run_report.json").read_text()), report)
+
+        full_output = self.root / "full-dry-run"
+        full_report = run_bfcl(
+            model=MODEL,
+            bfcl_bin="missing-bfcl",
+            manifest_path=DEFAULT_MANIFEST.with_name("bfcl_v4_all_scoring_full.json"),
+            output_dir=full_output,
+            dry_run=True,
+            command_runner=must_not_run,
+        )
+        self.assertEqual(full_report["benchmark"]["case_count"], 5217)
+        self.assertEqual(full_report["benchmark"]["expected_scored_cases"], 5106)
+        self.assertFalse(full_report["benchmark"]["subset"])
+        self.assertIsNone(full_report["official_id_file"])
+        self.assertFalse((full_output / "test_case_ids_to_generate.json").exists())
+        self.assertEqual(calls, [])
 
     def test_collect_official_outputs_rejects_a_score_without_header(self):
         path = self.root / "score" / MODEL / "BFCL_v4_simple_python_score.json"

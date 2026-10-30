@@ -108,6 +108,17 @@ class BFCLScoreViewerTests(unittest.TestCase):
         partial = score_viewer.summarize_report(report, path)
         self.assertIn("generate 2.00 秒，合计 2.00 秒", score_viewer.format_summary(partial))
 
+        report["benchmark"].update({
+            "profile": "full_scoring",
+            "case_count": 5217,
+            "expected_scored_cases": 5106,
+        })
+        full = score_viewer.summarize_report(report, path)
+        self.assertIn(
+            "范围：full_scoring（生成条目 5217，预计计分 5106）",
+            score_viewer.format_summary(full),
+        )
+
     def test_json_cli_reads_a_selected_run(self):
         self.make_run("json-run")
         stdout = io.StringIO()

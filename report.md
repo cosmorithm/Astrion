@@ -36,6 +36,7 @@
 | BFCL 官方 harness 集成 | 本次对话，见第 18 节 | 固定 `bfcl-eval` 版本和 20 样例子集；调用官方生成与评分命令，导入官方分数；ToolBench 后置 |
 | BFCL 成绩查看脚本 | 本次对话，见第 19 节 | 默认查看最近完成运行；支持列出历史、按 ID/路径指定、文本或 JSON 输出 |
 | BFCL 200 条默认基准 | 本次对话，见第 20 节 | 五个核心单轮类别各 40 条，确定性等间隔抽样；保留 3 条和 20 条旧 manifest |
+| BFCL 全部正式计分类基准 | 本次对话，见第 21 节 | 新增官方 `all_scoring` 入口；22 类、5,217 个生成条目、预计 5,106 个计分目标；不自动运行 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -596,7 +597,7 @@ python3 -B -m unittest -v test_token_usage
 7. **提示词规则与代码约束要分别理解。** “每次一个动作”目前主要由提示词要求；路径限制由执行层检查；字符预算也不保证一定压到模型允许的上下文大小以内。
 8. **仍是单 agent。** 尚未实现子 agent 调用、任务分配、并发协作或多 agent 上下文隔离。
 9. **会话和报告包含数据。** 模型消息、工具输出和文件快照可能含敏感内容；默认目录被 git 忽略，不代表内容可以公开。
-10. **BFCL 默认基准已扩为 200 条，仍非完整 leaderboard。** 五个 V4 核心单轮类别各 40 条，通过官方 `generate/evaluate` 和 scorer 得分；尚未覆盖 full、多轮或 agentic。ToolBench 仍未接入。
+10. **BFCL 默认基准是 200 条，另有显式 `all-scoring` 入口。** 默认五个 V4 核心单轮类别各 40 条；完整正式计分类入口覆盖 22 类，但尚未真实运行，且不会由默认命令触发。ToolBench 仍未接入。
 
 若继续按当前学习节奏推进，可以单独完善记忆压缩的边界条件，再讨论 token 预算、会话文件轮转/加密和更完整的错误分类。
 
@@ -1405,10 +1406,99 @@ python3 -m benchmarks bfcl run            # 正式运行默认 200 条
 
 ### 20.3 覆盖边界
 
-200 条约占 BFCL V4 5,217 条正式计分 case 的 3.83%，只覆盖五个 non-live 单轮
-Python 类别；它不包含 Java、JavaScript、live、多轮、memory 或 web search。
+200 条约占 BFCL V4 5,217 个 `all_scoring` 生成条目的 3.83%，只覆盖五个 non-live
+单轮 Python 类别；完整 collection 中实际预计计分目标为 5,106 个，另外 111 个是
+memory 前置会话条目。200 条基准不包含 Java、JavaScript、live、多轮、memory 或 web search。
 它适合当前阶段快速、稳定地比较 function calling 基础能力，但仍不能称为 BFCL
 full leaderboard。
 
 本阶段只创建基准和验证编排，没有自动调用这 200 条，因此没有新增 API 费用，也
 尚无 200 条成绩。正式调用仍需要学习者显式运行 `python3 -m benchmarks bfcl run`。
+
+## 21. 第十三阶段：BFCL 全部正式计分类基准
+
+### 21.1 目标与计数口径
+
+学习者要求把 BFCL 的正式计分类另做成一个新基准，同时保留 200 条作为日常默认。
+本阶段使用固定版本官方 `TEST_COLLECTION_MAPPING["all_scoring"]`，共 22 个类别，
+明确排除非计分的 `format_sensitivity`。
+
+使用官方 `load_dataset_entry()` 和 `is_memory_prereq()` 逐类核对后，得到两种必须
+区分的计数：
+
+| 分组 | 生成条目 | 预计独立计分目标 |
+|---|---:|---:|
+| non-live 单轮 | 1,390 | 1,390 |
+| live 单轮 | 2,251 | 2,251 |
+| multi-turn | 800 | 800 |
+| memory | 576 | 465 |
+| web search | 200 | 200 |
+| **合计** | **5,217** | **5,106** |
+
+memory 的差额 111 是 prerequisite 会话条目：模型需要处理它们以建立持久化上下文，
+但官方 evaluator 会跳过这些前置条目，不把它们当作独立计分目标。因此报告不能只
+写“全量 5,217 分母”；最终实际分母仍应以正式运行后官方 category score 的
+`total_count` 汇总为准。
+
+### 21.2 新 manifest 与内置短名称
+
+新增 `toy-agent/benchmarks/manifests/bfcl_v4_all_scoring_full.json`，记录：
+
+- `selection.mode = official_collection`；
+- `selection.collection = all_scoring`；
+- `expected_generation_entries = 5217`；
+- `expected_scored_cases = 5106`；
+- 22 个类别各自的官方生成条目数量。
+
+为避免记忆文件路径，`benchmarks/bfcl.py` 新增四个内置短名称：
+
+| 短名称 | 用途 | 是否默认 |
+|---|---|---|
+| `baseline-200` | 五类等权的日常比较基准 | 是 |
+| `smoke-20` | 已有 90% 历史结果的快速 smoke | 否 |
+| `trial-3` | 最小真实链路验证 | 否 |
+| `all-scoring` | 22 个官方正式计分类 | 否 |
+
+`--benchmark` 与自定义 `--manifest` 互斥。默认命令仍运行 200 条，避免误触发完整
+collection；正式计分类必须显式指定：
+
+```bash
+python3 -m benchmarks bfcl run --benchmark all-scoring --dry-run
+python3 -m benchmarks bfcl run --benchmark all-scoring
+```
+
+### 21.3 两种编排路径
+
+case-id 子集和官方 collection 不能使用同一套 CLI 参数，适配器因此引入明确的
+`selection_mode`：
+
+```text
+case_ids（3 / 20 / 200）
+  → 写 test_case_ids_to_generate.json
+  → bfcl generate --run-ids
+  → bfcl evaluate --partial-eval
+
+official_collection（all-scoring）
+  → 不写 ID 文件
+  → bfcl generate --test-category all_scoring
+  → bfcl evaluate --test-category all_scoring
+  → 不使用 --partial-eval
+```
+
+full-scoring 报告设置 `subset=false`，并同时记录 `case_count=5217`、
+`expected_scored_cases=5106`、22 类计数、`official_collection=all_scoring` 和
+`official_id_file=null`。成绩查看脚本遇到两种计数不同时，会显示“生成条目”和
+“预计计分”两个值，而不是模糊地显示一个“配置条数”。
+
+### 21.4 验证与边界
+
+离线测试继续保持 104 项并全部通过，新增断言覆盖：完整 manifest 的版本、22 类
+数量与总和、错误 collection、错误总数、禁止为 collection 写 ID 文件、完整生成/
+评分命令不含 `--run-ids` 或 `--partial-eval`、dry-run 不产生 ID 文件，以及成绩
+查看时的双计数展示。
+
+真实 CLI dry-run 已验证生成命令和评分命令均使用官方 `all_scoring`，默认
+`baseline-200` 路径仍保持 200 个固定 ID 与 partial evaluation。没有执行真实
+5,217 条生成，因此本阶段没有新增模型费用，也没有 full-scoring 成绩。该完整基准
+包含 live、多轮、memory 和 web search，对运行环境、时间与费用的要求远高于
+200 条单轮基准，正式运行前应单独确认预算与外部依赖。

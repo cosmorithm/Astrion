@@ -1,0 +1,44 @@
+{
+  "name": "bfcl_v4_all_scoring_full",
+  "benchmark": "BFCL",
+  "benchmark_version": "V4",
+  "profile": "full_scoring",
+  "harness": {
+    "package": "bfcl-eval",
+    "version": "2026.3.23"
+  },
+  "selection": {
+    "mode": "official_collection",
+    "collection": "all_scoring",
+    "expected_generation_entries": 5217,
+    "expected_scored_cases": 5106
+  },
+  "category_counts": {
+    "simple_python": 400,
+    "simple_java": 100,
+    "simple_javascript": 50,
+    "multiple": 200,
+    "parallel": 200,
+    "parallel_multiple": 200,
+    "irrelevance": 240,
+    "live_simple": 258,
+    "live_multiple": 1053,
+    "live_parallel": 16,
+    "live_parallel_multiple": 24,
+    "live_irrelevance": 884,
+    "live_relevance": 16,
+    "multi_turn_base": 200,
+    "multi_turn_miss_func": 200,
+    "multi_turn_miss_param": 200,
+    "multi_turn_long_context": 200,
+    "memory_kv": 192,
+    "memory_vector": 192,
+    "memory_rec_sum": 192,
+    "web_search_base": 100,
+    "web_search_no_snippet": 100
+  },
+  "notes": {
+    "memory_prerequisite_entries": 111,
+    "scoring_definition": "BFCL official all_scoring collection; format_sensitivity is excluded."
+  }
+}

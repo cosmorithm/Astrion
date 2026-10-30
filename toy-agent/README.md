@@ -332,6 +332,7 @@ BFCL V4 官方 harness；ToolBench 暂不接入。
 - `run_cases()`：逐条调用模型，记录原始请求/响应和错误；不判断对错。
 - `benchmarks/bfcl.py`：调用固定版本的官方 `bfcl generate/evaluate`，导入官方分数；不重写 AST scorer。
 - `benchmarks/manifests/bfcl_v4_single_turn_baseline_200.json`：默认基准，5 类各 40 条，共 200 条。
+- `benchmarks/manifests/bfcl_v4_all_scoring_full.json`：官方 `all_scoring`，22 类、5,217 个生成条目、预计 5,106 个计分目标。
 - `benchmarks/manifests/bfcl_v4_single_turn_smoke.json`：保留原来的 20 条 smoke 子集。
 - `benchmarks/manifests/bfcl_v4_single_turn_trial_3.json`：正式调用前后的最小 3 样例试跑。
 - `setup_bfcl.sh`：在 `.venv-bfcl/` 安装可选依赖，不污染零依赖核心。
@@ -360,18 +361,29 @@ BFCL 命令会自动查找 `.env`，且不会覆盖 shell 中已经 `export` 的
 python3 -m benchmarks bfcl run
 ```
 
+运行官方全部正式计分类（高成本，建议先 dry-run）：
+
+```bash
+python3 -m benchmarks bfcl run --benchmark all-scoring --dry-run
+python3 -m benchmarks bfcl run --benchmark all-scoring
+```
+
+`all-scoring` 会处理 5,217 个生成条目，其中 memory 的 111 个前置会话不单独计分，
+预计最终计分目标为 5,106 个。它包含 live、多轮、memory 和 web search，调用次数、
+时间和费用都远高于 200 条默认基准；项目不会自动运行它。
+
 若要重跑原来的 20 条 smoke：
 
 ```bash
 python3 -m benchmarks bfcl run \
-  --manifest benchmarks/manifests/bfcl_v4_single_turn_smoke.json
+  --benchmark smoke-20
 ```
 
 若只想先验证 3 条：
 
 ```bash
 python3 -m benchmarks bfcl run \
-  --manifest benchmarks/manifests/bfcl_v4_single_turn_trial_3.json
+  --benchmark trial-3
 ```
 
 结果保存在 `benchmark_runs/bfcl/`，含官方 result/score、命令日志和统一报告。
@@ -440,7 +452,7 @@ python3 -B -m unittest -v test_session
 5. **会话和报告包含数据。** 模型消息、工具输出和文件快照可能含敏感内容；分享前要检查，默认目录虽被 git 忽略，不代表内容可以公开。
 6. **沙箱不是操作系统隔离。** `safe_path()` 限制应用层文件工具；这不是容器级安全边界。
 7. **没有任务时间上限。** 只记录耗时；单次 HTTP 超时 120 秒，`--steps` 限制决策轮数。
-8. **BFCL 默认基准是固定 200 条单轮子集。** 五个核心类别各 40 条、等间隔确定性抽样；它仍不是 full leaderboard，也不覆盖多轮或 V4 agentic。
+8. **BFCL 默认基准是固定 200 条单轮子集。** 五个核心类别各 40 条、等间隔确定性抽样；另有显式 `all-scoring` 正式计分类入口，但尚未运行，绝不会由默认命令触发。
 9. **ToolBench 尚未接入。** 本阶段没有安装或调用 ToolBench/StableToolBench，也不把它们的分数与 BFCL 混合。
 
 ## 想继续加什么（按难度）
@@ -450,5 +462,5 @@ python3 -B -m unittest -v test_session
 3. 一个 `run_worker` 工具，内部再起一个 `run()`（多智能体，本质只是嵌套）
 4. 会话文件的轮转、加密或按项目分目录管理
 5. 运行并分析 BFCL 200 条默认基准，保留 20 条结果作为历史 smoke 对照
-6. BFCL 从单轮子集扩展到多轮，再决定是否进入 V4 agentic
+6. 评估是否有必要、预算和环境运行 `all-scoring` 的多轮、memory 与 web search
 7. ToolBench/StableToolBench 后置，单独讨论环境、成本和评分口径
