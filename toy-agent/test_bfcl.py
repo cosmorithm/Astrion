@@ -106,7 +106,7 @@ class BFCLTests(unittest.TestCase):
         self.addCleanup(storage.cleanup)
         self.root = Path(storage.name)
 
-    def test_default_manifest_is_a_fixed_twenty_case_subset(self):
+    def test_default_manifest_is_a_fixed_two_hundred_case_subset(self):
         manifest = load_manifest()
 
         self.assertEqual(manifest.path, DEFAULT_MANIFEST.resolve())
@@ -114,8 +114,14 @@ class BFCLTests(unittest.TestCase):
         self.assertEqual(manifest.benchmark_version, "V4")
         self.assertEqual(manifest.profile, "subset")
         self.assertEqual(len(manifest.categories), 5)
-        self.assertEqual(len(manifest.case_ids), 20)
-        self.assertEqual(len(set(manifest.case_ids)), 20)
+        self.assertTrue(all(len(ids) == 40 for ids in manifest.categories.values()))
+        self.assertEqual(len(manifest.case_ids), 200)
+        self.assertEqual(len(set(manifest.case_ids)), 200)
+
+        smoke = load_manifest(
+            DEFAULT_MANIFEST.with_name("bfcl_v4_single_turn_smoke.json")
+        )
+        self.assertEqual(len(smoke.case_ids), 20)
 
         trial = load_manifest(
             DEFAULT_MANIFEST.with_name("bfcl_v4_single_turn_trial_3.json")
@@ -254,19 +260,19 @@ class BFCLTests(unittest.TestCase):
         )
 
         self.assertEqual(report["status"], "completed")
-        self.assertEqual(report["benchmark"]["case_count"], 20)
+        self.assertEqual(report["benchmark"]["case_count"], 200)
         official = report["official_outputs"]
         self.assertEqual(len(official["official_category_scores"]), 5)
-        self.assertEqual(official["correct_cases"], 19)
-        self.assertEqual(official["scored_cases"], 20)
-        self.assertEqual(official["derived_subset_micro_accuracy"], 0.95)
+        self.assertEqual(official["correct_cases"], 199)
+        self.assertEqual(official["scored_cases"], 200)
+        self.assertEqual(official["derived_subset_micro_accuracy"], 0.995)
         self.assertEqual(official["token_usage"], {
-            "input_tokens": 200,
-            "output_tokens": 40,
-            "total_tokens": 240,
+            "input_tokens": 2000,
+            "output_tokens": 400,
+            "total_tokens": 2400,
         })
-        self.assertAlmostEqual(official["model_latency_seconds"], 2.0)
-        self.assertEqual(sum(item["record_count"] for item in official["result_files"]), 20)
+        self.assertAlmostEqual(official["model_latency_seconds"], 20.0)
+        self.assertEqual(sum(item["record_count"] for item in official["result_files"]), 200)
         self.assertTrue((output / report["commands"]["generate"]["stdout_log"]).is_file())
         self.assertTrue((output / report["commands"]["evaluate"]["stdout_log"]).is_file())
         saved = json.loads((output / "bfcl_run_report.json").read_text(encoding="utf-8"))

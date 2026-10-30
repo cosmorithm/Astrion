@@ -39,7 +39,11 @@ PACKAGE_NAME = "bfcl-eval"
 BENCHMARK_NAME = "BFCL"
 BENCHMARK_VERSION = "V4"
 DEFAULT_MODEL = "DeepSeek-V3.2-Exp-FC"
-DEFAULT_MANIFEST = Path(__file__).resolve().parent / "manifests" / "bfcl_v4_single_turn_smoke.json"
+DEFAULT_MANIFEST = (
+    Path(__file__).resolve().parent
+    / "manifests"
+    / "bfcl_v4_single_turn_baseline_200.json"
+)
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parent.parent / "benchmark_runs" / "bfcl"
 
 CommandRunner = Callable[[list[str], dict[str, str], Path], dict]

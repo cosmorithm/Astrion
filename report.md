@@ -35,6 +35,7 @@
 | 工具注入接缝与基准适配层 | 本次对话，见第 17 节 | `ChatLLM.chat` 支持按 case 注入 tools；新增 `benchmarks/` 通用适配层和默认行为契约测试 |
 | BFCL 官方 harness 集成 | 本次对话，见第 18 节 | 固定 `bfcl-eval` 版本和 20 样例子集；调用官方生成与评分命令，导入官方分数；ToolBench 后置 |
 | BFCL 成绩查看脚本 | 本次对话，见第 19 节 | 默认查看最近完成运行；支持列出历史、按 ID/路径指定、文本或 JSON 输出 |
+| BFCL 200 条默认基准 | 本次对话，见第 20 节 | 五个核心单轮类别各 40 条，确定性等间隔抽样；保留 3 条和 20 条旧 manifest |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -595,7 +596,7 @@ python3 -B -m unittest -v test_token_usage
 7. **提示词规则与代码约束要分别理解。** “每次一个动作”目前主要由提示词要求；路径限制由执行层检查；字符预算也不保证一定压到模型允许的上下文大小以内。
 8. **仍是单 agent。** 尚未实现子 agent 调用、任务分配、并发协作或多 agent 上下文隔离。
 9. **会话和报告包含数据。** 模型消息、工具输出和文件快照可能含敏感内容；默认目录被 git 忽略，不代表内容可以公开。
-10. **BFCL 已有正式子集入口，仍非完整 leaderboard。** 固定 20 个 V4 单轮样例，通过官方 `generate/evaluate` 和 scorer 得分；尚未运行 full、多轮或 agentic。ToolBench 仍未接入。
+10. **BFCL 默认基准已扩为 200 条，仍非完整 leaderboard。** 五个 V4 核心单轮类别各 40 条，通过官方 `generate/evaluate` 和 scorer 得分；尚未覆盖 full、多轮或 agentic。ToolBench 仍未接入。
 
 若继续按当前学习节奏推进，可以单独完善记忆压缩的边界条件，再讨论 token 预算、会话文件轮转/加密和更完整的错误分类。
 
@@ -1358,3 +1359,56 @@ python3 show_bfcl_score.py --run <运行ID> --json
 较新失败运行、历史排序、损坏报告保留、运行 ID/目录/文件三种指定方式、文本与
 JSON 输出、缺失报告的非零退出码，以及只有部分命令耗时时的格式化。完整测试入口
 现为 104 项，执行结果为 `Ran 104 tests`、`OK`。
+
+## 20. 第十二阶段：固定 200 条 BFCL 默认基准
+
+### 20.1 决策与口径
+
+学习者决定先不运行 BFCL V4 的 5,217 条完整计分集合，而是把项目默认子集扩展为
+200 条，并将它作为后续模型、prompt 或参数变化的稳定对照基准。200 条继续聚焦
+已经跑通的五个 non-live Python 单轮核心类别，每类固定 40 条：
+
+| 类别 | 官方可用数 | 抽样间隔 | 选中数 |
+|---|---:|---:|---:|
+| `simple_python` | 400 | 每 10 个 ID 取一个 | 40 |
+| `multiple` | 200 | 每 5 个 ID 取一个 | 40 |
+| `parallel` | 200 | 每 5 个 ID 取一个 | 40 |
+| `parallel_multiple` | 200 | 每 5 个 ID 取一个 | 40 |
+| `irrelevance` | 240 | 每 6 个 ID 取一个 | 40 |
+| **合计** | **1,240** | — | **200** |
+
+抽样前使用固定版本官方 `load_dataset_entry()` 校验全部 200 个 case id，缺失数为 0。
+选择等间隔而非“每类前 40 条”，是为了覆盖每个类别的完整编号范围；选择每类等量
+而非按官方类别大小加权，是为了让五种核心能力在这个教学基准中同等重要。因此，
+该分数是 **macro-balanced selection 上的 micro accuracy**，不能冒充官方分布分数。
+
+### 20.2 文件和默认行为
+
+新增
+`toy-agent/benchmarks/manifests/bfcl_v4_single_turn_baseline_200.json`，名称固定为
+`bfcl_v4_single_turn_baseline_200`，版本继续固定为 BFCL V4 / `bfcl-eval==2026.3.23`。
+`benchmarks/bfcl.py` 的 `DEFAULT_MANIFEST` 改为该文件，因此：
+
+```bash
+python3 -m benchmarks bfcl run --dry-run  # 生成 200 个 ID，不调用模型
+python3 -m benchmarks bfcl run            # 正式运行默认 200 条
+```
+
+原有 manifest 不删除：
+
+- `bfcl_v4_single_turn_trial_3.json`：最小真实链路验证；
+- `bfcl_v4_single_turn_smoke.json`：历史 20 条 smoke 与 90% 成绩复现；
+- `bfcl_v4_single_turn_baseline_200.json`：从本阶段起的默认比较基准。
+
+旧运行报告会继续记录当时 manifest、case count 和 Git commit，不会因为默认值改变而
+被重新解释。成绩查看脚本仍按报告自身字段显示 3、20 或未来 200 条结果。
+
+### 20.3 覆盖边界
+
+200 条约占 BFCL V4 5,217 条正式计分 case 的 3.83%，只覆盖五个 non-live 单轮
+Python 类别；它不包含 Java、JavaScript、live、多轮、memory 或 web search。
+它适合当前阶段快速、稳定地比较 function calling 基础能力，但仍不能称为 BFCL
+full leaderboard。
+
+本阶段只创建基准和验证编排，没有自动调用这 200 条，因此没有新增 API 费用，也
+尚无 200 条成绩。正式调用仍需要学习者显式运行 `python3 -m benchmarks bfcl run`。

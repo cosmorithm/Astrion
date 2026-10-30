@@ -119,7 +119,7 @@ BFCL 子进程环境中，把 `DEEPSEEK_API_KEY` 临时复制为 `OPENAI_API_KEY
 # 检查固定版本、官方模型注册和凭据；不会调用模型
 python3 -m benchmarks bfcl doctor
 
-# 只生成本次目录、20 个 ID 和两条官方命令；不要求 BFCL 已安装
+# 只生成本次目录、200 个 ID 和两条官方命令；不调用模型
 python3 -m benchmarks bfcl run --dry-run
 ```
 
@@ -127,19 +127,31 @@ python3 -m benchmarks bfcl run --dry-run
 适配器兼容该版本 `bfcl version` 在部分安装中的 distribution 名问题，会退回到同一
 venv 的 Python 查询 `bfcl-eval` 元数据。
 
-### 4. 运行官方 20 样例子集
+### 4. 运行默认 200 条基准子集
 
 ```bash
 python3 -m benchmarks bfcl run
 ```
 
-固定 manifest 位于 `benchmarks/manifests/bfcl_v4_single_turn_smoke.json`，包含：
+默认 manifest 位于
+`benchmarks/manifests/bfcl_v4_single_turn_baseline_200.json`，包含：
 
-- `simple_python` 4 个；
-- `multiple` 4 个；
-- `parallel` 4 个；
-- `parallel_multiple` 4 个；
-- `irrelevance` 4 个。
+- `simple_python` 40 个；
+- `multiple` 40 个；
+- `parallel` 40 个；
+- `parallel_multiple` 40 个；
+- `irrelevance` 40 个。
+
+抽样是固定、可复现的等间隔抽样，而不是每次随机：`simple_python` 每 10 个 ID
+取一个，`multiple`、`parallel`、`parallel_multiple` 每 5 个取一个，
+`irrelevance` 每 6 个取一个。这样覆盖各类别完整编号范围，同时保持五类等权。
+
+原 20 条 smoke 仍可显式运行：
+
+```bash
+python3 -m benchmarks bfcl run \
+  --manifest benchmarks/manifests/bfcl_v4_single_turn_smoke.json
+```
 
 最小真实试跑 manifest 位于
 `benchmarks/manifests/bfcl_v4_single_turn_trial_3.json`，分别取
@@ -158,7 +170,7 @@ python3 -m benchmarks bfcl run \
 `accuracy`、`correct_count` 和 `total_count`；单条对错不由本项目重新判断。
 报告还会从官方 result 汇总 input/output/total tokens 和模型响应 latency，并保留
 每个结果文件的同类指标；生成与评分命令的完整耗时分别记录在 `commands` 中。
-`derived_subset_micro_accuracy` 只是对这 20 个样例按数量汇总，明确属于
+`derived_subset_micro_accuracy` 只是对所选 200 个样例按数量汇总，明确属于
 **subset**，不能当作 BFCL 官方 full leaderboard overall。
 
 生成失败时不运行评测；评测失败时仍保留已生成的官方结果和日志。报告的状态可为
@@ -205,5 +217,5 @@ BFCL V4 / bfcl-eval 固定版本
 官方 result/score 路径与 SHA-256
 ```
 
-不要拿 toy-agent eval 的分数、BFCL 20 样例 subset 和官方 full leaderboard 分数
+不要拿 toy-agent eval 的分数、BFCL 200 样例 baseline 和官方 full leaderboard 分数
 直接比较；它们用的是不同任务、profile 和覆盖率。
