@@ -29,6 +29,7 @@
 | 项目报告 | 本次对话 | 按要求在项目根目录新增本文件，记录整个项目截至目前的实现和问答摘要 |
 | 结束处理与结构化结果 | 本次对话，见第 12 节 | 明确三种正常结束状态，补齐 `finish` 消息，检查工具参数，增加主循环离线测试 |
 | 赛后评测层 | 本次对话，见第 13 节 | 引入评测任务、隔离运行记录、耗时统计和可注册裁判；不设置评测时间上限 |
+| 自动报告与评测样例 | 本次对话，见第 14 节 | 每个评测任务自动保存 JSON 报告，并把内置任务扩充为 10 个 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -125,14 +126,18 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["读取评测任务<br/>任务描述、初始文件和裁判配置"] --> B["创建独立临时沙箱<br/>写入初始文件"]
-    B --> C["创建模型客户端与 Memory<br/>开始记录 agent.run 的耗时"]
+    A["读取评测任务<br/>任务描述、初始文件和裁判配置"] --> B["准备临时沙箱、初始文件<br/>模型客户端与 Memory"]
+    B --> J{"环境准备成功？"}
+    J -- "是" --> C["开始记录 agent.run 的耗时"]
+    J -- "否" --> K["记录 setup_error<br/>裁判不运行，结论为 unknown"]
     C --> D["运行 agent<br/>事件记录器保存决策、摘要与工具结果"]
     D --> E["run 返回或异常<br/>结束 agent 耗时统计"]
     E --> F["保存运行状态、token 用量增量和文件快照"]
     F --> G["清理临时沙箱"]
     G --> H["运行已注册的赛后裁判<br/>每位裁判读取独立副本"]
-    H --> I["生成 JSON 报告<br/>保留运行事实与每个裁判的结果"]
+    H --> L["尝试自动保存独立 JSON 报告"]
+    K --> L
+    L --> I["返回报告和保存路径<br/>保存失败时保留错误信息"]
 ```
 
 任务参考答案供裁判使用，评测器只把任务文本和初始文件交给 agent。agent 的运行时间包括模型请求、工具执行、摘要和同步记录；准备沙箱、生成快照和裁判评测不计入。当前不设置评测时间上限；原有 agent 步数限制与单次 HTTP 超时仍然存在。
@@ -151,11 +156,14 @@ Multi Agent/
     ├── test_token_usage.py    # 模拟 API 响应的计量测试
     ├── test_run_lifecycle.py  # 模拟模型响应的主循环测试
     ├── test_evaluation.py     # 评测层离线测试
+    ├── eval_reports/          # 首次评测后生成的报告目录，不纳入 Git
     ├── evaluation/
+    │   ├── __init__.py        # 导出评测运行器与裁判注册表
     │   ├── __main__.py        # 评测命令行入口
     │   ├── cases.json         # 示例评测任务
     │   ├── runner.py          # 隔离运行、耗时与运行记录
-    │   └── judges.py          # 裁判注册及内置文件裁判
+    │   ├── judges.py          # 裁判注册及内置文件裁判
+    │   └── reporting.py       # 自动生成不重名的 JSON 报告
     └── sandbox/
         ├── data.txt          # 演示任务输入
         └── result.txt        # 演示结果文件
@@ -701,7 +709,7 @@ python3 -B -m unittest -v test_run_lifecycle test_token_usage
 
 | 组成 | 位置 | 当前职责 |
 |---|---|---|
-| 评测任务 | `toy-agent/evaluation/cases.json` | 保存任务 ID、用户任务、初始文件和裁判配置 |
+| 评测任务 | `toy-agent/evaluation/cases.json` | 保存任务 ID、用户任务、初始文件和裁判配置；现有 10 个内置样例 |
 | 运行器 | `toy-agent/evaluation/runner.py` | 验证任务、创建临时目录、运行 agent、计时、记录 token 与文件快照，再调用裁判 |
 | 裁判注册表 | `toy-agent/evaluation/judges.py` 的 `JudgeRegistry` | 注册函数、分别调用裁判、检查返回值并记录裁判自己的耗时和错误 |
 | 内置裁判 | `toy-agent/evaluation/judges.py` 的 `file_equals` | 检查目标文件快照；首尾空白忽略，比较其余文本 |
@@ -764,7 +772,7 @@ python3 -B -m unittest -v test_run_lifecycle test_token_usage
 python3 -m evaluation --case sum_001
 ```
 
-要使用其他任务集，可通过 `--cases path/to/cases.json` 指定 JSON 文件；省略 `--case` 将顺序运行该文件中的全部任务。stdout 为 JSON 报告，agent 的运行日志输出到 stderr。默认不创建报告文件，也不添加耗时上限。
+要使用其他任务集，可通过 `--cases path/to/cases.json` 指定 JSON 文件；省略 `--case` 将顺序运行该文件中的全部任务。stdout 为 JSON 报告，agent 的运行日志输出到 stderr。该阶段最初不自动创建报告文件；当前自动保存方式见第 14 节。评测没有添加耗时上限。
 
 这次使用模拟模型和模拟 HTTP 响应进行离线验证：
 
@@ -774,4 +782,76 @@ python3 -B -m unittest -v test_evaluation test_run_lifecycle test_token_usage
 
 15 项评测层测试、8 项主循环测试和 5 项 token 测试共 28 项通过。重点验证了独立沙箱、裁判在运行和沙箱清理后才执行、过程记录在记忆压缩后仍保留、错误与裁判结论分离、多裁判数据副本、参考答案不进入模型消息、agent 与摘要用量累计、耗时单独记录且不作为限制，以及 CLI 输出可解析 JSON。
 
-测试使用模拟响应，未使用真实服务端重新运行评测。配置无效或初始沙箱准备失败目前由调用方处理，不会转换为一条已完成的运行记录；大任务集批处理的逐任务准备失败隔离、真实模型裁判适配和更完整的运行元数据都可留作后续小步骤。
+测试使用模拟响应，未使用真实服务端重新运行评测。该阶段最初没有自动保存报告；此后已增加自动保存、准备失败报告和样例，见第 14 节。真实模型裁判适配和更完整的运行元数据仍可留作后续小步骤。
+
+## 14. 第六阶段：自动保存报告与扩充评测样例
+
+### 14.1 需求与讨论
+
+学习者询问每次测试的报告保存在哪里。之前评测层只把 JSON 输出到 stdout，需要手动重定向；`unittest` 的结果则只显示在终端。随后学习者要求把自动报告集成到评测系统，并增加更多评测样例。
+
+因此，本阶段让每个评测任务自动保存独立的 JSON 报告，同时保留原来的终端输出。内置任务从 1 个扩展到 10 个。本次自动保存针对评测任务；普通 `unittest` 的测试结果仍显示在终端。
+
+### 14.2 自动报告如何保存
+
+`evaluation/reporting.py` 的 `save_report()` 负责保存；`evaluate_case()` 在运行和赛后裁判结束后调用它。每条任务保存一份报告，包括任务配置、agent 运行结果、耗时、token 用量、事件记录、文件快照和各裁判结论。
+
+默认目录是 `toy-agent/eval_reports/`，首次评测时创建。文件名包含安全处理后的任务 ID、UTC 时间和随机唯一标识；使用独占创建，碰到重名会重新生成名称，避免覆盖已有报告。默认目录加入根目录 `.gitignore`，不自动提交报告数据。
+
+命令行仍向 stdout 输出 JSON，agent 的运行日志和保存成功的报告路径显示在 stderr。每个结果新增：
+
+```json
+{
+  "report_path": "/示例路径/eval_reports/sum_001_时间_唯一标识.json",
+  "report_error": null
+}
+```
+
+上面仅展示新增字段，不是完整报告。保存成功时，`report_path` 是绝对路径，文件内容与返回的单任务结果一致。
+
+可通过 `--report-dir` 指定其他目录；调用 Python 接口时也可以传入 `report_dir`。自定义目录需要使用者自行管理版本控制和权限。报告包含任务、模型消息和工具输出；评测器不主动写入连接 API 的 key。
+
+### 14.3 失败与批量运行
+
+- agent 运行报错时，仍保存已收集的执行记录、错误和裁判结论。
+- 初始沙箱或模型客户端准备失败时，运行状态为 `setup_error`，耗时为 `null`；裁判未执行，结论标记 `unknown`，仍尝试保存报告。批量运行会继续处理后续任务。
+- 如果报告无法保存，`report_path` 为 `null`，`report_error` 包含错误类型和原因。Python 调用方仍能获得运行结果；如果结果可序列化，CLI 将其输出到 stdout，同时在 stderr 提示并以非零状态退出。如果结果本身无法序列化，CLI 在 stderr 说明，无法输出 JSON。
+- 非法 JSON、任务缺少 ID、无效命令行参数等启动前配置错误不会形成单任务报告。测试所写的报告位于临时目录，测试结束后清理。
+
+报告保存和裁判耗时不计入 `run.duration_seconds`。本阶段没有设置评测任务的时间上限；已有的 agent 步数限制和单次 HTTP 请求超时照旧。
+
+### 14.4 十个内置评测样例
+
+| ID | 场景 | 裁判检查 |
+|---|---|---|
+| `sum_001` | 三个正整数求和 | `result.txt` |
+| `sum_negative` | 负数、正数和零 | `result.txt` |
+| `sum_decimal_2dp` | 小数求和并保留恰好两位小数 | `result.txt` |
+| `sum_multiline` | 多行整数 | `result.txt` |
+| `sum_fullwidth` | 中文逗号分隔 | `result.txt` |
+| `sum_empty` | 空文件，明确约定和为零 | `result.txt` |
+| `copy_text` | 中英文文本复制，允许首尾空白不同 | `copy.txt` |
+| `list_txt_files` | 筛选目录中初始的 `.txt` 文件并排序 | `result.txt` |
+| `nested_sum` | 读取子目录，写入新子目录 | `outputs/total.txt` |
+| `sum_and_count` | 分别计算数字的和与个数 | `output/sum.txt`、`output/count.txt`，各一个裁判 |
+
+这些样例目前都使用规则裁判 `file_equals`，该裁判忽略首尾空白；小数样例的任务明确要求两位小数。两个输出文件的样例会产生两条独立裁判结论，不自动合成总分。
+
+### 14.5 使用与验证
+
+在 `toy-agent/` 目录执行：
+
+```bash
+# 不需要 API key，也不会运行模型
+python3 -m evaluation --list
+
+# 运行一个样例，自动保存报告；此命令会调用真实模型
+python3 -m evaluation --case sum_negative
+
+# 自定义报告目录
+python3 -m evaluation --case sum_001 --report-dir /path/to/reports
+```
+
+不传 `--case` 会顺序运行任务文件中的全部任务；默认任务文件现在有 10 个样例，会产生多次真实模型调用。
+
+本阶段通过 42 项离线测试（29 项评测层、8 项主循环、5 项 token 计量），覆盖自动保存、报告与返回结果一致、重复运行和强制文件名冲突、运行及准备失败、不可用目录和中途写入失败、多任务批次、`--list` 不调用模型，以及样例预期结果的独立核算。测试使用模拟模型和 HTTP 响应；没有对真实模型进行本阶段联调。

@@ -12,6 +12,7 @@ import agent
 from memory import Memory
 
 from .judges import JudgeRegistry, default_registry
+from .reporting import save_report
 
 
 def _validate_case(case: dict) -> None:
@@ -78,6 +79,42 @@ def _usage_difference(before: dict | None, after: dict | None, interrupted: bool
     }
 
 
+def _setup_error(exc: BaseException, max_steps: int, budget_chars: int) -> dict:
+    """准备失败时没有 agent 耗时，也不把结果当作任务失败。"""
+    return {
+        "result": {"status": "setup_error", "answer": None, "steps": 0,
+                   "error": {"type": type(exc).__name__, "message": str(exc)}},
+        "duration_seconds": None,
+        "model": None,
+        "agent_config": {"max_steps": max_steps, "budget_chars": budget_chars,
+                         "tools": copy.deepcopy(agent.TOOLS)},
+        "token_usage": None,
+        "trace": [],
+        "artifacts": {},
+        "artifact_errors": {},
+    }
+
+
+def _finish_report(case: dict, run_record: dict, registry: JudgeRegistry,
+                   report_dir: Path | str | None) -> dict:
+    if run_record["result"]["status"] == "setup_error":
+        judgments = [
+            {"judge": spec.get("name") if isinstance(spec, dict) else None,
+             "status": "unknown", "reason": "评测环境准备失败，裁判未运行", "duration_seconds": None}
+            for spec in case.get("judges", [])
+        ]
+    else:
+        judgments = registry.evaluate(copy.deepcopy(case), run_record)
+    report = {"case_id": case["id"], "case": copy.deepcopy(case), "run": run_record,
+              "judgments": judgments, "report_path": None, "report_error": None}
+    try:
+        report["report_path"] = str(save_report(report, report_dir))
+    except (OSError, TypeError, ValueError) as exc:
+        # 保留运行结果供调用方查看；不能假装报告已经保存成功。
+        report["report_error"] = {"type": type(exc).__name__, "message": str(exc)}
+    return report
+
+
 def evaluate_case(
     case: dict,
     llm_factory: Callable[[], object],
@@ -85,8 +122,9 @@ def evaluate_case(
     *,
     max_steps: int = 10,
     budget_chars: int = 12000,
+    report_dir: Path | str | None = None,
 ) -> dict:
-    """准备独立目录，计时运行 agent，取得文件快照，再执行裁判。"""
+    """准备独立目录，运行、赛后评判并自动保存一份报告。"""
     _validate_case(case)
     if type(max_steps) is not int or max_steps < 0:
         raise ValueError("max_steps 必须是非负整数")
@@ -94,45 +132,53 @@ def evaluate_case(
         raise ValueError("budget_chars 必须是正整数")
     registry = registry if registry is not None else default_registry()
 
-    with tempfile.TemporaryDirectory(prefix="toy-agent-eval-") as directory:
+    try:
+        temporary = tempfile.TemporaryDirectory(prefix="toy-agent-eval-")
+    except (Exception, SystemExit) as exc:
+        return _finish_report(case, _setup_error(exc, max_steps, budget_chars), registry, report_dir)
+
+    with temporary as directory:
         root = Path(directory)
-        _prepare_files(root, case.get("initial_files", {}))
-        llm = llm_factory()
-        memory = Memory(agent.SYSTEM_PROMPT, budget_chars=budget_chars)
-        trace: list[dict] = []
-        usage_before = _usage_snapshot(llm)
-
-        # 只计 agent.run：准备目录、读取快照和裁判评估均不计入。
-        started = perf_counter()
         try:
-            result = agent.run(case["task"], llm, memory, max_steps=max_steps,
-                               sandbox=root, event_sink=trace.append)
+            _prepare_files(root, case.get("initial_files", {}))
+            llm = llm_factory()
+            memory = Memory(agent.SYSTEM_PROMPT, budget_chars=budget_chars)
         except (Exception, SystemExit) as exc:
-            result = {
-                "status": "error", "answer": None,
-                "steps": sum(event["type"] == "model_response" for event in trace),
-                "error": {"type": type(exc).__name__, "message": str(exc)},
+            run_record = _setup_error(exc, max_steps, budget_chars)
+        else:
+            trace: list[dict] = []
+            usage_before = _usage_snapshot(llm)
+
+            # 只计 agent.run：准备目录、读取快照、裁判和保存报告均不计入。
+            started = perf_counter()
+            try:
+                result = agent.run(case["task"], llm, memory, max_steps=max_steps,
+                                   sandbox=root, event_sink=trace.append)
+            except (Exception, SystemExit) as exc:
+                result = {
+                    "status": "error", "answer": None,
+                    "steps": sum(event["type"] == "model_response" for event in trace),
+                    "error": {"type": type(exc).__name__, "message": str(exc)},
+                }
+            finally:
+                duration = perf_counter() - started
+
+            usage_after = _usage_snapshot(llm)
+            artifacts, artifact_errors = _snapshot(root)
+            run_record = {
+                "result": result,
+                "duration_seconds": duration,
+                "model": getattr(llm, "model", None),
+                "agent_config": {
+                    "max_steps": max_steps,
+                    "budget_chars": budget_chars,
+                    "tools": copy.deepcopy(agent.TOOLS),
+                },
+                "token_usage": _usage_difference(usage_before, usage_after, result["status"] == "error"),
+                "trace": trace,
+                "artifacts": artifacts,
+                "artifact_errors": artifact_errors,
             }
-        finally:
-            duration = perf_counter() - started
 
-        usage_after = _usage_snapshot(llm)
-        artifacts, artifact_errors = _snapshot(root)
-        run_record = {
-            "result": result,
-            "duration_seconds": duration,
-            "model": getattr(llm, "model", None),
-            "agent_config": {
-                "max_steps": max_steps,
-                "budget_chars": budget_chars,
-                "tools": copy.deepcopy(agent.TOOLS),
-            },
-            "token_usage": _usage_difference(usage_before, usage_after, result["status"] == "error"),
-            "trace": trace,
-            "artifacts": artifacts,
-            "artifact_errors": artifact_errors,
-        }
-
-    # 临时目录销毁后，裁判只需要读取运行记录及任务配置。
-    judgments = registry.evaluate(copy.deepcopy(case), run_record)
-    return {"case_id": case["id"], "case": copy.deepcopy(case), "run": run_record, "judgments": judgments}
+    # 临时目录销毁后再评判和保存；准备失败时裁判不会被调用。
+    return _finish_report(case, run_record, registry, report_dir)

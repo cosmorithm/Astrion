@@ -4,8 +4,14 @@ import copy
 import io
 import json
 import os
+import re
+import tempfile
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 
 import agent
@@ -66,6 +72,12 @@ def http_response(message, usage_marker=None):
 
 class EvaluationTests(unittest.TestCase):
     def setUp(self):
+        storage = tempfile.TemporaryDirectory(prefix="toy-agent-test-reports-")
+        self.addCleanup(storage.cleanup)
+        self.reports_dir = (Path(storage.name) / "reports").resolve()
+        report_dir_patch = patch("evaluation.reporting.DEFAULT_REPORT_DIR", self.reports_dir)
+        report_dir_patch.start()
+        self.addCleanup(report_dir_patch.stop)
         capture = redirect_stdout(io.StringIO())
         capture.__enter__()
         self.addCleanup(capture.__exit__, None, None, None)
@@ -256,8 +268,12 @@ class EvaluationTests(unittest.TestCase):
     def test_case_cannot_create_files_outside_its_sandbox(self):
         case = case_data()
         case["initial_files"] = {"../escape.txt": "should not be written"}
-        with self.assertRaises(PermissionError):
-            evaluate_case(case, lambda: ScriptedLLM([]))
+        report = evaluate_case(case, lambda: ScriptedLLM([]))
+        self.assertEqual(report["run"]["result"]["status"], "setup_error")
+        self.assertEqual(report["run"]["result"]["error"]["type"], "PermissionError")
+        self.assertIsNone(report["run"]["duration_seconds"])
+        self.assertEqual(report["judgments"][0]["status"], "unknown")
+        self.assertEqual(json.loads(Path(report["report_path"]).read_text(encoding="utf-8")), report)
 
     def test_agent_tool_cannot_access_files_outside_its_evaluation_sandbox(self):
         llm = ScriptedLLM([
@@ -294,8 +310,246 @@ class EvaluationTests(unittest.TestCase):
 
         report = json.loads(stdout.getvalue())
         self.assertEqual(report["reports"][0]["case_id"], "sum_001")
+        self.assertEqual(Path(report["reports"][0]["report_path"]).parent, self.reports_dir)
+        self.assertEqual(json.loads(Path(report["reports"][0]["report_path"]).read_text(encoding="utf-8")), report["reports"][0])
         self.assertIn("任务:", stderr.getvalue())
+        self.assertIn("报告已保存", stderr.getvalue())
+        self.assertIn(report["reports"][0]["report_path"], stderr.getvalue())
         self.assertNotIn("test-key", stdout.getvalue())
+
+    def test_each_run_automatically_saves_a_distinct_complete_report(self):
+        first = evaluate_case(case_data(), lambda: ScriptedLLM(success_replies()))
+        second = evaluate_case(case_data(), lambda: ScriptedLLM(success_replies()))
+
+        first_path, second_path = Path(first["report_path"]), Path(second["report_path"])
+        self.assertNotEqual(first_path, second_path)
+        self.assertEqual(first_path.parent, self.reports_dir)
+        self.assertEqual(second_path.parent, self.reports_dir)
+        self.assertEqual(json.loads(first_path.read_text(encoding="utf-8")), first)
+        self.assertEqual(json.loads(second_path.read_text(encoding="utf-8")), second)
+        self.assertIsNone(first["report_error"])
+        self.assertEqual(len(list(self.reports_dir.glob("*.json"))), 2)
+
+    def test_agent_failure_still_saves_its_trace_and_error(self):
+        report = evaluate_case(case_data(), lambda: ScriptedLLM([RuntimeError("连接中断")]))
+
+        self.assertEqual(report["run"]["result"]["status"], "error")
+        saved = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(saved, report)
+        self.assertEqual(saved["run"]["result"]["error"]["message"], "连接中断")
+        self.assertEqual(saved["run"]["trace"][0]["type"], "model_request")
+
+    def test_filename_collision_is_retried_without_overwriting_old_report(self):
+        fixed_time = datetime(2026, 10, 30, 1, 2, 3, tzinfo=timezone.utc)
+        with patch("evaluation.reporting.datetime") as clock, \
+             patch("evaluation.reporting.uuid.uuid4", side_effect=[uuid.UUID(int=1), uuid.UUID(int=1), uuid.UUID(int=2)]):
+            clock.now.return_value = fixed_time
+            first = evaluate_case(case_data(), lambda: ScriptedLLM(success_replies()))
+            original = Path(first["report_path"]).read_bytes()
+            second = evaluate_case(case_data(), lambda: ScriptedLLM(success_replies()))
+
+        self.assertNotEqual(first["report_path"], second["report_path"])
+        self.assertEqual(Path(first["report_path"]).read_bytes(), original)
+        self.assertEqual(json.loads(Path(second["report_path"]).read_text(encoding="utf-8")), second)
+
+    def test_setup_failure_is_saved_without_running_a_judge(self):
+        registry = JudgeRegistry()
+        judge_calls = []
+        registry.register("observe", lambda case, record, spec: judge_calls.append(True))
+        case = case_data()
+        case["judges"] = [{"name": "observe"}]
+
+        def broken_factory():
+            raise RuntimeError("模型初始化失败")
+
+        report = evaluate_case(case, broken_factory, registry)
+
+        self.assertEqual(report["run"]["result"]["status"], "setup_error")
+        self.assertEqual(report["run"]["result"]["error"]["message"], "模型初始化失败")
+        self.assertIsNone(report["run"]["duration_seconds"])
+        self.assertEqual(report["judgments"][0]["status"], "unknown")
+        self.assertEqual(judge_calls, [])
+        self.assertEqual(json.loads(Path(report["report_path"]).read_text(encoding="utf-8")), report)
+
+    def test_case_id_cannot_escape_report_directory(self):
+        case = case_data()
+        case["id"] = "../../中文/任务"
+        report = evaluate_case(case, lambda: ScriptedLLM(success_replies()))
+
+        self.assertEqual(Path(report["report_path"]).parent, self.reports_dir)
+        self.assertEqual(json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))["case_id"], case["id"])
+
+    def test_failed_report_save_preserves_result_and_reports_the_error(self):
+        with patch("evaluation.runner.save_report", side_effect=OSError("磁盘不可用")):
+            report = evaluate_case(case_data(), lambda: ScriptedLLM(success_replies()))
+
+        self.assertIsNone(report["report_path"])
+        self.assertEqual(report["report_error"], {"type": "OSError", "message": "磁盘不可用"})
+        self.assertEqual(report["run"]["result"]["status"], "completed")
+        self.assertEqual(report["judgments"][0]["status"], "pass")
+
+    def test_unusable_report_directory_is_reported_without_overwriting_it(self):
+        blocking_file = self.reports_dir.parent / "not-a-directory"
+        blocking_file.write_text("原有内容", encoding="utf-8")
+        report = evaluate_case(case_data(), lambda: ScriptedLLM(success_replies()),
+                               report_dir=blocking_file / "reports")
+
+        self.assertIsNone(report["report_path"])
+        self.assertIn(report["report_error"]["type"], {"NotADirectoryError", "FileExistsError", "OSError"})
+        self.assertEqual(report["run"]["result"]["status"], "completed")
+        self.assertEqual(blocking_file.read_text(encoding="utf-8"), "原有内容")
+
+    def test_partial_report_is_removed_when_writing_fails(self):
+        original_open = Path.open
+        reports_dir = self.reports_dir
+
+        class BrokenWriter:
+            def __init__(self, output):
+                self.output = output
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.output.close()
+
+            def write(self, payload):
+                self.output.write(payload[:10])
+                raise OSError("写入中断")
+
+        def open_with_failure(path, *args, **kwargs):
+            output = original_open(path, *args, **kwargs)
+            if path.parent == reports_dir and path.suffix == ".json":
+                return BrokenWriter(output)
+            return output
+
+        with patch("pathlib.Path.open", new=open_with_failure):
+            report = evaluate_case(case_data(), lambda: ScriptedLLM(success_replies()))
+
+        self.assertIsNone(report["report_path"])
+        self.assertIn("写入中断", report["report_error"]["message"])
+        self.assertEqual(list(self.reports_dir.glob("*.json")), [])
+
+    def test_cli_custom_directory_saves_one_report_per_case(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        case_a, case_b = case_data(), case_data()
+        case_a["id"], case_b["id"] = "first", "second"
+        cases_path = self.reports_dir.parent / "cases.json"
+        cases_path.write_text(json.dumps([case_a, case_b]), encoding="utf-8")
+        custom_dir = self.reports_dir.parent / "custom-reports"
+        llms = [ScriptedLLM(success_replies()), ScriptedLLM(success_replies())]
+        with patch("sys.argv", ["evaluation", "--cases", str(cases_path), "--report-dir", str(custom_dir)]), \
+             patch.dict(os.environ, {"AGENT_API_KEY": "test-key"}), \
+             patch("agent.load_env"), patch("agent.ChatLLM", side_effect=llms), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            evaluation_main()
+
+        reports = json.loads(stdout.getvalue())["reports"]
+        self.assertEqual([report["case_id"] for report in reports], ["first", "second"])
+        self.assertEqual(len({report["report_path"] for report in reports}), 2)
+        self.assertEqual(stderr.getvalue().count("报告已保存"), 2)
+        for report in reports:
+            path = Path(report["report_path"])
+            self.assertEqual(path.parent, custom_dir)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), report)
+
+    def test_batch_saves_setup_error_and_continues_with_next_case(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        broken, valid = case_data(), case_data()
+        broken["id"], valid["id"] = "broken", "valid"
+        broken["initial_files"] = {"../escape.txt": "forbidden"}
+        cases_path = self.reports_dir.parent / "mixed-cases.json"
+        cases_path.write_text(json.dumps([broken, valid]), encoding="utf-8")
+        with patch("sys.argv", ["evaluation", "--cases", str(cases_path)]), \
+             patch.dict(os.environ, {"AGENT_API_KEY": "test-key"}), \
+             patch("agent.load_env"), patch("agent.ChatLLM", return_value=ScriptedLLM(success_replies())), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            evaluation_main()
+
+        reports = json.loads(stdout.getvalue())["reports"]
+        self.assertEqual([report["run"]["result"]["status"] for report in reports], ["setup_error", "completed"])
+        self.assertEqual([report["judgments"][0]["status"] for report in reports], ["unknown", "pass"])
+        self.assertTrue(all(Path(report["report_path"]).is_file() for report in reports))
+
+    def test_cli_returns_nonzero_but_keeps_json_when_saving_fails(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        llm = ScriptedLLM([tool_message("finish", {"answer": "结束"}, "finish-1")])
+        with patch("sys.argv", ["evaluation", "--case", "sum_001"]), \
+             patch.dict(os.environ, {"AGENT_API_KEY": "test-key"}), \
+             patch("agent.load_env"), patch("agent.ChatLLM", return_value=llm), \
+             patch("evaluation.runner.save_report", side_effect=OSError("磁盘不可用")), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as exc:
+                evaluation_main()
+
+        self.assertEqual(exc.exception.code, 1)
+        report = json.loads(stdout.getvalue())["reports"][0]
+        self.assertEqual(report["run"]["result"]["status"], "completed")
+        self.assertIsNone(report["report_path"])
+        self.assertIn("磁盘不可用", report["report_error"]["message"])
+        self.assertIn("报告保存失败", stderr.getvalue())
+
+    def test_cli_explains_when_a_result_cannot_be_serialized(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        invalid_report = {"case_id": "sum_001", "report_path": None,
+                          "report_error": {"type": "TypeError", "message": "无法序列化"},
+                          "run": {"invalid": object()}}
+        with patch("sys.argv", ["evaluation", "--case", "sum_001"]), \
+             patch.dict(os.environ, {"AGENT_API_KEY": "test-key"}), \
+             patch("agent.load_env"), patch("evaluation.__main__.evaluate_case", return_value=invalid_report), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as exc:
+                evaluation_main()
+
+        self.assertEqual(exc.exception.code, 1)
+        self.assertIn("报告保存失败", stderr.getvalue())
+        self.assertIn("评测结果无法输出为 JSON", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_example_cases_have_correct_targets_and_clean_starting_files(self):
+        cases_path = Path(__file__).resolve().parent / "evaluation" / "cases.json"
+        cases = json.loads(cases_path.read_text(encoding="utf-8"))
+        by_id = {case["id"]: case for case in cases}
+        self.assertEqual(len(cases), 10)
+        self.assertEqual(len(by_id), len(cases))
+        for case in cases:
+            for spec in case["judges"]:
+                self.assertNotIn(spec["path"], case["initial_files"])
+
+        input_paths = {
+            "sum_001": "data.txt", "sum_negative": "data.txt", "sum_decimal_2dp": "data.txt",
+            "sum_multiline": "data.txt", "sum_fullwidth": "data.txt", "sum_empty": "data.txt",
+            "nested_sum": "records/numbers.txt",
+        }
+        pattern = r"[+-]?\d+(?:\.\d+)?"
+        for case_id, path in input_paths.items():
+            with self.subTest(case_id=case_id):
+                case = by_id[case_id]
+                numbers = [Decimal(value) for value in re.findall(pattern, case["initial_files"][path])]
+                self.assertEqual(Decimal(case["judges"][0]["expected"]), sum(numbers, Decimal(0)))
+        self.assertRegex(by_id["sum_decimal_2dp"]["judges"][0]["expected"], r"^-?\d+\.\d{2}$")
+        self.assertEqual(by_id["copy_text"]["judges"][0]["expected"],
+                         by_id["copy_text"]["initial_files"]["note.txt"])
+        listed = sorted(name for name in by_id["list_txt_files"]["initial_files"] if name.endswith(".txt"))
+        self.assertEqual(by_id["list_txt_files"]["judges"][0]["expected"], ",".join(listed))
+        combined = by_id["sum_and_count"]
+        numbers = [int(value) for value in re.findall(pattern, combined["initial_files"]["data.txt"])]
+        expected = {judge["path"]: judge["expected"] for judge in combined["judges"]}
+        self.assertEqual(expected, {"output/sum.txt": str(sum(numbers)), "output/count.txt": str(len(numbers))})
+
+    def test_list_cases_needs_no_api_key_or_model(self):
+        stdout = io.StringIO()
+        with patch("sys.argv", ["evaluation", "--list"]), \
+             patch("agent.load_env") as load_env, patch("agent.ChatLLM") as model, \
+             redirect_stdout(stdout):
+            evaluation_main()
+
+        listed = json.loads(stdout.getvalue())["cases"]
+        self.assertEqual(len(listed), 10)
+        self.assertTrue(any(case["id"] == "sum_and_count" for case in listed))
+        load_env.assert_not_called()
+        model.assert_not_called()
+        self.assertFalse(self.reports_dir.exists())
 
 
 if __name__ == "__main__":

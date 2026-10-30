@@ -1,16 +1,75 @@
 [
   {
     "id": "sum_001",
+    "description": "三个正整数求和",
     "task": "读取 data.txt，计算所有数字的和。把结果写入 result.txt，文件中只写结果数字，完成后调用 finish。",
-    "initial_files": {
-      "data.txt": "2, 3, 4"
-    },
+    "initial_files": {"data.txt": "2, 3, 4"},
+    "judges": [{"name": "file_equals", "path": "result.txt", "expected": "9"}]
+  },
+  {
+    "id": "sum_negative",
+    "description": "负数、正数和零混合求和",
+    "task": "读取 data.txt，计算所有整数的和。把结果写入 result.txt，文件中只写单个整数，完成后调用 finish。",
+    "initial_files": {"data.txt": "-8, 3, 0, 1"},
+    "judges": [{"name": "file_equals", "path": "result.txt", "expected": "-4"}]
+  },
+  {
+    "id": "sum_decimal_2dp",
+    "description": "小数求和并保留两位小数",
+    "task": "读取 data.txt，计算所有数字的和。把结果写入 result.txt，文件中只写一个数，必须保留恰好两位小数，完成后调用 finish。",
+    "initial_files": {"data.txt": "1.25, 2.50, -0.75"},
+    "judges": [{"name": "file_equals", "path": "result.txt", "expected": "3.00"}]
+  },
+  {
+    "id": "sum_multiline",
+    "description": "多行数据求和",
+    "task": "读取 data.txt，计算各行整数的和。把结果写入 result.txt，文件中只写单个整数，完成后调用 finish。",
+    "initial_files": {"data.txt": "7\n-2\n10\n0\n"},
+    "judges": [{"name": "file_equals", "path": "result.txt", "expected": "15"}]
+  },
+  {
+    "id": "sum_fullwidth",
+    "description": "中文逗号分隔的数据求和",
+    "task": "读取 data.txt，计算其中所有整数的和。把结果写入 result.txt，文件中只写单个整数，完成后调用 finish。",
+    "initial_files": {"data.txt": "3，1，4，1"},
+    "judges": [{"name": "file_equals", "path": "result.txt", "expected": "9"}]
+  },
+  {
+    "id": "sum_empty",
+    "description": "空文件求和，约定结果为零",
+    "task": "读取 data.txt，计算其中整数的和；如果文件没有数字，和定义为 0。把结果写入 result.txt，文件中只写单个整数，完成后调用 finish。",
+    "initial_files": {"data.txt": ""},
+    "judges": [{"name": "file_equals", "path": "result.txt", "expected": "0"}]
+  },
+  {
+    "id": "copy_text",
+    "description": "复制中英文混合文本",
+    "task": "读取 note.txt，把内容复制到 copy.txt。允许首尾空白不同，内部内容应保持一致。完成后调用 finish。",
+    "initial_files": {"note.txt": "Hello, agent!\n评测要保留内容。"},
+    "judges": [{"name": "file_equals", "path": "copy.txt", "expected": "Hello, agent!\n评测要保留内容。"}]
+  },
+  {
+    "id": "list_txt_files",
+    "description": "列出目录中的文本文件并排序",
+    "task": "检查初始目录中的文件，找出扩展名为 .txt 的文件（不包括你要创建的 result.txt）。按文件名字典序升序排列，用英文逗号连接，不加空格，写入 result.txt。完成后调用 finish。",
+    "initial_files": {"beta.txt": "乙", "alpha.txt": "甲", "notes.md": "忽略"},
+    "judges": [{"name": "file_equals", "path": "result.txt", "expected": "alpha.txt,beta.txt"}]
+  },
+  {
+    "id": "nested_sum",
+    "description": "读取子目录并写入新子目录",
+    "task": "读取 records/numbers.txt，计算所有整数的和。将单个整数写入 outputs/total.txt，完成后调用 finish。",
+    "initial_files": {"records/numbers.txt": "12, -5, 3"},
+    "judges": [{"name": "file_equals", "path": "outputs/total.txt", "expected": "10"}]
+  },
+  {
+    "id": "sum_and_count",
+    "description": "计算和与数字个数，分别检查两个输出文件",
+    "task": "读取 data.txt，将所有整数的和写入 output/sum.txt，将整数的个数写入 output/count.txt。每个文件都只写一个整数。完成后调用 finish。",
+    "initial_files": {"data.txt": "4, -1, 7, 0"},
     "judges": [
-      {
-        "name": "file_equals",
-        "path": "result.txt",
-        "expected": "9"
-      }
+      {"name": "file_equals", "path": "output/sum.txt", "expected": "10"},
+      {"name": "file_equals", "path": "output/count.txt", "expected": "4"}
     ]
   }
 ]

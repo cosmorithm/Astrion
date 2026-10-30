@@ -13,3 +13,4 @@ __pycache__/
 # 运行产物（会话记忆、临时测试文件）
 session*.json
 _demo_memory.json
+toy-agent/eval_reports/

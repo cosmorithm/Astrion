@@ -49,9 +49,28 @@ Multi Agent/
 
 ## 赛后评测
 
-评测层把任务交给 agent，等运行结束后再让裁判查看运行记录。默认任务在
-`evaluation/cases.json`：提供 `data.txt` 的初始内容，要求 agent 写入求和结果，
+评测层把任务交给 agent，等运行结束后再让裁判查看运行记录。内置的 10 个任务在
+`evaluation/cases.json`。例如 `sum_001` 提供 `data.txt` 的初始内容，要求 agent 写入求和结果，
 由 `file_equals` 裁判检查 `result.txt`。
+
+在 `toy-agent/` 目录中，先查看任务清单（无需 API key，也不会调用模型）：
+
+```bash
+python3 -m evaluation --list
+```
+
+| 任务 ID | 评测内容 |
+|---|---|
+| `sum_001` | 正整数求和 |
+| `sum_negative` | 负数、正数和零 |
+| `sum_decimal_2dp` | 小数求和并按要求保留两位小数 |
+| `sum_multiline` | 多行整数 |
+| `sum_fullwidth` | 中文逗号分隔 |
+| `sum_empty` | 空文件，约定和为零 |
+| `copy_text` | 复制中英文文本 |
+| `list_txt_files` | 按规则筛选和排序文件名 |
+| `nested_sum` | 读取及写入子目录 |
+| `sum_and_count` | 求和、计数，并由两个裁判分别检查文件 |
 
 从 `toy-agent/` 目录运行：
 
@@ -59,17 +78,28 @@ Multi Agent/
 python3 -m evaluation --case sum_001
 ```
 
-这会使用与 `agent.py` 相同的 API 配置，调用真实模型。运行日志输出到 stderr；
-stdout 是 JSON 报告，可以按需重定向到文件：
+这会使用与 `agent.py` 相同的 API 配置，调用真实模型。每个评测任务结束后会**自动保存一份 JSON 报告**到 `toy-agent/eval_reports/`，
+文件名包含任务 ID、UTC 时间和唯一标识；重复运行不会覆盖之前的报告。
+运行日志及保存成功的报告路径输出到 stderr，stdout 仍输出 JSON，其中 `report_path` 也给出本次报告的绝对路径。
 
 ```bash
-python3 -m evaluation --case sum_001 > evaluation-result.json
+# 使用自定义报告目录
+python3 -m evaluation --case sum_001 --report-dir /path/to/reports
 ```
 
 报告会包含任务内容、初始文件、模型可见的消息和工具结果；评测器不会主动记录连接 API 的 key。
-保存或分享报告时应留意这些内容可能包含任务数据。默认不写报告文件。
+保存或分享报告时应留意这些内容可能包含任务数据。默认报告目录已加入 `.gitignore`，
+自定义目录需要自行决定是否纳入版本管理。
 
-其他常用参数：`--cases` 指定任务 JSON 文件，省略 `--case` 时顺序运行所有任务；
+agent 运行报错或评测环境准备失败时，也会尝试保存报告：后者的状态是 `setup_error`，
+裁判标记为 `unknown` 且不会运行。任务文件不是有效 JSON、任务缺少 ID 等启动前配置错误
+会直接报错，不会生成单任务报告。如果报告因目录或磁盘问题保存失败，且结果可序列化，stdout 仍给出运行结果，
+其中 `report_path` 为 `null`、`report_error` 说明原因；CLI 同时在 stderr 提示并以非零状态退出。
+如果结果本身不能转换为 JSON，CLI 会在 stderr 说明，无法提供 JSON 输出。
+普通 `unittest` 测试结果仍显示在终端；其自动报告测试使用临时目录并在结束后清理。
+
+其他常用参数：`--cases` 指定任务 JSON 文件，省略 `--case` 时顺序运行该文件的全部任务；
+默认文件含 10 个任务，运行全部会产生多次真实模型调用。
 `--steps`、`--budget`、`--model`、`--base-url` 分别覆盖 agent 的运行配置。
 
 一次评测分为：
@@ -77,7 +107,7 @@ python3 -m evaluation --case sum_001 > evaluation-result.json
 1. **准备任务**：为本次任务创建临时沙箱，只写入 `initial_files`。裁判参考答案保存在任务配置中，不随任务消息发给模型。
 2. **运行 agent**：记录模型决策、摘要请求与结果、工具结果和结束状态；运行记录与可压缩的 `Memory` 分开。
 3. **保存运行事实**：统计 `run()` 的耗时、已知 token 用量、最终文件快照和运行状态，然后清理临时沙箱。
-4. **赛后评判**：每个已注册裁判获取任务和运行记录的独立副本，返回自己的结论。多个裁判的结论分别保留，不强行合成总分。
+4. **赛后评判和报告**：每个已注册裁判获取任务和运行记录的独立副本，返回自己的结论；多个结论分别保留，不强行合成总分。最终报告自动写入文件。
 
 运行时间使用 `time.perf_counter()`，从调用 `run()` 前开始，到其返回或抛出异常为止；
 它包括模型等待、工具执行、记忆压缩和同步事件记录，**不包括**准备环境、生成文件快照或裁判评测。
@@ -85,8 +115,8 @@ python3 -m evaluation --case sum_001 > evaluation-result.json
 原有的 agent `--steps` 步数限制和单次 HTTP 请求的 120 秒超时仍然存在。
 
 JSON 报告主要包含 `case`（完整评测配置）、`run`（`result`、`duration_seconds`、
-`model`、`agent_config`、`token_usage`、`trace`、`artifacts` 和 `artifact_errors`）
-与 `judgments`（各裁判的结果和耗时）。`run.result.status` 是运行状态；
+`model`、`agent_config`、`token_usage`、`trace`、`artifacts` 和 `artifact_errors`）、
+`judgments`（各裁判的结果和耗时）及 `report_path` / `report_error`（保存结果）。`run.result.status` 是运行状态；
 `judgments` 中的 `pass` 或 `fail` 是裁判判断，两者独立。裁判错误是 `error`，
 不是自动判定 agent 失败；证据不足可返回 `unknown`，等待人工处理可返回 `pending`。
 
