@@ -133,7 +133,7 @@ def evaluate_case(
     registry = registry if registry is not None else default_registry()
 
     try:
-        temporary = tempfile.TemporaryDirectory(prefix="toy-agent-eval-")
+        temporary = tempfile.TemporaryDirectory(prefix="astrion-agent-eval-")
     except (Exception, SystemExit) as exc:
         return _finish_report(case, _setup_error(exc, max_steps, budget_chars), registry, report_dir)
 

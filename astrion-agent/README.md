@@ -1,10 +1,15 @@
-# toy-agent
+# Astrion Agent
 
-一个能完整看懂的极简智能体：**ReAct 循环 + 四个业务工具 + `finish` + 沙箱 + 独立记忆 + 可恢复会话**。
+> **以智慧，奔赴星海。**<br>
+> *Intelligence bound for the stars.*
+
+一个以科学为底色、以浪漫为想象、以乐观为行动力的 Agent 产品。
+
+当前版本仍保持最初“从零读懂 Agent”的原则：**ReAct 循环 + 四个业务工具 + `finish` + 沙箱 + 独立记忆 + 可恢复会话**。
 全部标准库，没有第三方依赖。
 
 ```
-toy-agent/
+astrion-agent/
 ├── agent.py        循环、工具、模型客户端、会话接入
 ├── memory.py       会话记忆：消息窗口 + 超额压缩 + 序列化
 ├── session.py      会话 JSON：原子保存、加载与恢复判断
@@ -16,6 +21,9 @@ toy-agent/
     ├── data.txt    演示输入
     └── result.txt  运行产物
 ```
+
+源码主目录现为 `astrion-agent/`。仓库根目录暂时保留旧目录名的兼容符号链接，专门用于
+解析改名前保存的 BFCL 运行和虚拟环境绝对路径；新命令和文档统一使用新目录。
 
 ## 跑起来
 
@@ -47,7 +55,7 @@ python3 agent.py "任务" --session session.json   # 可恢复会话
 ```
 Multi Agent/
 ├── .env              ← AGENT_API_KEY 写这里
-└── toy-agent/
+└── astrion-agent/
 ```
 
 `agent.py` 从自己目录向上找 `.env`（最多 3 层，越近越优先）。规则是**已有的环境变量不被覆盖**，所以 shell 里临时 `export` 的值总是赢。
@@ -60,7 +68,7 @@ Multi Agent/
 `evaluation/cases.json`。例如 `sum_001` 提供 `data.txt` 的初始内容，要求 agent 写入求和结果，
 由 `file_equals` 裁判检查 `result.txt`。
 
-在 `toy-agent/` 目录中，先查看任务清单（无需 API key，也不会调用模型）：
+在 `astrion-agent/` 目录中，先查看任务清单（无需 API key，也不会调用模型）：
 
 ```bash
 python3 -m evaluation --list
@@ -79,7 +87,7 @@ python3 -m evaluation --list
 | `nested_sum` | 读取及写入子目录 |
 | `sum_and_count` | 求和、计数，并由两个裁判分别检查文件 |
 
-从 `toy-agent/` 目录运行单个样例，或一次运行任务文件中的全部样例：
+从 `astrion-agent/` 目录运行单个样例，或一次运行任务文件中的全部样例：
 
 ```bash
 # 只运行一个任务
@@ -89,7 +97,7 @@ python3 -m evaluation --case sum_001
 python3 -m evaluation
 ```
 
-这会使用与 `agent.py` 相同的 API 配置，调用真实模型。每个评测任务结束后会**自动保存一份 JSON 报告**到 `toy-agent/eval_reports/`，
+这会使用与 `agent.py` 相同的 API 配置，调用真实模型。每个评测任务结束后会**自动保存一份 JSON 报告**到 `astrion-agent/eval_reports/`，
 文件名包含任务 ID、UTC 时间和唯一标识；重复运行不会覆盖之前的报告。
 全部任务结束后还会自动保存一个 `suite_` 开头的**总报告**，其中包含通过率、各任务结果和单任务报告路径。
 运行日志、通过率和报告路径输出到 stderr，stdout 仍输出 JSON，包含 `reports` 和 `summary`。

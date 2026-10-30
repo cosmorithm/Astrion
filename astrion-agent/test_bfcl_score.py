@@ -15,7 +15,7 @@ import show_bfcl_score as score_viewer
 
 class BFCLScoreViewerTests(unittest.TestCase):
     def setUp(self):
-        storage = tempfile.TemporaryDirectory(prefix="toy-agent-bfcl-score-")
+        storage = tempfile.TemporaryDirectory(prefix="astrion-agent-bfcl-score-")
         self.addCleanup(storage.cleanup)
         self.root = Path(storage.name)
 

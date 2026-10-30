@@ -1,4 +1,4 @@
-"""任务结束后的 agent 评测：运行记录、可注册的裁判和报告。"""
+"""Astrion Agent 赛后评测：运行记录、可注册的裁判和报告。"""
 
 from .judges import JudgeRegistry, default_registry
 from .runner import evaluate_case

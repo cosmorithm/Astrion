@@ -55,7 +55,7 @@ class FakeLLM:
 
 class SessionTests(unittest.TestCase):
     def setUp(self):
-        storage = tempfile.TemporaryDirectory(prefix="toy-agent-session-")
+        storage = tempfile.TemporaryDirectory(prefix="astrion-agent-session-")
         self.addCleanup(storage.cleanup)
         self.root = Path(storage.name)
         self.path = self.root / "session.json"

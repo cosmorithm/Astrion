@@ -1,8 +1,13 @@
-# Toy Agent 项目实现与学习记录
+# Astrion Agent 项目实现与学习记录
+
+> **以智慧，奔赴星海。**<br>
+> *Intelligence bound for the stars.*
+
+一个以科学为底色、以浪漫为想象、以乐观为行动力的 Agent 产品。
 
 记录日期：2026-10-30（Asia/Shanghai）  
 项目根目录：`/Users/apple/Desktop/科研/Multi Agent`  
-记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层、BFCL 官方集成、断点续跑和测试自动化的实现及验证。
+记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层、BFCL 官方集成、断点续跑、Astrion Agent 命名迁移和测试自动化的实现及验证。
 
 ## 1. 记录依据与项目目标
 
@@ -39,6 +44,7 @@
 | BFCL 全部正式计分类基准 | 本次对话，见第 21 节 | 新增官方 `all_scoring` 入口；22 类、5,217 个生成条目、预计 5,106 个计分目标；不自动运行 |
 | BFCL 实时分组进度 | 本次对话，见第 22 节 | 显示当前类别组、本组/总体进度和评分组数；保存 `bfcl_progress.json`，并可跨终端查看 |
 | BFCL 安全断点续跑 | 本次对话，见第 23 节 | 只读审计已有结果，备份并重试错误记录；memory 状态回退到连续有效 checkpoint 前缀；保留多次 attempt 历史 |
+| Astrion Agent 命名迁移 | 本次对话，见第 24 节 | 产品名、目录、CLI、文档和报告字段统一迁移；保留旧目录兼容链接与旧 BFCL 报告字段读取能力 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -165,7 +171,7 @@ Multi Agent/
 ├── .github/
 │   └── workflows/
 │       └── tests.yml          # CI：Python 3.9–3.12 运行离线测试
-└── toy-agent/
+└── astrion-agent/
     ├── agent.py               # 工具、模型客户端、token 计量、主循环与会话接入
     ├── memory.py              # 消息记录、分轮、自检、摘要压缩和序列化
     ├── session.py             # 会话 JSON 的原子保存、加载与恢复判断
@@ -386,7 +392,7 @@ memory.add_tool(call["id"], str(observation))
 
 ### 6.1 学习方式和工具选择
 
-**学习者的请求：** 从零学习 agent，慢慢把 toy agent 构建完，每次边构建边交流。随后说明自己能看懂 Python 函数、字典和循环，但没有写过 agent。
+**学习者的请求：** 从零学习 agent，慢慢构建最初暂称 toy agent 的原型，每次边构建边交流。该项目现已命名为 Astrion Agent。学习者随后说明自己能看懂 Python 函数、字典和循环，但没有写过 agent。
 
 **讨论结果：** 从已有项目的最小链路开始，先学习模型提出请求、Python 执行工具、程序回传结果，再逐步完善能力。
 
@@ -574,7 +580,7 @@ purpose="记忆摘要"
 测试先在工作副本执行，写回原项目后又在原项目中执行。实际命令为：
 
 ```bash
-cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+cd '/Users/apple/Desktop/科研/Multi Agent/astrion-agent'
 python3 -B -m unittest -v test_token_usage
 ```
 
@@ -623,21 +629,21 @@ python3 -B -m unittest -v test_token_usage
 运行默认演示任务（需要有效 API 配置，并会请求模型及可能覆盖演示结果文件）：
 
 ```bash
-cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+cd '/Users/apple/Desktop/科研/Multi Agent/astrion-agent'
 python3 agent.py
 ```
 
 带会话运行；中断后重跑同一条命令即可继续：
 
 ```bash
-cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+cd '/Users/apple/Desktop/科研/Multi Agent/astrion-agent'
 python3 agent.py "读取 data.txt，算出所有数字的和，写入 result.txt" --session session.json
 ```
 
 全部离线测试（不需要 API key，不访问网络）：
 
 ```bash
-cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+cd '/Users/apple/Desktop/科研/Multi Agent/astrion-agent'
 ./run_tests.sh
 ```
 
@@ -694,15 +700,15 @@ cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
 
 | 文件 | 本阶段的作用 |
 |---|---|
-| `toy-agent/agent.py` | 结构化返回值、状态日志、参数检查、`finish` 结果及同批调用处理 |
-| `toy-agent/test_run_lifecycle.py` | 使用脚本化模型响应验证真实主循环，不访问网络或修改沙箱数据 |
-| `toy-agent/README.md` | 说明三个状态、配对方式、参数错误和测试命令 |
+| `astrion-agent/agent.py` | 结构化返回值、状态日志、参数检查、`finish` 结果及同批调用处理 |
+| `astrion-agent/test_run_lifecycle.py` | 使用脚本化模型响应验证真实主循环，不访问网络或修改沙箱数据 |
+| `astrion-agent/README.md` | 说明三个状态、配对方式、参数错误和测试命令 |
 | `report.md` | 追加实现背景、设计、验证和本轮理解题 |
 
 运行命令：
 
 ```bash
-cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+cd '/Users/apple/Desktop/科研/Multi Agent/astrion-agent'
 python3 -B -m unittest -v test_run_lifecycle test_token_usage
 ```
 
@@ -752,14 +758,14 @@ python3 -B -m unittest -v test_run_lifecycle test_token_usage
 
 | 组成 | 位置 | 当前职责 |
 |---|---|---|
-| 评测任务 | `toy-agent/evaluation/cases.json` | 保存任务 ID、用户任务、初始文件和裁判配置；现有 10 个内置样例 |
-| 运行器 | `toy-agent/evaluation/runner.py` | 验证任务、创建临时目录、运行 agent、计时、记录 token 与文件快照，再调用裁判 |
-| 裁判注册表 | `toy-agent/evaluation/judges.py` 的 `JudgeRegistry` | 注册函数、分别调用裁判、检查返回值并记录裁判自己的耗时和错误 |
-| 内置裁判 | `toy-agent/evaluation/judges.py` 的 `file_equals` | 检查目标文件快照；首尾空白忽略，比较其余文本 |
-| 命令行 | `toy-agent/evaluation/__main__.py` | 选择任务和模型配置；将 agent 日志输出到 stderr，将 JSON 报告输出到 stdout |
-| 事件记录 | `toy-agent/agent.py` 的 `run(..., event_sink=...)` | 可选地记录决策输入与输出、工具结果、摘要及压缩事件 |
+| 评测任务 | `astrion-agent/evaluation/cases.json` | 保存任务 ID、用户任务、初始文件和裁判配置；现有 10 个内置样例 |
+| 运行器 | `astrion-agent/evaluation/runner.py` | 验证任务、创建临时目录、运行 agent、计时、记录 token 与文件快照，再调用裁判 |
+| 裁判注册表 | `astrion-agent/evaluation/judges.py` 的 `JudgeRegistry` | 注册函数、分别调用裁判、检查返回值并记录裁判自己的耗时和错误 |
+| 内置裁判 | `astrion-agent/evaluation/judges.py` 的 `file_equals` | 检查目标文件快照；首尾空白忽略，比较其余文本 |
+| 命令行 | `astrion-agent/evaluation/__main__.py` | 选择任务和模型配置；将 agent 日志输出到 stderr，将 JSON 报告输出到 stdout |
+| 事件记录 | `astrion-agent/agent.py` 的 `run(..., event_sink=...)` | 可选地记录决策输入与输出、工具结果、摘要及压缩事件 |
 | 目录隔离 | `safe_path(..., sandbox=...)` 和 `tools_for_sandbox()` | 为一轮评测绑定独立目录，不更改全局默认 `SANDBOX` |
-| 测试 | `toy-agent/test_evaluation.py` | 使用脚本化模型或模拟 HTTP 响应验证评测链路 |
+| 测试 | `astrion-agent/test_evaluation.py` | 使用脚本化模型或模拟 HTTP 响应验证评测链路 |
 
 评测器只把 `task` 和初始文件交给 agent；`judges` 中的预期答案属于裁判配置。运行后的报告包含完整任务配置及运行记录，方便日后根据同一份记录重新评判。任务或模型消息可能包含用户数据，报告会保留这些内容；评测器不会主动写入连接模型的 API key。
 
@@ -809,7 +815,7 @@ python3 -B -m unittest -v test_run_lifecycle test_token_usage
 
 ### 13.6 运行与验证
 
-在 `toy-agent/` 目录运行默认任务，需要有效的模型 API 配置：
+在 `astrion-agent/` 目录运行默认任务，需要有效的模型 API 配置：
 
 ```bash
 python3 -m evaluation --case sum_001
@@ -839,7 +845,7 @@ python3 -B -m unittest -v test_evaluation test_run_lifecycle test_token_usage
 
 `evaluation/reporting.py` 的 `save_report()` 负责保存；`evaluate_case()` 在运行和赛后裁判结束后调用它。每条任务保存一份报告，包括任务配置、agent 运行结果、耗时、token 用量、事件记录、文件快照和各裁判结论。
 
-默认目录是 `toy-agent/eval_reports/`，首次评测时创建。文件名包含安全处理后的任务 ID、UTC 时间和随机唯一标识；使用独占创建，碰到重名会重新生成名称，避免覆盖已有报告。默认目录加入根目录 `.gitignore`，不自动提交报告数据。
+默认目录是 `astrion-agent/eval_reports/`，首次评测时创建。文件名包含安全处理后的任务 ID、UTC 时间和随机唯一标识；使用独占创建，碰到重名会重新生成名称，避免覆盖已有报告。默认目录加入根目录 `.gitignore`，不自动提交报告数据。
 
 命令行仍向 stdout 输出 JSON，agent 的运行日志和保存成功的报告路径显示在 stderr。每个结果新增：
 
@@ -882,7 +888,7 @@ python3 -B -m unittest -v test_evaluation test_run_lifecycle test_token_usage
 
 ### 14.5 使用与验证
 
-在 `toy-agent/` 目录执行：
+在 `astrion-agent/` 目录执行：
 
 ```bash
 # 不需要 API key，也不会运行模型
@@ -905,7 +911,7 @@ python3 -m evaluation --case sum_001 --report-dir /path/to/reports
 
 学习者希望直接运行全部样例，并查看包含通过率的总报告。现有命令在不指定 `--case` 时已经会顺序运行任务列表；本阶段新增自动汇总和单独保存总报告。
 
-在 `toy-agent/` 目录中运行：
+在 `astrion-agent/` 目录中运行：
 
 ```bash
 # 仅查看任务，不调用模型
@@ -921,7 +927,7 @@ python3 -m evaluation
 
 每个样例执行后仍然自动保存一份独立报告。全部任务运行结束后，`evaluation/suite.py` 的 `summarize_suite()` 根据已有的裁判结果创建总报告，并在同一目录保存一个 `suite_` 开头的 JSON 文件；它不重新运行 agent 或裁判。
 
-CLI 在 stderr 显示通过、失败、待判定、运行异常的数量，以及总报告路径；stdout 继续输出 JSON，其 `reports` 是单项记录，`summary` 是总报告。单任务报告和总报告都放在默认 `toy-agent/eval_reports/`，`--report-dir` 可以一起改变保存位置；重复运行使用不同文件名。
+CLI 在 stderr 显示通过、失败、待判定、运行异常的数量，以及总报告路径；stdout 继续输出 JSON，其 `reports` 是单项记录，`summary` 是总报告。单任务报告和总报告都放在默认 `astrion-agent/eval_reports/`，`--report-dir` 可以一起改变保存位置；重复运行使用不同文件名。
 
 总报告中的主要字段：
 
@@ -961,7 +967,7 @@ Python 调用方可以将已有单项结果传给 `summarize_suite(reports, repo
 2. 实现记忆持久化到 `session.json`，支持中断后恢复。
 3. 用脚本和 CI 固定离线测试。
 
-本阶段只改 `toy-agent` 的会话链路、测试脚本和文档，并新增仓库级 CI；不改评测器接口和模型工具集。
+本阶段只改 `astrion-agent` 的会话链路、测试脚本和文档，并新增仓库级 CI；不改评测器接口和模型工具集。
 
 ### 16.2 文档修正
 
@@ -1026,7 +1032,7 @@ Python 调用方可以将已有单项结果传给 `summarize_suite(reports, repo
 实际执行：
 
 ```bash
-cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+cd '/Users/apple/Desktop/科研/Multi Agent/astrion-agent'
 ./run_tests.sh
 ```
 
@@ -1098,7 +1104,7 @@ def chat(self, messages: list, tools: list | None = None) -> dict:
 ### 17.5 验证
 
 ```bash
-cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+cd '/Users/apple/Desktop/科研/Multi Agent/astrion-agent'
 ./run_tests.sh
 ```
 
@@ -1110,7 +1116,7 @@ cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
 - 尚未接入 ToolBench/StableToolBench 的 API 缓存、检索和 pass/win rate；
 - 没有基准级缓存、并发、限流或成本汇总；
 - `benchmarks/` 的结果格式是通用记录，不等于官方 leaderboard 格式；
-- toy-agent eval、BFCL subset 和官方 full leaderboard 不能直接比较。
+- Astrion Agent eval、BFCL subset 和官方 full leaderboard 不能直接比较。
 
 ## 18. 第十阶段：正式接入 BFCL 官方 harness
 
@@ -1120,7 +1126,7 @@ cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
 StableToolBench 后置，本阶段不安装、不调用，也不把它们的报告或分数混入 BFCL。
 
 这里的“正式接入”有明确含义：BFCL 的数据、prompt、模型 handler 和 scorer
-都来自固定版本的官方 `bfcl-eval`；toy-agent 不复制评分逻辑，只负责选择固定
+都来自固定版本的官方 `bfcl-eval`；Astrion Agent 不复制评分逻辑，只负责选择固定
 case id、启动官方命令、保存日志，并读取官方 score 文件。
 
 ### 18.2 对官方实现的核对
@@ -1164,15 +1170,15 @@ case id、启动官方命令、保存日志，并读取官方 score 文件。
 
 | 文件 | 作用 |
 |---|---|
-| `toy-agent/benchmarks/bfcl.py` | manifest 校验、doctor、命令编排、日志、官方结果导入和统一报告 |
-| `toy-agent/benchmarks/__main__.py` | `python3 -m benchmarks bfcl ...` 入口 |
-| `toy-agent/benchmarks/manifests/bfcl_v4_single_turn_smoke.json` | 固定 BFCL V4 单轮 20 样例 |
-| `toy-agent/requirements-bfcl.txt` | 固定 `bfcl-eval==2026.3.23` |
-| `toy-agent/setup_bfcl.sh` | 使用 Python 3.12 创建 `.venv-bfcl` 并安装官方包 |
-| `toy-agent/test_bfcl.py` | 不安装 BFCL、不访问网络的旁路契约测试 |
+| `astrion-agent/benchmarks/bfcl.py` | manifest 校验、doctor、命令编排、日志、官方结果导入和统一报告 |
+| `astrion-agent/benchmarks/__main__.py` | `python3 -m benchmarks bfcl ...` 入口 |
+| `astrion-agent/benchmarks/manifests/bfcl_v4_single_turn_smoke.json` | 固定 BFCL V4 单轮 20 样例 |
+| `astrion-agent/requirements-bfcl.txt` | 固定 `bfcl-eval==2026.3.23` |
+| `astrion-agent/setup_bfcl.sh` | 使用 Python 3.12 创建 `.venv-bfcl` 并安装官方包 |
+| `astrion-agent/test_bfcl.py` | 不安装 BFCL、不访问网络的旁路契约测试 |
 
 `benchmarks/common.py` 的通用原始响应接口继续保留；正式 BFCL 运行不把官方
-case 转换成 toy-agent 自定义评分格式，而是直接交给官方 CLI。
+case 转换成 Astrion Agent 自定义评分格式，而是直接交给官方 CLI。
 
 ### 18.4 固定的第一批样例
 
@@ -1192,7 +1198,7 @@ manifest 同时固定 `BFCL V4` 和 `bfcl-eval==2026.3.23`。适配器拒绝空�
 
 ### 18.5 隔离、凭据与命令安全
 
-BFCL 依赖很多第三方包，因此单独安装在 `.venv-bfcl/`；toy-agent 的默认运行和
+BFCL 依赖很多第三方包，因此单独安装在 `.venv-bfcl/`；Astrion Agent 的默认运行和
 83 项原有测试仍不需要这些依赖。`.venv-bfcl/`、`benchmark_data/` 和
 `benchmark_runs/` 都被 Git 忽略。
 
@@ -1202,7 +1208,7 @@ BFCL 依赖很多第三方包，因此单独安装在 `.venv-bfcl/`；toy-agent 
 环境变量的名称和是否存在，不记录值。
 
 学习者随后决定把 BFCL 凭据也放进项目根目录的 `.env`。BFCL CLI 因此复用
-toy-agent 已有的标准库加载器：doctor 和真实 run 会从脚本目录向上查找 `.env`，
+Astrion Agent 已有的标准库加载器：doctor 和真实 run 会从脚本目录向上查找 `.env`，
 读取 `DEEPSEEK_API_KEY`，但不会覆盖 shell 中已有的同名变量；dry-run 不读取密钥
 文件。根目录 `.gitignore` 已忽略 `.env` 和 `.env.*`，真实值不进入代码、报告或
 Git。
@@ -1228,7 +1234,7 @@ handler 固定。第一次失败被记录为 `generation_error`，未生成响�
 ### 18.6 报告与失败语义
 
 正式运行报告记录 benchmark/profile、20 个 ID、固定 harness 版本、模型、温度、
-线程数、toy-agent Git commit、两条官方命令、日志路径、官方文件相对路径和
+线程数、Astrion Agent Git commit、两条官方命令、日志路径、官方文件相对路径和
 SHA-256。
 
 `official_category_scores` 直接来自官方 score 首行。本项目额外计算
@@ -1295,7 +1301,7 @@ CLI 能启动。doctor 已确认固定版本和默认模型注册正确，但当
 latency 聚合：统一报告记录总 input/output/total tokens、总模型 latency，并在每个
 result file 条目上保留对应的小计；命令墙钟时间继续由 `commands` 分别记录。
 成功运行目录为
-`toy-agent/benchmark_runs/bfcl/20261030T092428_543691Z_DeepSeek-V3.2-Exp-FC_f6708011/`。
+`astrion-agent/benchmark_runs/bfcl/20261030T092428_543691Z_DeepSeek-V3.2-Exp-FC_f6708011/`。
 凭据扫描只发现报告中的环境变量名称和 `present` 状态，没有发现 key 值。
 
 该结果仅说明这 3 个固定样例通过，不能推断 20 样例子集、BFCL full leaderboard、
@@ -1306,7 +1312,7 @@ result file 条目上保留对应的小计；命令墙钟时间继续由 `comman
 ### 19.1 需求与入口
 
 学习者希望不必手动进入运行目录查找 JSON 字段，并能指定某一次历史运行查看。
-因此新增顶层脚本 `toy-agent/show_bfcl_score.py`。它是纯读取工具，不加载 `.env`、
+因此新增顶层脚本 `astrion-agent/show_bfcl_score.py`。它是纯读取工具，不加载 `.env`、
 不启动官方 BFCL、不调用模型，也不会产生 API 费用。
 
 支持四种使用方式：
@@ -1388,7 +1394,7 @@ JSON 输出、缺失报告的非零退出码，以及只有部分命令耗时时
 ### 20.2 文件和默认行为
 
 新增
-`toy-agent/benchmarks/manifests/bfcl_v4_single_turn_baseline_200.json`，名称固定为
+`astrion-agent/benchmarks/manifests/bfcl_v4_single_turn_baseline_200.json`，名称固定为
 `bfcl_v4_single_turn_baseline_200`，版本继续固定为 BFCL V4 / `bfcl-eval==2026.3.23`。
 `benchmarks/bfcl.py` 的 `DEFAULT_MANIFEST` 改为该文件，因此：
 
@@ -1444,7 +1450,7 @@ memory 的差额 111 是 prerequisite 会话条目：模型需要处理它们以
 
 ### 21.2 新 manifest 与内置短名称
 
-新增 `toy-agent/benchmarks/manifests/bfcl_v4_all_scoring_full.json`，记录：
+新增 `astrion-agent/benchmarks/manifests/bfcl_v4_all_scoring_full.json`，记录：
 
 - `selection.mode = official_collection`；
 - `selection.collection = all_scoring`；
@@ -1636,7 +1642,7 @@ resume_backups/attempt_NNN/
 ```
 
 新日志写入 `logs/attempt_NNN/`。统一报告新增 `attempts`、`resume_count`、
-`latest_toy_agent_commit` 和每次 `resume_audit`，所以一次运行多次中断后仍能区分每次
+`latest_astrion_agent_commit` 和每次 `resume_audit`，所以一次运行多次中断后仍能区分每次
 尝试的 commit、命令、错误和结束时间。损坏 JSON、重复 ID、manifest 不一致或仍在
 运行的 PID 会直接拒绝修复，不静默猜测。
 
@@ -1664,3 +1670,41 @@ BFCL 离线测试从 13 项增加到 16 项。新增覆盖：普通错误记录�
 同目录完成；memory 在错误和断链后回退到连续 checkpoint 前缀并恢复 final；重复
 result ID 被拒绝。完整 `run_tests.sh` 当前共 108 项，均使用模拟模型或本地文件，
 不访问网络。真实中断运行另以 `--check` 完成只读兼容性验证。
+
+## 24. 第十六阶段：正式命名为 Astrion Agent
+
+### 24.1 品牌定义
+
+项目从学习阶段的临时称呼正式命名为 **Astrion Agent**：
+
+> **以智慧，奔赴星海。**<br>
+> *Intelligence bound for the stars.*
+
+产品定位是：一个以科学为底色、以浪漫为想象、以乐观为行动力的 Agent 产品。
+名称迁移不改变本阶段的工具、主循环、模型请求或评测语义。
+
+### 24.2 目录与代码迁移
+
+主源码目录从 `toy-agent/` 改为 `astrion-agent/`，CI、`.gitignore`、README 中的命令、
+报告文件路径和测试临时目录前缀同步更新。命令行说明、模块文档和系统提示词使用
+“Astrion Agent”；README 和本报告加入中英文标语及产品定位。
+
+已有 `.venv-bfcl` launcher 和中断的 BFCL 报告保存了旧绝对路径。为避免一次品牌
+改名破坏 5,217 条运行的续跑能力，仓库根目录保留兼容符号链接：
+
+```text
+toy-agent -> astrion-agent
+```
+
+新文档和 CI 只使用 `astrion-agent/`；旧命令和旧报告可通过兼容链接继续解析。
+
+BFCL 新报告字段从 `toy_agent_commit` / `latest_toy_agent_commit` 迁移为
+`astrion_agent_commit` / `latest_astrion_agent_commit`。恢复旧运行时仍读取旧字段，
+并在新 attempt 报告中规范化为 Astrion 命名，因此历史数据无需手工修改。
+
+### 24.3 验证
+
+完整 108 项离线测试全部通过。新目录中的 BFCL doctor 对固定版本、官方模型注册和
+凭据三项检查均通过；既有 all-scoring 中断运行的 `resume --check` 仍返回 `ready`，
+继续识别 51 条可复用记录和 24 条待重试记录。`agent.py --help` 与评测 CLI 均显示
+Astrion Agent 新名称。上述验证没有调用模型，也没有修改中断运行的 result。

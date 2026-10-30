@@ -33,7 +33,7 @@ def make_case(case_id="case-1", category="simple", metadata=None):
 
 class BenchmarkTests(unittest.TestCase):
     def setUp(self):
-        storage = tempfile.TemporaryDirectory(prefix="toy-agent-bench-")
+        storage = tempfile.TemporaryDirectory(prefix="astrion-agent-bench-")
         self.addCleanup(storage.cleanup)
         self.root = Path(storage.name)
 

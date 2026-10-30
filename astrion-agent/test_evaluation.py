@@ -72,7 +72,7 @@ def http_response(message, usage_marker=None):
 
 class EvaluationTests(unittest.TestCase):
     def setUp(self):
-        storage = tempfile.TemporaryDirectory(prefix="toy-agent-test-reports-")
+        storage = tempfile.TemporaryDirectory(prefix="astrion-agent-test-reports-")
         self.addCleanup(storage.cleanup)
         self.reports_dir = (Path(storage.name) / "reports").resolve()
         report_dir_patch = patch("evaluation.reporting.DEFAULT_REPORT_DIR", self.reports_dir)

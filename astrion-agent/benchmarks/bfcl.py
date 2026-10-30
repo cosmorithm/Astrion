@@ -1169,25 +1169,35 @@ def run_bfcl(
 
     current_commit = _git_commit(repo_root)
     if previous_report is not None:
-        attempts = list(previous_report.get("attempts") or [])
+        attempts = []
+        for saved_attempt in previous_report.get("attempts") or []:
+            normalized_attempt = dict(saved_attempt)
+            if "astrion_agent_commit" not in normalized_attempt:
+                legacy_commit = normalized_attempt.pop("toy_agent_commit", None)
+                normalized_attempt["astrion_agent_commit"] = legacy_commit
+            attempts.append(normalized_attempt)
+        previous_commit = previous_report.get(
+            "astrion_agent_commit", previous_report.get("toy_agent_commit")
+        )
         if not attempts:
             attempts.append({
                 "number": 1,
                 "started_at": previous_report.get("created_at"),
                 "ended_at": previous_report.get("updated_at"),
                 "status": previous_report.get("status"),
-                "toy_agent_commit": previous_report.get("toy_agent_commit"),
+                "astrion_agent_commit": previous_commit,
                 "commands": previous_report.get("commands"),
                 "error": previous_report.get("error"),
             })
     else:
         attempts = []
+        previous_commit = None
     attempt = {
         "number": attempt_number,
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "ended_at": None,
         "status": "preparing",
-        "toy_agent_commit": current_commit,
+        "astrion_agent_commit": current_commit,
         "resume_audit": None if not resuming else _resume_context.get("audit"),
         "commands": None,
         "error": None,
@@ -1231,12 +1241,8 @@ def run_bfcl(
             "deepseek_openai_bootstrap_alias": deepseek_bootstrap_alias,
             "progress_interval_seconds": progress_interval,
         },
-        "toy_agent_commit": (
-            previous_report.get("toy_agent_commit")
-            if previous_report is not None
-            else current_commit
-        ),
-        "latest_toy_agent_commit": current_commit,
+        "astrion_agent_commit": previous_commit or current_commit,
+        "latest_astrion_agent_commit": current_commit,
         "resume_count": attempt_number - 1,
         "attempts": attempts,
         "project_root": str(root),

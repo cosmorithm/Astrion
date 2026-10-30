@@ -13,7 +13,7 @@ __pycache__/
 # 运行产物（会话记忆、临时测试文件）
 session*.json
 _demo_memory.json
-toy-agent/eval_reports/
+astrion-agent/eval_reports/
 
 # 基准测试数据和结果（体积大，且可能含接口内容）
 benchmark_data/

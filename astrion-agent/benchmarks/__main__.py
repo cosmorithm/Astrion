@@ -8,7 +8,7 @@ from . import bfcl
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="外部官方 benchmark 适配入口")
+    parser = argparse.ArgumentParser(description="Astrion Agent 外部官方 benchmark 适配入口")
     parser.add_argument("backend", choices=["bfcl"], help="要运行的官方 benchmark")
     args, remaining = parser.parse_known_args(argv)
     if args.backend == "bfcl":

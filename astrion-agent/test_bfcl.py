@@ -161,7 +161,7 @@ class ResumeFakeBFCL:
 
 class BFCLTests(unittest.TestCase):
     def setUp(self):
-        storage = tempfile.TemporaryDirectory(prefix="toy-agent-bfcl-")
+        storage = tempfile.TemporaryDirectory(prefix="astrion-agent-bfcl-")
         self.addCleanup(storage.cleanup)
         self.root = Path(storage.name)
 
@@ -289,7 +289,7 @@ class BFCLTests(unittest.TestCase):
 
     def test_doctor_checks_version_model_and_credential_without_model_call(self):
         project = self.root / "project"
-        child = project / "toy-agent"
+        child = project / "astrion-agent"
         child.mkdir(parents=True)
         (project / ".env").write_text(
             "DEEPSEEK_API_KEY=from-dotenv\n", encoding="utf-8"
@@ -387,6 +387,9 @@ class BFCLTests(unittest.TestCase):
         self.assertTrue(all(Path(root) == output.resolve() for root in fake.seen_roots))
         self.assertTrue(all(key == "do-not-record" for key in fake.seen_openai_keys))
         self.assertTrue(report["config"]["deepseek_openai_bootstrap_alias"])
+        self.assertIn("astrion_agent_commit", report)
+        self.assertIn("latest_astrion_agent_commit", report)
+        self.assertNotIn("toy_agent_commit", report)
         progress = json.loads((output / "bfcl_progress.json").read_text(encoding="utf-8"))
         self.assertEqual(progress["phase"], "completed")
         self.assertEqual(progress["generation"]["completed_entries"], 200)
@@ -507,6 +510,11 @@ class BFCLTests(unittest.TestCase):
         )
         original["status"] = "interrupted"
         original["error"] = {"type": "KeyboardInterrupt", "message": "模拟中断"}
+        # 模拟命名迁移前保存的报告，验证续跑仍能读取并规范化旧字段。
+        original["toy_agent_commit"] = original.pop("astrion_agent_commit")
+        original.pop("latest_astrion_agent_commit")
+        for attempt in original["attempts"]:
+            attempt["toy_agent_commit"] = attempt.pop("astrion_agent_commit")
         (output / "bfcl_run_report.json").write_text(
             json.dumps(original), encoding="utf-8"
         )
@@ -557,6 +565,13 @@ class BFCLTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "completed")
         self.assertEqual(report["resume_count"], 1)
+        self.assertIn("astrion_agent_commit", report)
+        self.assertIn("latest_astrion_agent_commit", report)
+        self.assertNotIn("toy_agent_commit", report)
+        self.assertTrue(all(
+            "astrion_agent_commit" in attempt and "toy_agent_commit" not in attempt
+            for attempt in report["attempts"]
+        ))
         self.assertEqual(len(report["attempts"]), 2)
         self.assertEqual(report["attempts"][-1]["number"], 2)
         self.assertEqual(report["attempts"][-1]["status"], "completed")

@@ -16,7 +16,7 @@ from .suite import summarize_suite
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="运行任务结束后的 agent 评测")
+    parser = argparse.ArgumentParser(description="Astrion Agent 任务结束后的赛后评测")
     parser.add_argument("--cases", type=Path, default=Path(__file__).with_name("cases.json"), help="评测任务 JSON 文件")
     parser.add_argument("--case", default="", help="只运行指定任务 id；默认运行全部任务")
     parser.add_argument("--list", action="store_true", help="列出任务，不调用模型或生成评测报告")
@@ -24,7 +24,7 @@ def main() -> None:
     parser.add_argument("--budget", type=int, default=12000, help="agent 记忆预算（字符）")
     parser.add_argument("--model", default="", help="临时覆盖 AGENT_MODEL")
     parser.add_argument("--base-url", default="", help="临时覆盖 AGENT_BASE_URL")
-    parser.add_argument("--report-dir", type=Path, default=None, help="报告目录；默认 toy-agent/eval_reports")
+    parser.add_argument("--report-dir", type=Path, default=None, help="报告目录；默认 astrion-agent/eval_reports")
     args = parser.parse_args()
 
     try:
@@ -57,7 +57,7 @@ def main() -> None:
                                os.environ.get("DEEPSEEK_API_KEY"),
                                os.environ.get("OPENAI_API_KEY"))
     if not key:
-        parser.error("没有可用的 API key，请按 toy-agent/README.md 配置")
+        parser.error("没有可用的 API key，请按 Astrion Agent README 配置")
     base_url = args.base_url or os.environ.get("AGENT_BASE_URL") or "https://api.deepseek.com"
     model = args.model or os.environ.get("AGENT_MODEL") or "deepseek-chat"
 

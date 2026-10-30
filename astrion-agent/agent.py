@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-toy-agent —— 一个可以完整看懂的最小智能体（零依赖，标准库实现）
+Astrion Agent —— 以智慧，奔赴星海。
+Intelligence bound for the stars.
+
+一个可以完整看懂的最小智能体（零依赖，标准库实现）。
 
 它只做一件事：把「模型 + 工具 + 循环」跑通，并把每一步打印出来，
 让你能亲眼看见 ReAct 的三段式：think → act → obs。
@@ -60,7 +63,7 @@ def red(s):   return _wrap("31", s)
 def find_env_files(start: Path, max_up: int = 3) -> list[Path]:
     """从 start 向上找 .env，返回由近到远的列表。
 
-    这样无论 .env 放在 toy-agent/ 还是上一层的 Multi Agent/，都能被找到。
+    这样无论 .env 放在 astrion-agent/ 还是上一层的 Multi Agent/，都能被找到。
     """
     found: list[Path] = []
     cur = start.resolve()
@@ -282,7 +285,7 @@ def tools_for_sandbox(sandbox: Path) -> dict:
         "write_file": partial(TOOL_IMPL["write_file"], sandbox=sandbox),
     }
 
-SYSTEM_PROMPT = """你是一个最小智能体，只能通过工具来观察和改变 sandbox/ 目录。
+SYSTEM_PROMPT = """你是 Astrion Agent，只能通过工具来观察和改变 sandbox/ 目录。
 
 规则：
 1. 一次只做一个动作，等观察结果回来再决定下一步。
@@ -556,7 +559,9 @@ def run(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="一个最小可读的智能体")
+    parser = argparse.ArgumentParser(
+        description="Astrion Agent —— 以智慧，奔赴星海。"
+    )
     parser.add_argument("task", nargs="?", default="读取 data.txt，算出所有数字的和，把结果写入 result.txt")
     parser.add_argument("--steps", type=int, default=10, help="本次最多进行的模型决策轮数")
     parser.add_argument("--budget", type=int, default=12000, help="记忆预算（字符），超出后压缩最旧的轮次")

@@ -68,7 +68,7 @@ print(summarize(records))
 ## BFCL 正式集成
 
 正式路径固定使用 `bfcl-eval==2026.3.23`，并在独立 `.venv-bfcl/` 中安装。
-toy-agent 不复制 BFCL 数据、prompt、model handler 或 scorer，只调用官方 CLI：
+Astrion Agent 不复制 BFCL 数据、prompt、model handler 或 scorer，只调用官方 CLI：
 
 ```text
 benchmarks/bfcl.py
@@ -83,11 +83,11 @@ benchmarks/bfcl.py
 官方包要求 Python 3.10 以上。本项目默认用本机的 Python 3.12：
 
 ```bash
-cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+cd '/Users/apple/Desktop/科研/Multi Agent/astrion-agent'
 ./setup_bfcl.sh
 ```
 
-这个环境是可选旁路依赖，不改变 toy-agent 核心的标准库运行方式；`.venv-bfcl/`
+这个环境是可选旁路依赖，不改变 Astrion Agent 核心的标准库运行方式；`.venv-bfcl/`
 和运行结果均被 Git 忽略。
 
 ### 2. 配置官方模型凭据
@@ -100,7 +100,7 @@ DeepSeek 官方 endpoint，并读取 `DEEPSEEK_API_KEY`。可以把它写在项�
 DEEPSEEK_API_KEY=你的_DeepSeek_官方_key
 ```
 
-`python3 -m benchmarks bfcl doctor` 和真实 `run` 会复用 toy-agent 已有的标准库
+`python3 -m benchmarks bfcl doctor` 和真实 `run` 会复用 Astrion Agent 已有的标准库
 `.env` 加载器；已有 shell 环境变量优先。`--dry-run` 不读取 `.env`。
 `.env` 已被 Git 忽略，不要把真实值写入文档、日志或版本库。
 
@@ -302,11 +302,11 @@ BFCL 官方资料：
 `benchmark_runs/` 和 `benchmark_data/` 默认不纳入 git。BFCL 统一报告会记录：
 
 ```text
-toy-agent commit / manifest / case ids
+Astrion Agent commit / manifest / case ids
 model / temperature / 线程数
 BFCL V4 / bfcl-eval 固定版本
 官方 result/score 路径与 SHA-256
 ```
 
-不要拿 toy-agent eval 的分数、BFCL 200 样例 baseline 和官方 full leaderboard 分数
+不要拿 Astrion Agent eval 的分数、BFCL 200 样例 baseline 和官方 full leaderboard 分数
 直接比较；它们用的是不同任务、profile 和覆盖率。

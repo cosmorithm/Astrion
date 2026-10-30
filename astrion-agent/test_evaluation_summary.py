@@ -25,7 +25,7 @@ def case_report(case_id, statuses, *, run_status="completed", report_path="/tmp/
 
 class EvaluationSummaryTests(unittest.TestCase):
     def setUp(self):
-        storage = tempfile.TemporaryDirectory(prefix="toy-agent-suite-tests-")
+        storage = tempfile.TemporaryDirectory(prefix="astrion-agent-suite-tests-")
         self.addCleanup(storage.cleanup)
         self.report_dir = (Path(storage.name) / "reports").resolve()
         directory_patch = patch("evaluation.reporting.DEFAULT_REPORT_DIR", self.report_dir)
