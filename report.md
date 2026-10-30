@@ -34,6 +34,7 @@
 | 文档修正、会话持久化与测试脚本 | 本次对话，见第 16 节 | 增加 `session.py`、`--session/--fresh`、原子保存和断点恢复；修正过期表述，补充当前边界与 CI |
 | 工具注入接缝与基准适配层 | 本次对话，见第 17 节 | `ChatLLM.chat` 支持按 case 注入 tools；新增 `benchmarks/` 通用适配层和默认行为契约测试 |
 | BFCL 官方 harness 集成 | 本次对话，见第 18 节 | 固定 `bfcl-eval` 版本和 20 样例子集；调用官方生成与评分命令，导入官方分数；ToolBench 后置 |
+| BFCL 成绩查看脚本 | 本次对话，见第 19 节 | 默认查看最近完成运行；支持列出历史、按 ID/路径指定、文本或 JSON 输出 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -169,6 +170,7 @@ Multi Agent/
     │   └── manifests/         # 固定的 BFCL V4 子集 manifest
     ├── README.md              # 运行方法与设计说明
     ├── run_tests.sh           # 全部离线测试入口
+    ├── show_bfcl_score.py     # 查看最近或指定 BFCL 运行的成绩、token 与耗时
     ├── setup_bfcl.sh          # 在独立 venv 安装固定 BFCL 官方包
     ├── requirements-bfcl.txt  # 可选 BFCL 依赖版本
     ├── test_token_usage.py    # 模拟 API 响应的计量测试
@@ -177,6 +179,7 @@ Multi Agent/
     ├── test_agent_contract.py # 默认提示、工具集和可选持久化契约
     ├── test_benchmarks.py     # 基准适配层离线测试
     ├── test_bfcl.py           # BFCL 旁路编排、失败保留和官方分数导入测试
+    ├── test_bfcl_score.py     # BFCL 成绩发现、选择、格式化与错误处理测试
     ├── test_evaluation.py     # 评测层离线测试
     ├── test_evaluation_summary.py # 通过率及总报告测试
     ├── eval_reports/          # 首次评测后生成的报告目录，不纳入 Git
@@ -1293,3 +1296,65 @@ result file 条目上保留对应的小计；命令墙钟时间继续由 `comman
 
 该结果仅说明这 3 个固定样例通过，不能推断 20 样例子集、BFCL full leaderboard、
 多轮或 agentic 类别的总体能力。
+
+## 19. 第十一阶段：指定查看 BFCL 成绩
+
+### 19.1 需求与入口
+
+学习者希望不必手动进入运行目录查找 JSON 字段，并能指定某一次历史运行查看。
+因此新增顶层脚本 `toy-agent/show_bfcl_score.py`。它是纯读取工具，不加载 `.env`、
+不启动官方 BFCL、不调用模型，也不会产生 API 费用。
+
+支持四种使用方式：
+
+```bash
+python3 show_bfcl_score.py                 # 最近一次 status=completed 的运行
+python3 show_bfcl_score.py --list          # 按新到旧列出全部运行
+python3 show_bfcl_score.py --run <运行ID>  # 指定运行 ID、目录或报告文件
+python3 show_bfcl_score.py --run <运行ID> --json
+```
+
+默认只选择最近一次**已完成**的报告，因此较新的 `generation_error`、
+`evaluation_error` 或 `dry_run` 不会遮住最近的有效成绩；这些运行仍可通过
+`--list` 找到并用 `--run` 查看。损坏的历史报告会显示为 `invalid`，不会让整个
+列表命令失败。
+
+### 19.2 输出口径
+
+脚本从 `bfcl_run_report.json` 提取：
+
+- 运行 ID、状态、模型、profile 和配置样例数；
+- `derived_subset_micro_accuracy`、正确数和已评分数；
+- 官方各 category 的 accuracy；
+- input/output/total tokens 和模型 latency；
+- generate/evaluate 墙钟时间及合计；
+- 失败状态的错误类型与信息、原报告绝对路径。
+
+文本结尾固定提示这是 subset 分数，不是 BFCL 完整排行榜总分。`--json` 输出相同
+的稳定摘要字段，便于后续接入总报告、画图或比较多次实验。
+
+### 19.3 真实 20 样例成绩验证
+
+脚本完成后，在现有运行目录上验证了三种路径：列出全部运行、默认查看最近完成
+运行、按 3 样例运行 ID 输出 JSON。此时最近的 20 样例正式运行 ID 为
+`20261030T093310_208385Z_DeepSeek-V3.2-Exp-FC_57919ee9`，结果如下：
+
+| 类别 | 正确/总数 | accuracy |
+|---|---:|---:|
+| `simple_python` | 4/4 | 100% |
+| `multiple` | 4/4 | 100% |
+| `parallel` | 3/4 | 75% |
+| `parallel_multiple` | 4/4 | 100% |
+| `irrelevance` | 3/4 | 75% |
+| **20 样例 micro 汇总** | **18/20** | **90%** |
+
+该次运行使用 input 8,861、output 2,103，共 10,964 tokens；模型 latency 合计约
+30.35 秒，generate 约 32.80 秒，evaluate 约 3.35 秒，两条官方命令合计约
+36.15 秒。这仍是固定 20 样例 subset，不是 BFCL full leaderboard。
+
+### 19.4 测试
+
+新增 `test_bfcl_score.py` 的 8 项离线测试，覆盖摘要提取、最近完成运行选择、跳过
+较新失败运行、历史排序、损坏报告保留、运行 ID/目录/文件三种指定方式、文本与
+JSON 输出、缺失报告的非零退出码，以及只有部分命令耗时时的格式化。完整测试入口
+现为 104 项，执行结果为 `Ran 104 tests`、`OK`。

@@ -165,6 +165,21 @@ python3 -m benchmarks bfcl run \
 `completed`、`dry_run`、`setup_error`、`generation_error`、
 `evaluation_error` 或 `orchestration_error`。
 
+### 5. 查看最近或指定成绩
+
+`show_bfcl_score.py` 只读取报告，不调用模型：
+
+```bash
+python3 show_bfcl_score.py                 # 最近一次 completed
+python3 show_bfcl_score.py --list          # 所有历史运行
+python3 show_bfcl_score.py --run <运行ID>  # 指定运行
+python3 show_bfcl_score.py --run <运行ID> --json
+```
+
+`--run` 也接受运行目录或 `bfcl_run_report.json` 的完整路径。文本输出包括 subset
+总分、正确数、官方分类成绩、token、模型 latency、生成/评分耗时和报告路径；失败
+运行会显示状态与错误，不会伪造总分。
+
 BFCL 官方资料：
 
 - <https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard>

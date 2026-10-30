@@ -11,6 +11,7 @@ toy-agent/
 ├── benchmarks/     基准层：通用记录 + BFCL 官方 harness 旁路集成
 ├── evaluation/     赛后评测：任务、运行器、可注册裁判
 ├── run_tests.sh    全部离线测试入口
+├── show_bfcl_score.py  查看最近或指定 BFCL 运行成绩
 └── sandbox/        它唯一被允许读写的地方
     ├── data.txt    演示输入
     └── result.txt  运行产物
@@ -369,6 +370,22 @@ python3 -m benchmarks bfcl run \
 它是 subset 结果，不能冒充 BFCL 官方 full leaderboard overall。当前项目的
 `AGENT_API_KEY/deepseek-flash` 不会自动映射成 BFCL 官方 DeepSeek 配置。
 
+查看成绩不会调用模型，也不会产生费用：
+
+```bash
+# 最近一次已完成的运行
+python3 show_bfcl_score.py
+
+# 列出所有历史运行，复制需要查看的运行 ID
+python3 show_bfcl_score.py --list
+
+# 精确查看某次运行；也可以传运行目录或报告文件路径
+python3 show_bfcl_score.py --run <运行ID>
+
+# 机器可读输出
+python3 show_bfcl_score.py --run <运行ID> --json
+```
+
 完整命令、报告字段和边界见 [benchmarks/README.md](benchmarks/README.md)。
 
 ## 三个刻意的设计选择
@@ -397,7 +414,7 @@ python3 -m benchmarks bfcl run \
 ./run_tests.sh
 ```
 
-它依次运行 96 项测试：契约 6 项、BFCL 旁路 13 项、通用基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
+它依次运行 104 项测试：契约 6 项、BFCL 旁路 13 项、BFCL 成绩查看 8 项、通用基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：
@@ -424,6 +441,6 @@ python3 -B -m unittest -v test_session
 2. 继续完善结束状态，例如明确表示模型请求失败，并根据任务需要检查结果
 3. 一个 `run_worker` 工具，内部再起一个 `run()`（多智能体，本质只是嵌套）
 4. 会话文件的轮转、加密或按项目分目录管理
-5. 在正式凭据可用后运行 BFCL 20 样例，分析官方 category score
+5. 分析 BFCL 20 样例中未通过的 2 条及其类别差异
 6. BFCL 从单轮子集扩展到多轮，再决定是否进入 V4 agentic
 7. ToolBench/StableToolBench 后置，单独讨论环境、成本和评分口径
