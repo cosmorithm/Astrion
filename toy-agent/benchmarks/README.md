@@ -93,11 +93,16 @@ cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
 ### 2. 配置官方模型凭据
 
 默认模型是 BFCL 官方注册的 `DeepSeek-V3.2-Exp-FC`。官方 handler 固定访问
-DeepSeek 官方 endpoint，并读取 `DEEPSEEK_API_KEY`：
+DeepSeek 官方 endpoint，并读取 `DEEPSEEK_API_KEY`。可以把它写在项目根目录
+`/Users/apple/Desktop/科研/Multi Agent/.env`：
 
-```bash
-export DEEPSEEK_API_KEY='你的 DeepSeek 官方 key'
+```dotenv
+DEEPSEEK_API_KEY=你的_DeepSeek_官方_key
 ```
+
+`python3 -m benchmarks bfcl doctor` 和真实 `run` 会复用 toy-agent 已有的标准库
+`.env` 加载器；已有 shell 环境变量优先。`--dry-run` 不读取 `.env`。
+`.env` 已被 Git 忽略，不要把真实值写入文档、日志或版本库。
 
 项目现有的 `AGENT_API_KEY` 不会被自动改名或转发。`AGENT_BASE_URL` 和
 `AGENT_MODEL=deepseek-flash` 也不等于 BFCL 官方 DeepSeek 配置，不能据此冒充官方结果。

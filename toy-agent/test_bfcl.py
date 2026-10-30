@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from benchmarks.bfcl import (
     DEFAULT_MANIFEST,
@@ -14,6 +16,7 @@ from benchmarks.bfcl import (
     _parse_version,
     build_commands,
     collect_official_outputs,
+    load_bfcl_env,
     load_manifest,
     official_id_payload,
     probe_bfcl,
@@ -156,6 +159,20 @@ class BFCLTests(unittest.TestCase):
         self.assertEqual(categories, list(manifest.categories))
 
     def test_doctor_checks_version_model_and_credential_without_model_call(self):
+        project = self.root / "project"
+        child = project / "toy-agent"
+        child.mkdir(parents=True)
+        (project / ".env").write_text(
+            "DEEPSEEK_API_KEY=from-dotenv\n", encoding="utf-8"
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            loaded = load_bfcl_env(child)
+            self.assertEqual(loaded, [(project / ".env").resolve()])
+            self.assertEqual(os.environ["DEEPSEEK_API_KEY"], "from-dotenv")
+            os.environ["DEEPSEEK_API_KEY"] = "from-shell"
+            load_bfcl_env(child)
+            self.assertEqual(os.environ["DEEPSEEK_API_KEY"], "from-shell")
+
         fake = FakeBFCL()
         result = probe_bfcl(
             "bfcl", MODEL, env={"DEEPSEEK_API_KEY": "secret"},

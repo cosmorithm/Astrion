@@ -339,13 +339,17 @@ BFCL V4 官方 harness；ToolBench 暂不接入。
 python3 -m benchmarks bfcl run --dry-run
 ```
 
-安装并检查环境：
+安装后，在项目根目录已有的 `.env` 中增加 BFCL 的专用密钥：
 
 ```bash
 ./setup_bfcl.sh
-export DEEPSEEK_API_KEY='你的 DeepSeek 官方 key'
+# /Users/apple/Desktop/科研/Multi Agent/.env
+DEEPSEEK_API_KEY=你的_DeepSeek_官方_key
 python3 -m benchmarks bfcl doctor
 ```
+
+BFCL 命令会自动查找 `.env`，且不会覆盖 shell 中已经 `export` 的同名变量。
+`.env` 已被 Git 忽略；不要把真实密钥写进 README、报告或提交记录。
 
 运行固定 20 样例子集：
 

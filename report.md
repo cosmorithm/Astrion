@@ -1194,6 +1194,12 @@ BFCL 依赖很多第三方包，因此单独安装在 `.venv-bfcl/`；toy-agent 
 命令以参数数组交给 `subprocess.run()`，不经过 shell 拼接；统一报告只记录凭据
 环境变量的名称和是否存在，不记录值。
 
+学习者随后决定把 BFCL 凭据也放进项目根目录的 `.env`。BFCL CLI 因此复用
+toy-agent 已有的标准库加载器：doctor 和真实 run 会从脚本目录向上查找 `.env`，
+读取 `DEEPSEEK_API_KEY`，但不会覆盖 shell 中已有的同名变量；dry-run 不读取密钥
+文件。根目录 `.gitignore` 已忽略 `.env` 和 `.env.*`，真实值不进入代码、报告或
+Git。
+
 默认 doctor 检查：
 
 1. 官方包版本严格等于 `2026.3.23`；

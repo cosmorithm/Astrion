@@ -31,6 +31,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import Callable
 
+from agent import find_env_files, load_env
+
 
 PINNED_BFCL_VERSION = "2026.3.23"
 PACKAGE_NAME = "bfcl-eval"
@@ -57,6 +59,16 @@ class BFCLManifest:
     @property
     def case_ids(self) -> list[str]:
         return [case_id for ids in self.categories.values() for case_id in ids]
+
+
+def load_bfcl_env(start: Path | str | None = None) -> list[Path]:
+    """加载项目附近的 ``.env``，且不覆盖 shell 中已有的环境变量。"""
+    search_start = (
+        Path(start).expanduser().resolve()
+        if start is not None
+        else Path(__file__).resolve().parent.parent
+    )
+    return load_env(find_env_files(search_start))
 
 
 def _require_text(value, field: str) -> str:
@@ -610,6 +622,9 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args(argv)
+    # doctor 和真实 run 需要凭据时才读取 .env；dry-run 不接触密钥文件。
+    if args.command == "doctor" or not args.dry_run:
+        load_bfcl_env()
     if args.command == "doctor":
         result = probe_bfcl(
             args.bfcl_bin, args.model, credential_env=args.credential_env or None
