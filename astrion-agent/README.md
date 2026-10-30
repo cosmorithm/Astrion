@@ -448,6 +448,57 @@ python3 -m benchmarks bfcl run \
 
 覆盖后的 flash baseline 是项目内严格对照，不冒充 BFCL 官方默认配置或排行榜分数。
 
+### 固定对照柱：BFCL 200（2026-10-31）
+
+下面这次运行是 Astrion 后续优化使用的**固定 baseline**，不是“自动取最新成绩”。
+除非基准版本、样例集合或模型发生变化，否则后续实验都应保留它，并把新结果追加为
+新的实验记录，不能覆盖或改写这组数字。
+
+| 项目 | 固定值 |
+|---|---|
+| 运行 ID | `20261030T164520_712818Z_DeepSeek-V3.2-Exp-FC_api-deepseek-flash_b022dfbb` |
+| Astrion 代码提交 | `c1926390c3bdb7e4201b1b27ff69a3537c4fa595` |
+| BFCL harness | `bfcl-eval==2026.3.23`，BFCL V4 |
+| manifest | `bfcl_v4_single_turn_baseline_200` |
+| manifest SHA-256 | `5987a1e2db7ab790825ff336be29ce3d88c898b7e679fc889edc3e8c4edbbbf6` |
+| 样例 | 200 条；`simple_python`、`multiple`、`parallel`、`parallel_multiple`、`irrelevance` 各 40 条 |
+| 生成链路 | BFCL 官方 `DeepSeekAPIHandler` + 项目内 API model 覆盖器 |
+| registry / scorer | `DeepSeek-V3.2-Exp-FC` |
+| 实际 API model | `deepseek-flash` |
+| temperature / threads | `0` / `1` |
+
+固定 baseline 成绩：
+
+| 类别 | 正确数 | 准确率 |
+|---|---:|---:|
+| `simple_python` | 36/40 | 90.0% |
+| `multiple` | 38/40 | 95.0% |
+| `parallel` | 38/40 | 95.0% |
+| `parallel_multiple` | 32/40 | 80.0% |
+| `irrelevance` | 32/40 | 80.0% |
+| **总计** | **176/200** | **88.0%** |
+
+| 效率指标 | 固定 baseline |
+|---|---:|
+| 输入 token | 104,521 |
+| 输出 token | 49,812 |
+| 总 token | 154,333 |
+| 模型延迟合计 | 354.38 秒 |
+| 生成命令墙钟时间 | 360.78 秒 |
+
+同一批 case、同一 API model 和同一 scorer 下，当前 Astrion 优化起点是运行
+`20261030T161221_406989Z_Astrion-deepseek-flash_2a70f301`（提交 `f46ef0f`）：
+
+| 路径 | 总分 | simple | multiple | parallel | parallel_multiple | irrelevance | 输出 token | 模型延迟 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 固定 baseline | 176/200 | 36 | 38 | 38 | 32 | 32 | 49,812 | 354.38 秒 |
+| Astrion 起点 | 175/200 | 36 | 38 | 37 | 33 | 31 | 63,005 | 462.53 秒 |
+
+两组的 200 条输入 token 逐题相同。配对结果是 169 题共同正确、18 题共同错误、
+baseline 单独正确 7 题、Astrion 单独正确 6 题；当前 0.5 个百分点的差异不足以说明
+任一路径准确率更强。这个 baseline 用于工程回归和项目内部对照，不是 BFCL 官方
+full leaderboard 分数。
+
 运行官方全部正式计分类（高成本，建议先 dry-run）：
 
 ```bash
@@ -589,6 +640,6 @@ python3 -B -m unittest -v test_session
 2. 让评测裁判按统一事件分析轨迹、效率、稳定性和安全性
 3. 讨论 Event 与 session checkpoint 的关联方式，但暂不直接承诺可重放副作用
 4. 提炼 `ToolSpec` / `ToolCall` / `ToolResult` 契约，为 MCP 适配做准备
-5. 先运行 Astrion BFCL 3 条真实试验，再视结果扩展到 20 条和 200 条并与官方 handler 基线对比
+5. 以 README 中固化的 BFCL 200 baseline 为对照，重复测量并优化 Astrion 的工具决策质量与输出效率
 6. 会话文件的轮转、加密或按项目分目录管理
 7. MCP、长期记忆、CodeAct、Computer Use 与多 Agent 按技术愿景和评测证据逐步接入
