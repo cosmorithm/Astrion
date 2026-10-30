@@ -1,0 +1,16 @@
+[
+  {
+    "id": "sum_001",
+    "task": "读取 data.txt，计算所有数字的和。把结果写入 result.txt，文件中只写结果数字，完成后调用 finish。",
+    "initial_files": {
+      "data.txt": "2, 3, 4"
+    },
+    "judges": [
+      {
+        "name": "file_equals",
+        "path": "result.txt",
+        "expected": "9"
+      }
+    ]
+  }
+]

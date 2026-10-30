@@ -7,6 +7,7 @@
 toy-agent/
 ├── agent.py        循环、工具、模型客户端
 ├── memory.py       会话记忆：消息窗口 + 超额压缩
+├── evaluation/     赛后评测：任务、运行器、可注册裁判
 └── sandbox/        它唯一被允许读写的地方
     ├── data.txt    演示输入
     └── result.txt  运行产物
@@ -45,6 +46,84 @@ Multi Agent/
 `agent.py` 从自己目录向上找 `.env`（最多 3 层，越近越优先）。规则是**已有的环境变量不被覆盖**，所以 shell 里临时 `export` 的值总是赢。
 
 优先级：`--model/--base-url` > 环境变量 > `.env`。
+
+## 赛后评测
+
+评测层把任务交给 agent，等运行结束后再让裁判查看运行记录。默认任务在
+`evaluation/cases.json`：提供 `data.txt` 的初始内容，要求 agent 写入求和结果，
+由 `file_equals` 裁判检查 `result.txt`。
+
+从 `toy-agent/` 目录运行：
+
+```bash
+python3 -m evaluation --case sum_001
+```
+
+这会使用与 `agent.py` 相同的 API 配置，调用真实模型。运行日志输出到 stderr；
+stdout 是 JSON 报告，可以按需重定向到文件：
+
+```bash
+python3 -m evaluation --case sum_001 > evaluation-result.json
+```
+
+报告会包含任务内容、初始文件、模型可见的消息和工具结果；评测器不会主动记录连接 API 的 key。
+保存或分享报告时应留意这些内容可能包含任务数据。默认不写报告文件。
+
+其他常用参数：`--cases` 指定任务 JSON 文件，省略 `--case` 时顺序运行所有任务；
+`--steps`、`--budget`、`--model`、`--base-url` 分别覆盖 agent 的运行配置。
+
+一次评测分为：
+
+1. **准备任务**：为本次任务创建临时沙箱，只写入 `initial_files`。裁判参考答案保存在任务配置中，不随任务消息发给模型。
+2. **运行 agent**：记录模型决策、摘要请求与结果、工具结果和结束状态；运行记录与可压缩的 `Memory` 分开。
+3. **保存运行事实**：统计 `run()` 的耗时、已知 token 用量、最终文件快照和运行状态，然后清理临时沙箱。
+4. **赛后评判**：每个已注册裁判获取任务和运行记录的独立副本，返回自己的结论。多个裁判的结论分别保留，不强行合成总分。
+
+运行时间使用 `time.perf_counter()`，从调用 `run()` 前开始，到其返回或抛出异常为止；
+它包括模型等待、工具执行、记忆压缩和同步事件记录，**不包括**准备环境、生成文件快照或裁判评测。
+每个裁判的 `duration_seconds` 单独记录。目前只记录时间，**没有任务时间上限，也没有时间通过阈值**。
+原有的 agent `--steps` 步数限制和单次 HTTP 请求的 120 秒超时仍然存在。
+
+JSON 报告主要包含 `case`（完整评测配置）、`run`（`result`、`duration_seconds`、
+`model`、`agent_config`、`token_usage`、`trace`、`artifacts` 和 `artifact_errors`）
+与 `judgments`（各裁判的结果和耗时）。`run.result.status` 是运行状态；
+`judgments` 中的 `pass` 或 `fail` 是裁判判断，两者独立。裁判错误是 `error`，
+不是自动判定 agent 失败；证据不足可返回 `unknown`，等待人工处理可返回 `pending`。
+
+`run.token_usage` 记录本次运行的已知增量，包括决策和摘要调用。`unknown_calls` 大于零、
+或运行因异常中断时，`complete` 为 `False`；客户端没有用量统计时该字段为 `null`。
+未来如果裁判自己调用模型，可以在裁判结果中附带自己的用量；第一版不会自动统计外部裁判的 token。
+
+增加裁判时，可注册一个 `judge(case, run_record, spec) -> dict` 函数：
+
+```python
+from evaluation import default_registry, evaluate_case
+
+registry = default_registry()
+
+def observe_steps(case, run_record, spec):
+    return {
+        "status": "unknown",  # 这里只观察步数，不判定通过或失败
+        "reason": "记录决策轮数",
+        "evidence": {"steps": run_record["result"]["steps"]},
+    }
+
+registry.register("observe_steps", observe_steps)
+# 把 {"name": "observe_steps"} 加入任务的 judges，再调用：
+# report = evaluate_case(case, llm_factory, registry)
+```
+
+裁判结果的 `status` 可为 `pass`、`fail`、`unknown`、`pending` 或 `error`，还可附加
+JSON 可序列化的 `reason`、`evidence`、`score` 等字段。裁判函数报错或未注册时，
+该裁判记录为 `error`，其他裁判继续执行。CLI 当前只自动注册内置的 `file_equals`；
+外部脚本、模型或人工裁判需要先封装并注册，人工复核工作流尚未实现。
+`report["case"]` 和 `report["run"]` 也可以交给 `registry.evaluate(...)`，无需再次运行 agent。
+
+离线验证（使用模拟模型和 HTTP 响应，不访问网络）：
+
+```bash
+python3 -B -m unittest -v test_evaluation test_run_lifecycle test_token_usage
+```
 
 ## 输出怎么看
 

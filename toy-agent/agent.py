@@ -22,13 +22,16 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import json
 import operator as _op
 import os
 import sys
 import urllib.error
 import urllib.request
+from functools import partial
 from pathlib import Path
+from typing import Callable
 
 from memory import Memory
 
@@ -111,9 +114,9 @@ def mask(secret: str) -> str:
 SANDBOX = Path(__file__).resolve().parent / "sandbox"
 
 
-def safe_path(raw: str) -> Path:
-    """把用户/模型给的路径钉死在 sandbox/ 里，越界直接报错。"""
-    root = SANDBOX.resolve()
+def safe_path(raw: str, *, sandbox: Path | None = None) -> Path:
+    """把路径限制在本次沙箱内；默认使用项目的 sandbox/。"""
+    root = (sandbox if sandbox is not None else SANDBOX).resolve()
     target = (root / raw).resolve()
     if target != root and root not in target.parents:
         raise PermissionError(f"路径越界，只允许访问 {root}")
@@ -123,8 +126,8 @@ def safe_path(raw: str) -> Path:
 # ---------------------------------------------------------------- 工具实现
 
 
-def list_files(path: str = ".") -> str:
-    p = safe_path(path)
+def list_files(path: str = ".", *, sandbox: Path | None = None) -> str:
+    p = safe_path(path, sandbox=sandbox)
     if not p.exists():
         raise FileNotFoundError(f"{path} 不存在")
     entries = []
@@ -133,8 +136,8 @@ def list_files(path: str = ".") -> str:
     return json.dumps({"path": path, "entries": entries}, ensure_ascii=False)
 
 
-def read_file(path: str) -> str:
-    p = safe_path(path)
+def read_file(path: str, *, sandbox: Path | None = None) -> str:
+    p = safe_path(path, sandbox=sandbox)
     if not p.is_file():
         raise FileNotFoundError(f"{path} 不是文件")
     text = p.read_text(encoding="utf-8")
@@ -143,8 +146,8 @@ def read_file(path: str) -> str:
     return json.dumps({"path": path, "content": text}, ensure_ascii=False)
 
 
-def write_file(path: str, content: str) -> str:
-    p = safe_path(path)
+def write_file(path: str, content: str, *, sandbox: Path | None = None) -> str:
+    p = safe_path(path, sandbox=sandbox)
     if len(content) > 100_000:
         raise ValueError("内容太大")
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -267,6 +270,16 @@ TOOL_IMPL = {
     "finish": finish,
 }
 
+
+def tools_for_sandbox(sandbox: Path) -> dict:
+    """为一次运行绑定独立文件目录，不改变全局 SANDBOX。"""
+    return {
+        **TOOL_IMPL,
+        "list_files": partial(TOOL_IMPL["list_files"], sandbox=sandbox),
+        "read_file": partial(TOOL_IMPL["read_file"], sandbox=sandbox),
+        "write_file": partial(TOOL_IMPL["write_file"], sandbox=sandbox),
+    }
+
 SYSTEM_PROMPT = """你是一个最小智能体，只能通过工具来观察和改变 sandbox/ 目录。
 
 规则：
@@ -370,12 +383,26 @@ class ChatLLM:
 # ---------------------------------------------------------------- 主循环
 
 
-def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> dict:
-    """运行任务，返回结束原因、回答和已执行的模型调用轮数。"""
+def run(
+    task: str,
+    llm: ChatLLM,
+    memory: Memory,
+    max_steps: int = 10,
+    *,
+    sandbox: Path | None = None,
+    event_sink: Callable[[dict], None] | None = None,
+) -> dict:
+    """运行任务；可选独立目录和事件记录，不影响默认调用方式。"""
     memory.add_user(task)
+    tool_impl = tools_for_sandbox(sandbox) if sandbox is not None else TOOL_IMPL
+
+    def emit(event: dict) -> None:
+        # 独立副本避免后续消息变化改写已经记录的事件。
+        if event_sink is not None:
+            event_sink(copy.deepcopy(event))
 
     print(bold(f"\n任务: {task}"))
-    print(dim(f"沙箱: {SANDBOX}"))
+    print(dim(f"沙箱: {sandbox if sandbox is not None else SANDBOX}"))
 
     def report(status: str) -> None:
         print(dim(f"  [状态] {status}"))
@@ -385,17 +412,34 @@ def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> dict:
     steps_taken = 0
     for step in range(1, max_steps + 1):
         if memory.needs_compaction():
-            print(dim(f"  [记忆] {memory.chars()} 字符 > 预算 {memory.budget_chars}，压缩最旧的轮次…"))
-            if memory.compact(llm.summarize):
+            before_chars = memory.chars()
+            print(dim(f"  [记忆] {before_chars} 字符 > 预算 {memory.budget_chars}，压缩最旧的轮次…"))
+
+            def summarize(transcript: str) -> str:
+                emit({"type": "summary_request", "step": step, "messages": [
+                    {"role": "system", "content": SUMMARIZE_PROMPT},
+                    {"role": "user", "content": transcript},
+                ]})
+                summary = llm.summarize(transcript)
+                emit({"type": "summary_response", "step": step, "content": summary})
+                return summary
+
+            compacted = memory.compact(summarize)
+            emit({"type": "memory_compaction", "step": step, "compacted": compacted,
+                  "before_chars": before_chars, "after_chars": memory.chars()})
+            if compacted:
                 print(dim(f"  [记忆] 压缩后 {memory.chars()} 字符"))
             else:
                 print(dim("  [记忆] 最近几轮压不动，交给步数预算兜底"))
 
         print(bold(f"[{step}]"))
 
-        msg = llm.chat(memory.for_model())
+        messages = memory.for_model()
+        emit({"type": "model_request", "step": step, "messages": messages})
+        msg = llm.chat(messages)
         steps_taken = step
         memory.add_assistant(msg)
+        emit({"type": "model_response", "step": step, "message": memory.for_model()[-1]})
 
         thought = (msg.get("content") or "").strip()
         calls = msg.get("tool_calls") or []
@@ -406,6 +450,7 @@ def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> dict:
         if not calls:
             print(green("\n  = 模型没有再调用工具，结束"))
             report("no_tool_call")
+            emit({"type": "run_end", "status": "no_tool_call", "steps": steps_taken})
             return {"status": "no_tool_call", "answer": thought, "steps": steps_taken}
 
         finish_answer = None
@@ -418,12 +463,15 @@ def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> dict:
                 print(f"  {cyan('act:  ')} {name}（跳过）")
                 print(f"  {red('obs:  ')} {observation}")
                 memory.add_tool(call["id"], observation)
+                emit({"type": "tool_result", "step": step, "name": name,
+                      "tool_call_id": call["id"], "outcome": "skipped", "content": observation})
                 continue
 
             raw_args = call["function"].get("arguments")
             if raw_args is None or raw_args == "":
                 raw_args = "{}"
             print(f"  {cyan('act:  ')} {name}({raw_args})")
+            outcome = "ok"
             try:
                 args = json.loads(raw_args)
                 if not isinstance(args, dict):
@@ -432,24 +480,29 @@ def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> dict:
                     answer = args.get("answer")
                     if not isinstance(answer, str) or not answer.strip():
                         raise ValueError("finish 的 answer 必须是非空字符串")
-                observation = TOOL_IMPL[name](**args)
+                observation = tool_impl[name](**args)
                 if name == "finish":
                     finish_answer = answer
                 print(f"  {dim('obs:  ')} {observation}")
             except Exception as e:
+                outcome = "error"
                 observation = f"ERROR: {type(e).__name__}: {e}"
                 print(f"  {red('obs:  ')} {observation}")
 
             memory.add_tool(call["id"], str(observation))
+            emit({"type": "tool_result", "step": step, "name": name,
+                  "tool_call_id": call["id"], "outcome": outcome, "content": str(observation)})
 
         if finish_answer is not None:
             print(green(f"\n  = {finish_answer}"))
             print(dim(f"\n  共 {steps_taken} 步"))
             report("completed")
+            emit({"type": "run_end", "status": "completed", "steps": steps_taken})
             return {"status": "completed", "answer": finish_answer, "steps": steps_taken}
 
     print(red(f"\n  ! 达到最大步数 {max_steps}，强制停止"))
     report("step_limit")
+    emit({"type": "run_end", "status": "step_limit", "steps": steps_taken})
     return {"status": "step_limit", "answer": None, "steps": steps_taken}
 
 

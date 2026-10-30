@@ -2,7 +2,7 @@
 
 记录日期：2026-10-30（Asia/Shanghai）  
 项目根目录：`/Users/apple/Desktop/科研/Multi Agent`  
-记录范围：项目初始版本、记忆模块演进、本次学习问答、token 计量实现及验证。
+记录范围：项目初始版本、记忆模块、学习问答、token 计量和赛后评测层的实现及验证。
 
 ## 1. 记录依据与项目目标
 
@@ -28,6 +28,7 @@
 | Token 计量 | 本次对话，已写入工作区 | 在模型客户端统一统计服务端返回的用量，增加决策和摘要标签、未知用量处理、5 项离线测试及 README 说明 |
 | 项目报告 | 本次对话 | 按要求在项目根目录新增本文件，记录整个项目截至目前的实现和问答摘要 |
 | 结束处理与结构化结果 | 本次对话，见第 12 节 | 明确三种正常结束状态，补齐 `finish` 消息，检查工具参数，增加主循环离线测试 |
+| 赛后评测层 | 本次对话，见第 13 节 | 引入评测任务、隔离运行记录、耗时统计和可注册裁判；不设置评测时间上限 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -120,6 +121,22 @@ flowchart TD
 
 例如，对于“读取 `data.txt`、计算数字之和并写入文件”的任务，模型可能依次请求 `read_file`、`calculator`、`write_file` 和 `finish`。这是可能的执行路径，具体动作顺序以实际模型响应为准。
 
+### 四、赛后评测层怎样工作
+
+```mermaid
+flowchart TD
+    A["读取评测任务<br/>任务描述、初始文件和裁判配置"] --> B["创建独立临时沙箱<br/>写入初始文件"]
+    B --> C["创建模型客户端与 Memory<br/>开始记录 agent.run 的耗时"]
+    C --> D["运行 agent<br/>事件记录器保存决策、摘要与工具结果"]
+    D --> E["run 返回或异常<br/>结束 agent 耗时统计"]
+    E --> F["保存运行状态、token 用量增量和文件快照"]
+    F --> G["清理临时沙箱"]
+    G --> H["运行已注册的赛后裁判<br/>每位裁判读取独立副本"]
+    H --> I["生成 JSON 报告<br/>保留运行事实与每个裁判的结果"]
+```
+
+任务参考答案供裁判使用，评测器只把任务文本和初始文件交给 agent。agent 的运行时间包括模型请求、工具执行、摘要和同步记录；准备沙箱、生成快照和裁判评测不计入。当前不设置评测时间上限；原有 agent 步数限制与单次 HTTP 超时仍然存在。
+
 ## 3. 当前文件组织
 
 ```text
@@ -128,11 +145,17 @@ Multi Agent/
 ├── .gitignore                 # 忽略密钥、Python 缓存等文件
 ├── report.md                  # 本报告
 └── toy-agent/
-    ├── agent.py               # 工具、工具说明、模型客户端、token 计量、主循环
+    ├── agent.py               # 工具、模型客户端、token 计量、主循环和可选事件记录
     ├── memory.py              # 消息记录、分轮、自检、摘要压缩
     ├── README.md              # 运行方法与设计说明
     ├── test_token_usage.py    # 模拟 API 响应的计量测试
     ├── test_run_lifecycle.py  # 模拟模型响应的主循环测试
+    ├── test_evaluation.py     # 评测层离线测试
+    ├── evaluation/
+    │   ├── __main__.py        # 评测命令行入口
+    │   ├── cases.json         # 示例评测任务
+    │   ├── runner.py          # 隔离运行、耗时与运行记录
+    │   └── judges.py          # 裁判注册及内置文件裁判
     └── sandbox/
         ├── data.txt          # 演示任务输入
         └── result.txt        # 演示结果文件
@@ -209,14 +232,14 @@ observation = TOOL_IMPL[name](**args)
 文件工具都会先调用 `safe_path()`：
 
 ```python
-root = SANDBOX.resolve()
+root = (sandbox if sandbox is not None else SANDBOX).resolve()
 target = (root / raw).resolve()
 if target != root and root not in target.parents:
     raise PermissionError(f"路径越界，只允许访问 {root}")
 return target
 ```
 
-这段代码先解析路径，再检查目标是否位于允许目录内。例如，尝试读取 `../.env` 会在正常的路径检查中被拒绝。系统提示词也要求只操作沙箱，但执行层的检查负责实际约束。
+这段代码先解析路径，再检查目标是否位于允许目录内。例如，尝试读取 `../.env` 会在正常的路径检查中被拒绝。默认使用项目的 `SANDBOX`；评测运行器可以为单次运行传入独立目录。系统提示词也要求只操作沙箱，但执行层的检查负责实际约束。
 
 这里的 `sandbox/` 是应用代码规定的文件访问范围，并非操作系统级隔离容器。
 
@@ -657,3 +680,98 @@ python3 -B -m unittest -v test_run_lifecycle test_token_usage
 一个用于理解累计方式的示例：模型决策用量为输入 100、输出 20 token，摘要用量为输入 50、输出 10 token，则两次的已知累计为输入 150、输出 30、合计 180 token。数字仅作演示；如果某次没有完整用量，该次应标记未知，不能当作零。
 
 本次只记录学习交流，未改动 agent 的实现。报告末尾的反馈依据当时的当前代码整理。
+
+## 13. 第五阶段：搭建赛后评测层
+
+### 13.1 需求与讨论
+
+学习者提出，agent 的评测层将来要能接入多种评测工具，也就是不同的“裁判”。评测不仅要看任务结果，还要记录任务运行时间。
+
+讨论后约定：
+
+1. 裁判在 agent 运行结束后评判，不参与运行中的决策或工具拦截。
+2. 评测任务目前不设置时间上限。运行时间作为记录的事实，不自动决定通过或失败。
+3. 一次运行产生独立的记录，多个裁判可以基于同一份记录给出各自的结论。
+4. agent 的运行状态和裁判结论分开；裁判自身出错也不等于 agent 任务失败。
+5. 用独立临时沙箱避免旧文件使新一轮评测误通过；任务参考答案留给裁判，不作为额外内容发送给模型。
+
+第一版实现一条完整链路：一个或多个任务配置 → 独立运行 → 记录结果与耗时 → 注册的裁判 → JSON 报告。默认提供一个检查结果文件的规则裁判，其他裁判可以通过 Python 注册。
+
+### 13.2 各部分与代码位置
+
+| 组成 | 位置 | 当前职责 |
+|---|---|---|
+| 评测任务 | `toy-agent/evaluation/cases.json` | 保存任务 ID、用户任务、初始文件和裁判配置 |
+| 运行器 | `toy-agent/evaluation/runner.py` | 验证任务、创建临时目录、运行 agent、计时、记录 token 与文件快照，再调用裁判 |
+| 裁判注册表 | `toy-agent/evaluation/judges.py` 的 `JudgeRegistry` | 注册函数、分别调用裁判、检查返回值并记录裁判自己的耗时和错误 |
+| 内置裁判 | `toy-agent/evaluation/judges.py` 的 `file_equals` | 检查目标文件快照；首尾空白忽略，比较其余文本 |
+| 命令行 | `toy-agent/evaluation/__main__.py` | 选择任务和模型配置；将 agent 日志输出到 stderr，将 JSON 报告输出到 stdout |
+| 事件记录 | `toy-agent/agent.py` 的 `run(..., event_sink=...)` | 可选地记录决策输入与输出、工具结果、摘要及压缩事件 |
+| 目录隔离 | `safe_path(..., sandbox=...)` 和 `tools_for_sandbox()` | 为一轮评测绑定独立目录，不更改全局默认 `SANDBOX` |
+| 测试 | `toy-agent/test_evaluation.py` | 使用脚本化模型或模拟 HTTP 响应验证评测链路 |
+
+评测器只把 `task` 和初始文件交给 agent；`judges` 中的预期答案属于裁判配置。运行后的报告包含完整任务配置及运行记录，方便日后根据同一份记录重新评判。任务或模型消息可能包含用户数据，报告会保留这些内容；评测器不会主动写入连接模型的 API key。
+
+### 13.3 示例任务
+
+默认任务 `sum_001` 的配置结构：
+
+```json
+{
+  "id": "sum_001",
+  "task": "读取 data.txt，计算所有数字的和。把结果写入 result.txt，文件中只写结果数字，完成后调用 finish。",
+  "initial_files": {"data.txt": "2, 3, 4"},
+  "judges": [{"name": "file_equals", "path": "result.txt", "expected": "9"}]
+}
+```
+
+每次评测都会创建新的临时沙箱，写入该任务的 `data.txt`。`result.txt` 不是初始文件，不能从项目原有的演示沙箱或前一次任务继承。运行结束后，运行器读取临时沙箱的文本文件快照，然后清理目录；裁判在目录清理后读取快照。
+
+### 13.4 运行记录与时间
+
+报告包括 `case_id`、完整的 `case`、`run` 和 `judgments`。`run` 中保存：
+
+- `result`：原有的 `completed`、`no_tool_call`、`step_limit`；运行抛出异常或 `SystemExit` 时记录为 `error`，并保留错误类型和信息。
+- `duration_seconds`：`agent.run()` 这次调用的墙钟耗时，使用 `time.perf_counter()` 测量。包括模型等待、工具执行、摘要和同步事件记录，不包括准备环境、获取快照和赛后裁判。
+- `model` 与 `agent_config`：模型名称、步数预算、字符预算和本次工具说明；其中不保存连接 API 的 key。
+- `token_usage`：本次 agent 运行的已知用量增量、已报告调用数、未知调用数和 `complete`。包含决策与摘要；缺少用量或运行异常时不把未确认用量当作零。
+- `trace`：`model_request`、`model_response`、`summary_request`、`summary_response`、`memory_compaction`、`tool_result`、`run_end` 等事件。事件存为独立副本，即使模型上下文后来被压缩，早前记录仍保留；异常前尚未发生的事件自然不会出现。
+- `artifacts` 和 `artifact_errors`：运行结束后可读取的文本文件及读取失败的信息。
+
+模型响应按现有 `Memory.add_assistant()` 保留标准消息字段；评测器不假设能够获取模型内部的隐藏推理。裁判也各自有 `duration_seconds`，它们的评测耗时不计入 agent 的运行时间。第一版不自动计算外部模型裁判的 token 用量，但注册的裁判可以在自己的结果中附加用量字段。
+
+这里的耗时没有通过阈值或任务截止时间。评测仍沿用 agent 本来的最大决策轮数（默认 10，可通过 `--steps` 覆盖）和单次 HTTP 请求 120 秒超时；这些不是新增的评测任务总时间上限。
+
+### 13.5 裁判接口与结果
+
+裁判是一个函数，接收 `case`、`run_record` 和自己的 `spec`，返回一个字典。结果必须有 `status`，可用值为 `pass`、`fail`、`unknown`、`pending` 或 `error`，并可附带 JSON 可序列化的 `reason`、`evidence`、`score` 等字段。
+
+`JudgeRegistry.register(name, judge)` 注册裁判；同名重复注册会报错。评判时每位裁判得到各自的任务及运行记录副本，避免普通的数据修改影响其他裁判的输入。裁判函数抛异常、返回无效结构或没有注册时，该裁判的结果记录为 `error`；其他裁判仍会运行。此处的数据副本不是操作系统权限隔离，外部裁判作为 Python 程序仍应自行控制其副作用。
+
+第一版的 `file_equals` 只根据文件快照和任务配置判断，不因 `run.result.status == "completed"` 就自动通过：
+
+- 文件内容匹配：`pass`。
+- 文件缺失或内容不匹配：`fail`。
+- 文件快照无法读取：`unknown`。
+
+多个裁判结果分别保留，不设置默认总分。现在 CLI 默认注册 `file_equals`；模型、外部脚本和人工裁判的实际接入与人工复核流程留待后续实现。已有报告的 `case` 和 `run` 也可以直接交给新注册的裁判重新评判，不需要重新运行 agent。
+
+### 13.6 运行与验证
+
+在 `toy-agent/` 目录运行默认任务，需要有效的模型 API 配置：
+
+```bash
+python3 -m evaluation --case sum_001
+```
+
+要使用其他任务集，可通过 `--cases path/to/cases.json` 指定 JSON 文件；省略 `--case` 将顺序运行该文件中的全部任务。stdout 为 JSON 报告，agent 的运行日志输出到 stderr。默认不创建报告文件，也不添加耗时上限。
+
+这次使用模拟模型和模拟 HTTP 响应进行离线验证：
+
+```bash
+python3 -B -m unittest -v test_evaluation test_run_lifecycle test_token_usage
+```
+
+15 项评测层测试、8 项主循环测试和 5 项 token 测试共 28 项通过。重点验证了独立沙箱、裁判在运行和沙箱清理后才执行、过程记录在记忆压缩后仍保留、错误与裁判结论分离、多裁判数据副本、参考答案不进入模型消息、agent 与摘要用量累计、耗时单独记录且不作为限制，以及 CLI 输出可解析 JSON。
+
+测试使用模拟响应，未使用真实服务端重新运行评测。配置无效或初始沙箱准备失败目前由调用方处理，不会转换为一条已完成的运行记录；大任务集批处理的逐任务准备失败隔离、真实模型裁判适配和更完整的运行元数据都可留作后续小步骤。
