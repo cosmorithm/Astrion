@@ -370,16 +370,19 @@ class ChatLLM:
 # ---------------------------------------------------------------- 主循环
 
 
-def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> str:
+def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> dict:
+    """运行任务，返回结束原因、回答和已执行的模型调用轮数。"""
     memory.add_user(task)
 
     print(bold(f"\n任务: {task}"))
     print(dim(f"沙箱: {SANDBOX}"))
 
-    def report() -> None:
+    def report(status: str) -> None:
+        print(dim(f"  [状态] {status}"))
         print(dim(f"  [记忆] {len(memory)} 条消息 / {memory.chars()} 字符"
                   f" / 压缩 {memory.compactions} 次"))
 
+    steps_taken = 0
     for step in range(1, max_steps + 1):
         if memory.needs_compaction():
             print(dim(f"  [记忆] {memory.chars()} 字符 > 预算 {memory.budget_chars}，压缩最旧的轮次…"))
@@ -391,6 +394,7 @@ def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> str:
         print(bold(f"[{step}]"))
 
         msg = llm.chat(memory.for_model())
+        steps_taken = step
         memory.add_assistant(msg)
 
         thought = (msg.get("content") or "").strip()
@@ -401,27 +405,36 @@ def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> str:
 
         if not calls:
             print(green("\n  = 模型没有再调用工具，结束"))
-            report()
-            return thought
+            report("no_tool_call")
+            return {"status": "no_tool_call", "answer": thought, "steps": steps_taken}
 
+        finish_answer = None
         for call in calls:
             name = call["function"]["name"]
+
+            # finish 之后的调用不执行，但仍需写回结果，保持这批消息配对完整。
+            if finish_answer is not None:
+                observation = "ERROR: 已调用 finish，此工具未执行"
+                print(f"  {cyan('act:  ')} {name}（跳过）")
+                print(f"  {red('obs:  ')} {observation}")
+                memory.add_tool(call["id"], observation)
+                continue
+
+            raw_args = call["function"].get("arguments")
+            if raw_args is None or raw_args == "":
+                raw_args = "{}"
+            print(f"  {cyan('act:  ')} {name}({raw_args})")
             try:
-                args = json.loads(call["function"].get("arguments") or "{}")
-            except json.JSONDecodeError:
-                args = {}
-
-            print(f"  {cyan('act:  ')} {name}({json.dumps(args, ensure_ascii=False)})")
-
-            if name == "finish":
-                answer = str(args.get("answer", ""))
-                print(green(f"\n  = {answer}"))
-                print(dim(f"\n  共 {step} 步"))
-                report()
-                return answer
-
-            try:
+                args = json.loads(raw_args)
+                if not isinstance(args, dict):
+                    raise TypeError("工具参数必须是 JSON 对象")
+                if name == "finish":
+                    answer = args.get("answer")
+                    if not isinstance(answer, str) or not answer.strip():
+                        raise ValueError("finish 的 answer 必须是非空字符串")
                 observation = TOOL_IMPL[name](**args)
+                if name == "finish":
+                    finish_answer = answer
                 print(f"  {dim('obs:  ')} {observation}")
             except Exception as e:
                 observation = f"ERROR: {type(e).__name__}: {e}"
@@ -429,9 +442,15 @@ def run(task: str, llm: ChatLLM, memory: Memory, max_steps: int = 10) -> str:
 
             memory.add_tool(call["id"], str(observation))
 
+        if finish_answer is not None:
+            print(green(f"\n  = {finish_answer}"))
+            print(dim(f"\n  共 {steps_taken} 步"))
+            report("completed")
+            return {"status": "completed", "answer": finish_answer, "steps": steps_taken}
+
     print(red(f"\n  ! 达到最大步数 {max_steps}，强制停止"))
-    report()
-    return "（超出步数预算）"
+    report("step_limit")
+    return {"status": "step_limit", "answer": None, "steps": steps_taken}
 
 
 # ---------------------------------------------------------------- 入口
