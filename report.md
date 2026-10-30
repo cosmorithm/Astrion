@@ -2,7 +2,7 @@
 
 记录日期：2026-10-30（Asia/Shanghai）  
 项目根目录：`/Users/apple/Desktop/科研/Multi Agent`  
-记录范围：项目初始版本、记忆模块、学习问答、token 计量和赛后评测层的实现及验证。
+记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层和测试自动化的实现及验证。
 
 ## 1. 记录依据与项目目标
 
@@ -14,7 +14,7 @@
 
 1. Git 已有提交，用来确认本次对话前发生过的代码变化。
 2. 当前源码和文件内容，用来说明现有实现及边界。
-3. 本次对话与实际执行结果，用来记录学习问答、token 计量的需求和实现过程。
+3. 本次对话与实际执行结果，用来记录学习问答、token 计量、会话持久化等需求和实现过程。
 
 本次对话开始时，最小 agent 和独立记忆模块已经存在。因此，前两个阶段根据 Git 和代码还原，不补写无法确认的早期讨论。当前文件夹虽然名为 `Multi Agent`，实际代码仍是单 agent，尚未实现多个 agent 的协作。
 
@@ -31,6 +31,8 @@
 | 赛后评测层 | 本次对话，见第 13 节 | 引入评测任务、隔离运行记录、耗时统计和可注册裁判；不设置评测时间上限 |
 | 自动报告与评测样例 | 本次对话，见第 14 节 | 每个评测任务自动保存 JSON 报告，并把内置任务扩充为 10 个 |
 | 批量通过率总报告 | 本次对话，见第 15 节 | 支持汇总全部样例的裁判结果、通过率、运行状态和单任务报告路径 |
+| 文档修正、会话持久化与测试脚本 | 本次对话，见第 16 节 | 增加 `session.py`、`--session/--fresh`、原子保存和断点恢复；修正过期表述，补充当前边界与 CI |
+| 工具注入接缝与基准适配层 | 本次对话，见第 17 节 | `ChatLLM.chat` 支持按 case 注入 tools；新增 `benchmarks/` 通用适配层和默认行为契约测试 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -152,14 +154,23 @@ flowchart TD
 ```text
 Multi Agent/
 ├── .env                       # 本地 API 配置，不记录密钥内容
-├── .gitignore                 # 忽略密钥、Python 缓存等文件
+├── .gitignore                 # 忽略密钥、会话、基准结果和 Python 缓存等文件
 ├── report.md                  # 本报告
+├── .github/
+│   └── workflows/
+│       └── tests.yml          # CI：Python 3.9–3.12 运行离线测试
 └── toy-agent/
-    ├── agent.py               # 工具、模型客户端、token 计量、主循环和可选事件记录
-    ├── memory.py              # 消息记录、分轮、自检、摘要压缩
+    ├── agent.py               # 工具、模型客户端、token 计量、主循环与会话接入
+    ├── memory.py              # 消息记录、分轮、自检、摘要压缩和序列化
+    ├── session.py             # 会话 JSON 的原子保存、加载与恢复判断
+    ├── benchmarks/            # 基准适配层：按 case 注入 tools，记录原始响应
     ├── README.md              # 运行方法与设计说明
+    ├── run_tests.sh           # 全部离线测试入口
     ├── test_token_usage.py    # 模拟 API 响应的计量测试
     ├── test_run_lifecycle.py  # 模拟模型响应的主循环测试
+    ├── test_session.py        # 会话保存、恢复和 CLI 测试
+    ├── test_agent_contract.py # 默认提示、工具集和可选持久化契约
+    ├── test_benchmarks.py     # 基准适配层离线测试
     ├── test_evaluation.py     # 评测层离线测试
     ├── test_evaluation_summary.py # 通过率及总报告测试
     ├── eval_reports/          # 首次评测后生成的报告目录，不纳入 Git
@@ -567,19 +578,21 @@ python3 -B -m unittest -v test_token_usage
 以下是当前状态和后续讨论的候选项，不表示已经实现或已经承诺继续修改。
 
 1. **用量统计与上下文预算仍分开。** 计量读取调用后返回的实际用量；`--budget` 仍按字符触发压缩。请求前 token 估算、输出空间预留和 token 硬上限尚未实现。
-2. **计量状态只在内存中。** 没有逐次调用记录的持久化、跨进程累计、费用换算或缓存命中用量的单独统计。
+2. **计量状态只在内存中。** 没有逐次调用记录的持久化、跨进程累计、费用换算或缓存命中用量的单独统计；会话文件保存的是记忆，不包含 token 累计。
 3. **计量覆盖当前的非流式响应入口。** HTTP 请求失败、响应无法解析等没有进入记录方法的情况，不会被统计成一条已知或未知用量记录。当前没有流式处理或重试机制。
 4. **未知值采用保守的整次排除。** 如果服务端只有部分字段，保留本次回答，但该次用量显示未知；因此“已知累计”可能小于实际消耗。
-5. **完成状态已结构化，但仍需理解含义。** `completed` 表示模型调用了有效的 `finish`，没有额外验证文件写入结果是否满足任务要求；API 请求等异常尚不通过结果字典返回。
-6. **消息配对已完善，会话持久化仍待实现。** `finish` 及同批未执行调用现在都有对应结果，已验证同一内存对象可以继续用于下一任务；跨进程保存和恢复还未实现。
+5. **完成状态已结构化，但仍需理解含义。** `completed` 表示模型调用了有效的 `finish`，没有额外验证文件写入结果是否满足任务要求；直接调用 `run()` 时 API 请求异常仍以 `SystemExit` 或异常抛出，评测运行器会把它记为 `error` 状态。
+6. **消息配对已完善，会话可恢复但仍非事务。** `finish` 及同批未执行调用都有对应结果；`session.py` 和 `--session` 已实现跨进程保存与恢复。保存点在每轮结束，若在模型请求或一批工具执行中途终止，最近一轮会重做，工具可能重复执行。
 7. **提示词规则与代码约束要分别理解。** “每次一个动作”目前主要由提示词要求；路径限制由执行层检查；字符预算也不保证一定压到模型允许的上下文大小以内。
 8. **仍是单 agent。** 尚未实现子 agent 调用、任务分配、并发协作或多 agent 上下文隔离。
+9. **会话和报告包含数据。** 模型消息、工具输出和文件快照可能含敏感内容；默认目录被 git 忽略，不代表内容可以公开。
+10. **基准层只是适配骨架。** `benchmarks/` 提供按 case 注入工具和记录原始响应的通用接口，但还没有接入 BFCL/ToolBench 的官方数据、prompt、多轮状态机或 scorer。
 
-若继续按当前学习节奏推进，可以单独完善记忆压缩的边界条件，再讨论 token 预算和会话持久化。
+若继续按当前学习节奏推进，可以单独完善记忆压缩的边界条件，再讨论 token 预算、会话文件轮转/加密和更完整的错误分类。
 
 ## 10. 当前阅读与运行入口
 
-建议按“主循环 → 消息回传 → 工具说明与实现 → 计量 → 压缩”的顺序阅读，不必一次理解整个文件。
+建议按“主循环 → 消息回传 → 工具说明与实现 → 计量 → 压缩 → 会话恢复 → 工具注入与基准适配”的顺序阅读，不必一次理解整个文件。
 
 | 关注点 | 入口 |
 |---|---|
@@ -588,6 +601,8 @@ python3 -B -m unittest -v test_token_usage
 | 结果如何交回模型 | `Memory.add_tool()`、`Memory.for_model()` |
 | 用量如何被记录 | `ChatLLM._record_usage()`、`ChatLLM._post()` |
 | 历史如何压缩 | `Memory.units()`、`Memory.compact()`、`ChatLLM.summarize()` |
+| 会话如何保存/恢复 | `Memory.to_dict()`、`session.save_session()`、`session.load_session()`、`run(..., session_path=...)` |
+| 工具如何按 case 注入 | `ChatLLM.chat(messages, tools=...)`、`benchmarks/FunctionCallCase` |
 | 权限在哪里检查 | `safe_path()` |
 | 程序如何结束 | `run()` 中的三种结束路径 |
 
@@ -598,11 +613,18 @@ cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
 python3 agent.py
 ```
 
-仅运行本次计量的离线测试：
+带会话运行；中断后重跑同一条命令即可继续：
 
 ```bash
 cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
-python3 -B -m unittest -v test_token_usage
+python3 agent.py "读取 data.txt，算出所有数字的和，写入 result.txt" --session session.json
+```
+
+全部离线测试（不需要 API key，不访问网络）：
+
+```bash
+cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+./run_tests.sh
 ```
 
 ## 11. 后续记录约定
@@ -646,7 +668,7 @@ python3 -B -m unittest -v test_token_usage
 
 如果同一条 assistant 消息里有多个工具调用，而且有调用排在有效 `finish` 之后，程序会跳过这些后续调用，并各自写入“已调用 finish，此工具未执行”的工具结果。这样既遵守结束信号，又让这一批调用都有对应记录。
 
-离线测试验证了结束后的 `memory.check()` 没有配对问题，以及同一个 `Memory` 可以用于另一项任务。这里验证的是内存对象的复用，尚未实现会话文件的保存和恢复。
+离线测试验证了结束后的 `memory.check()` 没有配对问题，以及同一个 `Memory` 可以用于另一项任务。这里验证的是内存对象的复用；会话文件的保存和恢复已在第 16 节实现。
 
 ### 12.4 工具参数错误怎样处理
 
@@ -913,4 +935,165 @@ CLI 的退出码继续表示命令与报告保存是否正常：单项或总报�
 
 Python 调用方可以将已有单项结果传给 `summarize_suite(reports, report_dir=...)`，只重新汇总并保存总报告。`save_report()` 使用 `suite` 前缀生成总报告文件名，并继续使用 UTC 时间和唯一标识避免覆盖。单项报告或总报告保存失败时，返回数据仍会包含错误信息；CLI 也会提示并返回非零退出码。
 
-本阶段通过 53 项离线测试（31 项评测层、9 项总报告、8 项主循环、5 项 token 计量）。验证涵盖全样例命令的模拟执行、多裁判的通过/失败/待判定、两种通过率的分母、运行状态独立记录、单项或总报告保存失败，以及重复运行不覆盖历史报告。10 个样例的模拟结果不代表真实模型能力；本阶段未调用真实模型。
+本阶段通过 53 项离线测试（31 项评测层、9 项总报告、8 项主循环、5 项 token 计量）。验证涵盖全样例命令的模拟执行、多裁判的通过/失败/待判定、两种通过率的分母、运行状态独立记录、单项或总报告保存失败，以及重复运行不覆盖历史报告。10 个样例的模拟结果不代表真实模型能力；本阶段未调用真实模型。第 16 节又新增 18 项会话持久化测试，第 17 节新增 12 项契约与基准测试，当前总数为 83 项。
+
+## 16. 第八阶段：文档修正、会话持久化与测试脚本
+
+### 16.1 需求与本阶段范围
+
+学习者在阅读项目和 Git 后，要求完成三件事：
+
+1. 修正文档漂移：README 中“四个工具”“`run()` 45 行”等过期表述，并补充“当前已知边界”。
+2. 实现记忆持久化到 `session.json`，支持中断后恢复。
+3. 用脚本和 CI 固定离线测试。
+
+本阶段只改 `toy-agent` 的会话链路、测试脚本和文档，并新增仓库级 CI；不改评测器接口和模型工具集。
+
+### 16.2 文档修正
+
+- README 开头改为“四个业务工具 + `finish`”，避免把终止工具漏掉。
+- 代码地图不再写固定行数，改为“ReAct 的核心都在这里”。
+- 新增“会话持久化”“测试与 CI”“当前已知边界”三节。
+- 本报告更新第 3 节文件树、第 9 节边界和第 10 节阅读入口；历史章节保留当时状态，并用第 16 节交叉引用。
+
+### 16.3 会话文件格式与分层
+
+`memory.py` 只负责记忆本身：
+
+- `to_dict()` 导出 `system_prompt`、`budget_chars`、`keep_recent`、`summary`、`compactions` 和 `history`。
+- `from_dict()` 校验 role、content、`tool_call_id`、`tool_calls`；恢复后调用 `check()`，配对不自洽就拒绝加载。
+- 构造参数现在要求 `budget_chars > 0`、`keep_recent >= 1`。
+
+`session.py` 负责文件和运行元数据。格式示例：
+
+```json
+{
+  "version": 1,
+  "saved_at": "2026-10-30T05:20:00+00:00",
+  "task": "读取 data.txt ...",
+  "status": "running",
+  "steps": 3,
+  "model": "deepseek-chat",
+  "memory": { "...": "Memory.to_dict() 的内容" }
+}
+```
+
+`Session` 数据类保存 `path`、`memory`、`task`、`status`、`steps`、`model`；`is_resumable(task)` 只在状态为 `running` 或 `step_limit` 且任务文本相同时返回 `True`。
+
+### 16.4 保存点与恢复语义
+
+`agent.run()` 新增三个关键字参数：
+
+- `session_path`：为空时不持久化，保持原有调用行为。
+- `resume`：为 `True` 时不再添加用户消息，并校验记忆里的最后一条用户消息与任务一致；若压缩已把它移入摘要，则允许没有用户消息。
+- `initial_steps`：本次运行之前已经完成的决策轮数。
+
+保存点：
+
+1. 开始运行、确认用户任务已写入后，保存 `running`。
+2. 每批工具结果全部写回后，保存 `running`。不在批次中间保存，因为 assistant 的 `tool_calls` 和 tool 结果必须配对。
+3. `no_tool_call`、`completed`、`step_limit` 结束前保存对应状态。
+
+`--steps` 表示本次还能进行多少轮决策；结果里的 `steps` 是会话累计值。CLI 的 `--session` 在文件存在时加载记忆，`--fresh` 忽略旧文件重新开始。同一任务且状态可恢复时不重复添加用户消息；任务不同则追加新任务。
+
+原子写入：先写临时文件、`fsync`，再 `os.replace`；POSIX 下权限设为 600。失败时清理临时文件，原文件保持不变。`save_session()` 在写入前再次调用 `memory.check()`，拒绝保存不自洽的历史。
+
+### 16.5 测试与 CI
+
+新增 `test_session.py` 18 项，覆盖：
+
+- Memory 字典往返、深拷贝隔离、非法历史、非法配置。
+- 会话保存/加载、配置覆盖、原子替换失败、拒绝保存不自洽记忆、损坏 JSON 和未知版本。
+- 完整运行保存、崩溃后恢复不重复用户任务、压缩后恢复不依赖用户消息、`step_limit` 续跑、`no_tool_call` 不可恢复。
+- CLI 新建、恢复、`--fresh` 和损坏会话报错。
+
+新增 `run_tests.sh`，本阶段固定运行 71 项离线测试；第 17 节加入新测试后，脚本当前运行 83 项。`.github/workflows/tests.yml` 在 Python 3.9–3.12 上执行同一脚本。
+
+实际执行：
+
+```bash
+cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+./run_tests.sh
+```
+
+本阶段结果：`Ran 71 tests`，`OK`。这些测试使用脚本化模型和模拟 HTTP 响应，不访问网络，也不读写真实 sandbox。本地还在 Python 3.9.21 上执行了同一组测试，结果相同；3.10/3.11 由 CI 矩阵覆盖。第 17 节加入 12 项新测试后，当前总数为 83 项。
+
+### 16.6 当前边界
+
+- 会话恢复不是事务：保存点在每轮结束，若在一批工具执行中途终止，该批可能重做。
+- 会话写入失败会中止本次运行；上一次成功的存档保持不变。
+- 会话文件包含模型消息、工具输出和可能的文件内容；不要提交或分享。
+- 会话文件没有加密、轮转或按项目自动分目录；这些留作后续。
+- token 累计仍只存在于 `ChatLLM` 实例内，不随会话保存。
+- 仍是单 agent；`run_worker` 只是后续设想。
+
+## 17. 第九阶段：工具注入接缝与基准适配层
+
+### 17.1 目标与边界
+
+这一阶段的目标是给 BFCL/ToolBench 留出接口，同时**不改变默认 agent 的行为**：
+
+- 默认 `agent.run()` 仍然使用 `SYSTEM_PROMPT`、`TOOLS` 和 `finish`；
+- 只有显式传入 `session_path` 时才保存会话；
+- 基准代码放在独立的 `benchmarks/` 包，不进入主循环；
+- 不实现完整 BFCL/ToolBench，也不自己重写官方 scorer。
+
+### 17.2 工具注入接缝
+
+`ChatLLM.chat()` 的签名改为：
+
+```python
+def chat(self, messages: list, tools: list | None = None) -> dict:
+```
+
+行为：
+
+- `tools=None`：发送原有 `TOOLS`，兼容所有旧调用；
+- `tools=[...]`：按 case 发送自定义工具；
+- `tools=[]`：省略 `tools` 和 `tool_choice`，用于无工具 case；
+- 非列表参数抛 `TypeError`。
+
+默认 payload 的模型、消息、工具、`tool_choice="auto"` 和 `temperature=0` 保持不变。
+
+### 17.3 基准适配层
+
+`benchmarks/common.py` 提供：
+
+- `FunctionCallCase`：`id`、`category`、`messages`、`tools`、`metadata`；
+- `load_cases()`：读取通用 JSON case，拒绝重复 id；
+- `run_case()`：把请求的独立副本交给 `chat(messages, tools)`，记录原始响应；
+- `run_cases()`：顺序运行，支持 `limit`，单条失败默认记录为 `error` 并继续；
+- `write_jsonl()`：先完整序列化再写文件；
+- `summarize()`：只统计数量和错误，不计算通过率。
+
+这一层**不做评分**。BFCL 的 AST/state transition、ToolBench 的 pass/win rate、官方 prompt 和多轮状态机都留给各自 harness。这样不会因为自定义评分器导致分数不可比。
+
+### 17.4 默认行为契约
+
+新增 `test_agent_contract.py` 6 项，锁住：
+
+- 默认 `chat()` 仍发送 `TOOLS`；
+- 自定义 tools 被正确注入；
+- `tools=[]` 时省略工具字段；
+- 非列表 tools 被拒绝；
+- 默认 `run()` 仍使用原系统提示、保留 `finish`，且不调用 `save_session`；
+- `run()` 的 `session_path/resume/initial_steps/sandbox` 默认值保持不变。
+
+新增 `test_benchmarks.py` 6 项，覆盖 case 校验、重复 id、请求副本隔离、错误记录、`limit`、JSONL 和汇总。
+
+### 17.5 验证
+
+```bash
+cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
+./run_tests.sh
+```
+
+结果：`Ran 83 tests`，`OK`。测试分布为契约 6、基准适配 6、会话 18、评测层 31、总报告 9、主循环 8、token 5。默认 agent 的 71 项旧测试仍全部通过，新增 12 项不改变旧路径。
+
+### 17.6 当前边界
+
+- 尚未接入 BFCL 官方数据、官方 prompt、AST/state transition scorer 或多轮状态机；
+- 尚未接入 ToolBench/StableToolBench 的 API 缓存、检索和 pass/win rate；
+- 没有基准级缓存、并发、限流或成本汇总；
+- `benchmarks/` 的结果格式是通用记录，不等于官方 leaderboard 格式；
+- toy-agent eval、BFCL subset 和官方 full leaderboard 不能直接比较。

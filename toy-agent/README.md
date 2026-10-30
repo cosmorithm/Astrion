@@ -1,13 +1,16 @@
 # toy-agent
 
-一个能完整看懂的极简智能体：**ReAct 循环 + 四个工具 + 沙箱 + 独立的记忆模块**。
+一个能完整看懂的极简智能体：**ReAct 循环 + 四个业务工具 + `finish` + 沙箱 + 独立记忆 + 可恢复会话**。
 全部标准库，没有第三方依赖。
 
 ```
 toy-agent/
-├── agent.py        循环、工具、模型客户端
-├── memory.py       会话记忆：消息窗口 + 超额压缩
+├── agent.py        循环、工具、模型客户端、会话接入
+├── memory.py       会话记忆：消息窗口 + 超额压缩 + 序列化
+├── session.py      会话 JSON：原子保存、加载与恢复判断
+├── benchmarks/     基准适配层：按 case 注入 tools，记录原始响应
 ├── evaluation/     赛后评测：任务、运行器、可注册裁判
+├── run_tests.sh    全部离线测试入口
 └── sandbox/        它唯一被允许读写的地方
     ├── data.txt    演示输入
     └── result.txt  运行产物
@@ -20,6 +23,7 @@ toy-agent/
 ```bash
 python3 agent.py "读取 data.txt，算出所有数字的和，写入 result.txt"
 python3 agent.py                      # 不传任务就走默认任务
+python3 agent.py "任务" --session session.json   # 可恢复会话
 ```
 
 没有 key 时会直接报错退出，**没有离线兜底**——宁可失败，也不要给你一个假装在思考的假模型。
@@ -28,10 +32,12 @@ python3 agent.py                      # 不传任务就走默认任务
 
 | 参数 | 作用 |
 |---|---|
-| `--steps N` | 最大步数，默认 10 |
+| `--steps N` | 本次最多进行的模型决策轮数，默认 10；恢复时表示还能再走几轮 |
 | `--budget N` | 记忆预算（字符），默认 12000，超出后压缩最旧的轮次 |
 | `--model M` | 临时换模型，覆盖 `.env` |
 | `--base-url U` | 临时换服务端，覆盖 `.env` |
+| `--session PATH` | 会话 JSON 路径；存在时恢复记忆，运行中每轮自动保存 |
+| `--fresh` | 忽略已有会话文件，从空记忆开始（需配合 `--session`） |
 
 ## 配置
 
@@ -170,7 +176,9 @@ JSON 可序列化的 `reason`、`evidence`、`score` 等字段。裁判函数报
 离线验证（使用模拟模型和 HTTP 响应，不访问网络）：
 
 ```bash
-python3 -B -m unittest -v test_evaluation_summary test_evaluation test_run_lifecycle test_token_usage
+./run_tests.sh
+# 或手动指定模块
+python3 -B -m unittest -v test_session test_evaluation_summary test_evaluation test_run_lifecycle test_token_usage
 ```
 
 ## 输出怎么看
@@ -238,7 +246,7 @@ python3 -B -m unittest -v test_run_lifecycle test_token_usage
 - **在 `ChatLLM._post()` 统一记录。** 普通决策和记忆摘要都计入，因此压缩记忆的调用不会漏算。
 - **未知用量不当作零。** 如果 `usage` 缺失或三个字段不完整、无效，本次显示“未知”；
   已知累计会注明还有多少次未知调用未计入，全部未知时累计也显示“未知”。
-- **累计范围是一个 `ChatLLM` 实例。** 命令行每次启动创建一个新实例，从零累计；没有持久化到磁盘。
+- **累计范围是一个 `ChatLLM` 实例。** 命令行每次启动创建一个新实例，从零累计；token 用量没有持久化到磁盘，也不写进会话文件。
 - **计量与预算分开。** 现有 `--budget` 仍然是字符预算，用于触发记忆压缩。
   此次只记录返回的实际 token 用量，不增加 token 上限或费用换算。
 
@@ -258,9 +266,11 @@ python3 -B -m unittest -v test_token_usage
 | 工具 schema | `agent.py` 的 `TOOLS` | 给模型看的说明书（JSON Schema） |
 | 工具实现 | `list_files` 等 | 真正执行的函数 |
 | 策略层 | `safe_path()` | 路径钉死在 sandbox，越界即抛错 |
-| 模型层 | `ChatLLM` | 一个 `_post` 管所有 HTTP，`chat` 和 `summarize` 共用 |
-| 编排层 | `run()` | 那个循环，全部精华在这 45 行 |
-| 记忆层 | `memory.py` 的 `Memory` | 消息窗口 + 压缩 |
+| 模型层 | `ChatLLM` | 一个 `_post` 管所有 HTTP，`chat` 支持可选 tools，`summarize` 共用 |
+| 编排层 | `run()` | 那个循环，ReAct 的核心都在这里 |
+| 记忆层 | `memory.py` 的 `Memory` | 消息窗口 + 压缩 + 序列化 |
+| 持久化 | `session.py` | 会话 JSON 的原子保存、加载与恢复判断 |
+| 基准适配 | `benchmarks/` | 按 case 注入 tools，记录原始响应；默认 agent 不依赖 |
 | 终止 | `finish` 工具 + `max_steps` | 显式终止 + 预算硬停 |
 
 ## 记忆系统（memory.py）
@@ -286,6 +296,42 @@ if memory.needs_compaction():            # 超预算了
 
 摘要放在 system 里（`## 你之前做过的事`），不新增 role——兼容性最好。
 
+`Memory` 还提供 `to_dict()` / `from_dict()`，把系统提示、摘要、压缩次数和历史导出/恢复成普通字典；文件读写和任务元数据交给 `session.py`。
+
+## 会话持久化（session.py）
+
+`--session` 把记忆、任务、结束状态和累计步数写进一个 JSON 文件；默认不开启，保持原来的一次性运行行为。
+
+```bash
+python3 agent.py "读取 data.txt..." --session session.json
+# 中断、崩溃或达到 --steps 后，重跑同一条命令即可继续
+python3 agent.py "读取 data.txt..." --session session.json
+
+# 忽略旧文件，从空记忆开始；第一次保存时覆盖
+python3 agent.py "读取 data.txt..." --session session.json --fresh
+```
+
+规则：
+
+- **保存点在每轮结束。** 只有一整批工具结果都写回 `Memory` 之后才保存，文件里的历史始终能通过 `check()`。如果进程在模型请求或一批工具执行中途终止，恢复点最多回退到上一轮，那一批工具可能重做。
+- **原子写入。** 先写临时文件并 `fsync`，再用 `os.replace` 替换；不会留下半个 JSON。POSIX 下会话文件权限设为 600。
+- **按任务判断是否继续。** 同一任务且上次状态是 `running` 或 `step_limit` 时，自动继续，不重复添加用户消息；其他情况会在已有记忆上追加新任务，不会自动继续旧任务。
+- **恢复时的配置来自当前命令行。** 系统提示、`--budget` 和 `--steps` 使用本次运行的值；`--steps` 表示本次还能进行多少轮决策，结果里的 `steps` 是会话累计值。
+- **内容可能敏感。** 会话文件包含模型可见的消息和工具输出，可能含文件内容；默认已被 `.gitignore` 的 `session*.json` 覆盖，不要提交或分享。
+- 会话文件损坏、版本不兼容或历史配对不自洽时，CLI 会报错退出；可用 `--fresh` 忽略旧文件重新开始。
+- 会话写入失败会中止本次运行；上一次成功保存的文件保持不变，错误会输出到 stderr。
+
+## 基准测试适配层（benchmarks/）
+
+这一层是为 BFCL/ToolBench 预留的接缝，不是完整基准实现；默认 `agent.run()` 不经过这里。
+
+- `ChatLLM.chat(messages, tools=None)`：不传 `tools` 时仍发送默认 `TOOLS`；传列表时按 case 注入；传 `[]` 时省略 `tools` 和 `tool_choice`。
+- `FunctionCallCase`：保存 `id`、`category`、`messages`、`tools` 和 `metadata`。
+- `run_cases()`：逐条调用模型，记录原始请求/响应和错误；不判断对错。
+- 评分、官方 prompt、BFCL AST/state transition、ToolBench pass/win rate 都留在各自官方 harness，避免自定义 scorer 造成分数不可比。
+
+示例和边界见 [benchmarks/README.md](benchmarks/README.md)。当前只提供骨架，尚未接入官方数据。
+
 ## 三个刻意的设计选择
 
 1. **`finish` 是工具，不是一句"我说完了"**
@@ -304,9 +350,39 @@ if memory.needs_compaction():            # 超预算了
 - **注释掉 `safe_path` 的检查**，让它读 `../../etc/hosts` 试试。真实智能体的危险就来自这里。
 - **给 `TOOLS` 加一个 schema 但不加实现**，看模型调用时会发生什么（答案是：一条看不懂的 `KeyError`）。
 
+## 测试与 CI
+
+全部离线测试（模拟模型和 HTTP 响应，不访问网络、不需要 API key）：
+
+```bash
+./run_tests.sh
+```
+
+它依次运行 83 项测试：契约 6 项、基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
+本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
+
+只看会话部分：
+
+```bash
+python3 -B -m unittest -v test_session
+```
+
+## 当前已知边界
+
+1. **单 agent。** 尚未实现子 agent、任务分配、并发协作；`run_worker` 仍只是后续设想。
+2. **`completed` 不是验收。** 它只表示模型调用了有效 `finish`，不保证文件内容正确；结果正确性要靠 `evaluation/` 的裁判。
+3. **字符预算不是 token 硬上限。** `--budget` 按序列化字符数触发压缩；压缩后仍可能超预算，也没有请求前 token 估算。
+4. **会话恢复不是事务。** 保存点在每轮结束；若在模型请求或一批工具执行中途终止，最近一轮会重做，工具可能被重复执行。
+5. **会话和报告包含数据。** 模型消息、工具输出和文件快照可能含敏感内容；分享前要检查，默认目录虽被 git 忽略，不代表内容可以公开。
+6. **沙箱不是操作系统隔离。** `safe_path()` 限制应用层文件工具；这不是容器级安全边界。
+7. **没有任务时间上限。** 只记录耗时；单次 HTTP 超时 120 秒，`--steps` 限制决策轮数。
+8. **BFCL/ToolBench 还没有接入官方 harness。** 当前 `benchmarks/` 只提供按 case 注入工具和记录原始响应的骨架；官方 prompt、数据转换、AST/state transition 和 pass/win rate 评分尚未实现。
+
 ## 想继续加什么（按难度）
 
 1. `delete_file` 工具 + 删除前的确认钩子（体验一次策略层）
-2. 记忆持久化到 `session.json`，支持中断后恢复
-3. 继续完善结束状态，例如明确表示模型请求失败，并根据任务需要检查结果
-4. 一个 `run_worker` 工具，内部再起一个 `run()`（多智能体，本质只是嵌套）
+2. 继续完善结束状态，例如明确表示模型请求失败，并根据任务需要检查结果
+3. 一个 `run_worker` 工具，内部再起一个 `run()`（多智能体，本质只是嵌套）
+4. 会话文件的轮转、加密或按项目分目录管理
+5. BFCL 核心单轮适配：官方 prompt + 官方 scorer，先跑小样本
+6. StableToolBench 小样本：缓存 API + pass rate，win rate 后置

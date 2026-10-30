@@ -8,6 +8,7 @@ toy-agent —— 一个可以完整看懂的最小智能体（零依赖，标准
 
 用法:
     python3 agent.py "看看 data.txt 里数字的和是多少"   # 调真模型
+    python3 agent.py "任务" --session session.json      # 保存并在中断后恢复
 
 配置（优先级从高到低）:
     1. 命令行    --model / --base-url
@@ -34,6 +35,7 @@ from pathlib import Path
 from typing import Callable
 
 from memory import Memory
+from session import load_session, save_session
 
 # ---------------------------------------------------------------- 终端样式
 
@@ -358,14 +360,25 @@ class ChatLLM:
         self._record_usage(data.get("usage"), purpose)
         return data["choices"][0]["message"]
 
-    def chat(self, messages: list) -> dict:
-        return self._post({
+    def chat(self, messages: list, tools: list | None = None) -> dict:
+        """发送一次决策请求；tools=None 时沿用默认工具集。
+
+        BFCL/ToolBench 这类基准需要按 case 注入工具，所以允许显式传入。
+        tools=[] 表示本次不带工具，请求中省略 tools 和 tool_choice。
+        默认调用仍然发送 TOOLS，行为与之前一致。
+        """
+        if tools is not None and not isinstance(tools, list):
+            raise TypeError("tools 必须是列表或 None")
+        chosen = TOOLS if tools is None else tools
+        payload = {
             "model": self.model,
             "messages": messages,
-            "tools": TOOLS,
-            "tool_choice": "auto",
-            "temperature": 0,
-        })
+        }
+        if chosen:
+            payload["tools"] = chosen
+            payload["tool_choice"] = "auto"
+        payload["temperature"] = 0
+        return self._post(payload)
 
     def summarize(self, transcript: str) -> str:
         """把一段旧对话压成备忘。这次不带 tools —— 压缩不是决策。"""
@@ -391,9 +404,29 @@ def run(
     *,
     sandbox: Path | None = None,
     event_sink: Callable[[dict], None] | None = None,
+    session_path: Path | str | None = None,
+    resume: bool = False,
+    initial_steps: int = 0,
 ) -> dict:
-    """运行任务；可选独立目录和事件记录，不影响默认调用方式。"""
-    memory.add_user(task)
+    """运行任务；可选独立目录、事件记录和会话持久化。
+
+    session_path 不为空时，在开始、每轮工具结果全部写回以及结束状态确定后保存，
+    保证文件里的历史始终自洽。resume=True 表示 task 已在 memory 中，不会重复
+    写入用户消息；initial_steps 是本次之前已经完成的决策轮数，用于累计步数。
+    """
+    if type(initial_steps) is not int or initial_steps < 0:
+        raise ValueError("initial_steps 必须是非负整数")
+    if resume:
+        last_user = memory.last_user()
+        if last_user is not None and last_user != task:
+            raise ValueError("恢复的任务与会话中的用户任务不一致")
+        # 压缩可能已经把最初的任务移进摘要，这时允许没有用户消息。
+        if last_user is None and memory.compactions == 0:
+            raise ValueError("恢复失败：记忆中没有用户任务")
+    else:
+        memory.add_user(task)
+
+    steps_taken = initial_steps
     tool_impl = tools_for_sandbox(sandbox) if sandbox is not None else TOOL_IMPL
 
     def emit(event: dict) -> None:
@@ -401,15 +434,22 @@ def run(
         if event_sink is not None:
             event_sink(copy.deepcopy(event))
 
+    def persist(status: str) -> None:
+        if session_path is not None:
+            save_session(session_path, memory=memory, task=task, status=status,
+                         steps=steps_taken, model=getattr(llm, "model", None))
+
     print(bold(f"\n任务: {task}"))
     print(dim(f"沙箱: {sandbox if sandbox is not None else SANDBOX}"))
+    if session_path is not None:
+        print(dim(f"会话: {session_path}"))
 
     def report(status: str) -> None:
         print(dim(f"  [状态] {status}"))
         print(dim(f"  [记忆] {len(memory)} 条消息 / {memory.chars()} 字符"
                   f" / 压缩 {memory.compactions} 次"))
 
-    steps_taken = 0
+    persist("running")
     for step in range(1, max_steps + 1):
         if memory.needs_compaction():
             before_chars = memory.chars()
@@ -437,7 +477,7 @@ def run(
         messages = memory.for_model()
         emit({"type": "model_request", "step": step, "messages": messages})
         msg = llm.chat(messages)
-        steps_taken = step
+        steps_taken = initial_steps + step
         memory.add_assistant(msg)
         emit({"type": "model_response", "step": step, "message": memory.for_model()[-1]})
 
@@ -450,6 +490,7 @@ def run(
         if not calls:
             print(green("\n  = 模型没有再调用工具，结束"))
             report("no_tool_call")
+            persist("no_tool_call")
             emit({"type": "run_end", "status": "no_tool_call", "steps": steps_taken})
             return {"status": "no_tool_call", "answer": thought, "steps": steps_taken}
 
@@ -497,11 +538,16 @@ def run(
             print(green(f"\n  = {finish_answer}"))
             print(dim(f"\n  共 {steps_taken} 步"))
             report("completed")
+            persist("completed")
             emit({"type": "run_end", "status": "completed", "steps": steps_taken})
             return {"status": "completed", "answer": finish_answer, "steps": steps_taken}
 
-    print(red(f"\n  ! 达到最大步数 {max_steps}，强制停止"))
+        # 这一批工具结果已经全部写回，历史此刻是自洽的，可以存档。
+        persist("running")
+
+    print(red(f"\n  ! 达到本次最大步数 {max_steps}，强制停止"))
     report("step_limit")
+    persist("step_limit")
     emit({"type": "run_end", "status": "step_limit", "steps": steps_taken})
     return {"status": "step_limit", "answer": None, "steps": steps_taken}
 
@@ -512,11 +558,22 @@ def run(
 def main() -> None:
     parser = argparse.ArgumentParser(description="一个最小可读的智能体")
     parser.add_argument("task", nargs="?", default="读取 data.txt，算出所有数字的和，把结果写入 result.txt")
-    parser.add_argument("--steps", type=int, default=10, help="最大步数")
+    parser.add_argument("--steps", type=int, default=10, help="本次最多进行的模型决策轮数")
     parser.add_argument("--budget", type=int, default=12000, help="记忆预算（字符），超出后压缩最旧的轮次")
     parser.add_argument("--model", default="", help="临时覆盖 AGENT_MODEL")
     parser.add_argument("--base-url", default="", help="临时覆盖 AGENT_BASE_URL")
+    parser.add_argument("--session", type=Path, default=None,
+                        help="会话 JSON 路径；存在时恢复记忆，运行中每轮自动保存")
+    parser.add_argument("--fresh", action="store_true",
+                        help="忽略已有会话文件，从空记忆开始（需要 --session）")
     args = parser.parse_args()
+
+    if args.steps < 0:
+        parser.error("--steps 必须为非负整数")
+    if args.budget <= 0:
+        parser.error("--budget 必须为正整数")
+    if args.fresh and args.session is None:
+        parser.error("--fresh 需要同时指定 --session")
 
     # 先加载 .env，再用统一的方式读配置
     env_files = load_env(find_env_files(Path(__file__).resolve().parent))
@@ -540,8 +597,45 @@ def main() -> None:
     print(dim(f"密钥: {mask(key)}（{source}）"))
     llm = ChatLLM(key=key, base_url=base_url, model=model)
 
-    memory = Memory(SYSTEM_PROMPT, budget_chars=args.budget)
-    run(args.task, llm, memory, max_steps=args.steps)
+    session_path = args.session.expanduser() if args.session is not None else None
+    session = None
+    if session_path is not None and not args.fresh and session_path.exists():
+        try:
+            session = load_session(session_path, system_prompt=SYSTEM_PROMPT,
+                                   budget_chars=args.budget)
+        except (OSError, ValueError) as exc:
+            print(red(f"错误: 无法读取会话文件 {session_path}: {exc}"), file=sys.stderr)
+            print(dim("      可以用 --fresh 忽略旧文件并重新开始。"), file=sys.stderr)
+            raise SystemExit(1)
+
+    if session is not None:
+        memory = session.memory
+        resume = session.is_resumable(args.task)
+        initial_steps = session.steps if resume else 0
+        if resume:
+            print(dim(f"会话: 恢复 {session_path}（{len(memory)} 条消息，已累计 {session.steps} 步）"))
+        else:
+            print(dim(f"会话: 使用 {session_path} 的已有记忆开始新任务"))
+            if session.task != args.task:
+                print(dim(f"      上次任务: {session.task}"))
+    else:
+        memory = Memory(SYSTEM_PROMPT, budget_chars=args.budget)
+        resume = False
+        initial_steps = 0
+        if args.fresh and session_path is not None and session_path.exists():
+            print(dim(f"会话: 忽略已有文件 {session_path}，从空记忆开始"))
+
+    try:
+        run(args.task, llm, memory, max_steps=args.steps, session_path=session_path,
+            resume=resume, initial_steps=initial_steps)
+    except OSError as exc:
+        print(red(f"错误: 会话文件写入失败: {exc}"), file=sys.stderr)
+        raise SystemExit(1)
+    except ValueError as exc:
+        print(red(f"错误: {exc}"), file=sys.stderr)
+        raise SystemExit(1)
+    if session_path is not None:
+        print(dim(f"会话已保存: {session_path}"))
 
 
 if __name__ == "__main__":

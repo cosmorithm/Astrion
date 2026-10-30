@@ -8,7 +8,8 @@ memory.py —— 会话记忆（最小版）
     · 消息窗口：for_model() 返回当前该发给模型的全部消息
     · 超额压缩：需要摘要时，由调用方传进来一个函数，它不知道模型的存在
 
-刻意不做的事：持久化、统计报表、多窗口、向量检索。先把这一件事做对。
+刻意不做的事：文件读写、统计报表、多窗口、向量检索。
+序列化交给 to_dict/from_dict，文件由 session.py 负责。
 
 一条硬约束：压缩必须以「轮」为单位切。assistant 的 tool_calls 和它对应的
 tool 结果是一对，拆开就是非法消息，API 会直接 400。
@@ -16,12 +17,74 @@ tool 结果是一对，拆开就是非法消息，API 会直接 400。
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Callable
 
 SUMMARY_HEADER = "\n\n## 你之前做过的事（自动压缩的摘要）\n"
 
 Summarizer = Callable[[str], str]
+VALID_ROLES = {"user", "assistant", "tool"}
+
+
+def _clean_tool_calls(raw, index: int) -> list[dict]:
+    """校验会话文件里的工具调用，只保留已知字段。"""
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"第 {index + 1} 条 assistant 消息的 tool_calls 必须是非空列表")
+    calls = []
+    for call in raw:
+        if not isinstance(call, dict):
+            raise ValueError(f"第 {index + 1} 条消息包含非对象的工具调用")
+        call_id = call.get("id")
+        function = call.get("function")
+        call_type = call.get("type", "function")
+        if not isinstance(call_id, str) or not call_id:
+            raise ValueError(f"第 {index + 1} 条消息的工具调用缺少 id")
+        if not isinstance(function, dict):
+            raise ValueError(f"第 {index + 1} 条消息的工具调用缺少 function")
+        name = function.get("name")
+        arguments = function.get("arguments", "")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"第 {index + 1} 条消息的工具调用缺少名称")
+        if not isinstance(arguments, str):
+            raise ValueError(f"第 {index + 1} 条消息的工具参数必须是字符串")
+        if not isinstance(call_type, str) or not call_type:
+            raise ValueError(f"第 {index + 1} 条消息的工具调用 type 无效")
+        calls.append({
+            "id": call_id,
+            "type": call_type,
+            "function": {"name": name, "arguments": arguments},
+        })
+    return calls
+
+
+def _clean_history(raw) -> list[dict]:
+    """校验并清洗历史消息，避免把随意 JSON 直接装回 Memory。"""
+    if not isinstance(raw, list):
+        raise ValueError("history 必须是列表")
+    cleaned = []
+    for index, message in enumerate(raw):
+        if not isinstance(message, dict):
+            raise ValueError(f"第 {index + 1} 条消息必须是对象")
+        role = message.get("role")
+        if role not in VALID_ROLES:
+            raise ValueError(f"第 {index + 1} 条消息的 role 无效: {role!r}")
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise ValueError(f"第 {index + 1} 条消息的 content 必须是字符串或 null")
+        if role in {"user", "tool"} and not isinstance(content, str):
+            raise ValueError(f"第 {index + 1} 条消息的 content 必须是字符串")
+
+        item = {"role": role, "content": content}
+        if role == "assistant" and message.get("tool_calls"):
+            item["tool_calls"] = _clean_tool_calls(message["tool_calls"], index)
+        if role == "tool":
+            call_id = message.get("tool_call_id")
+            if not isinstance(call_id, str) or not call_id:
+                raise ValueError(f"第 {index + 1} 条 tool 消息缺少 tool_call_id")
+            item["tool_call_id"] = call_id
+        cleaned.append(item)
+    return cleaned
 
 
 class Memory:
@@ -32,6 +95,12 @@ class Memory:
         keep_recent: int = 4,
         summarizer: Summarizer | None = None,
     ):
+        if not isinstance(system_prompt, str) or not system_prompt.strip():
+            raise ValueError("system_prompt 必须是非空字符串")
+        if type(budget_chars) is not int or budget_chars <= 0:
+            raise ValueError("budget_chars 必须是正整数")
+        if type(keep_recent) is not int or keep_recent < 1:
+            raise ValueError("keep_recent 必须是正整数")
         self.system_prompt = system_prompt
         self.budget_chars = budget_chars
         self.keep_recent = keep_recent      # 压缩时至少保留最近几轮原文
@@ -71,6 +140,61 @@ class Memory:
 
     def __len__(self) -> int:
         return len(self._history)
+
+    def last_user(self) -> str | None:
+        """返回最近一条用户消息；压缩后它可能已经被移入摘要。"""
+        for message in reversed(self._history):
+            if message["role"] == "user":
+                return message["content"]
+        return None
+
+    # ------------------------------------------------------------ 序列化
+
+    def to_dict(self) -> dict:
+        """导出可 JSON 序列化的完整记忆状态。"""
+        return {
+            "system_prompt": self.system_prompt,
+            "budget_chars": self.budget_chars,
+            "keep_recent": self.keep_recent,
+            "summary": self._summary,
+            "compactions": self.compactions,
+            "history": copy.deepcopy(self._history),
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict,
+        *,
+        system_prompt: str | None = None,
+        budget_chars: int | None = None,
+        keep_recent: int | None = None,
+    ) -> "Memory":
+        """从会话文件恢复记忆；显式传入的配置优先于文件中的旧值。"""
+        if not isinstance(data, dict):
+            raise ValueError("记忆数据必须是对象")
+        history = _clean_history(data.get("history"))
+        summary = data.get("summary", "")
+        if not isinstance(summary, str):
+            raise ValueError("摘要必须是字符串")
+        compactions = data.get("compactions", 0)
+        if type(compactions) is not int or compactions < 0:
+            raise ValueError("compactions 必须是非负整数")
+
+        prompt = system_prompt if system_prompt is not None else data.get("system_prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("system_prompt 必须是非空字符串")
+        budget = budget_chars if budget_chars is not None else data.get("budget_chars", 12000)
+        keep = keep_recent if keep_recent is not None else data.get("keep_recent", 4)
+
+        memory = cls(prompt, budget_chars=budget, keep_recent=keep)
+        memory._history = history
+        memory._summary = summary
+        memory.compactions = compactions
+        problems = memory.check()
+        if problems:
+            raise ValueError("会话历史不自洽: " + "；".join(problems))
+        return memory
 
     # ------------------------------------------------------------ 分轮与自检
 
