@@ -8,6 +8,14 @@ from .common import (
     summarize,
     write_jsonl,
 )
+from .bfcl import (
+    BFCLManifest,
+    PINNED_BFCL_VERSION,
+    collect_official_outputs,
+    load_manifest as load_bfcl_manifest,
+    probe_bfcl,
+    run_bfcl,
+)
 
 __all__ = [
     "FunctionCallCase",
@@ -16,4 +24,10 @@ __all__ = [
     "run_cases",
     "summarize",
     "write_jsonl",
+    "BFCLManifest",
+    "PINNED_BFCL_VERSION",
+    "collect_official_outputs",
+    "load_bfcl_manifest",
+    "probe_bfcl",
+    "run_bfcl",
 ]

@@ -2,7 +2,7 @@
 
 记录日期：2026-10-30（Asia/Shanghai）  
 项目根目录：`/Users/apple/Desktop/科研/Multi Agent`  
-记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层和测试自动化的实现及验证。
+记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层、BFCL 官方集成和测试自动化的实现及验证。
 
 ## 1. 记录依据与项目目标
 
@@ -33,6 +33,7 @@
 | 批量通过率总报告 | 本次对话，见第 15 节 | 支持汇总全部样例的裁判结果、通过率、运行状态和单任务报告路径 |
 | 文档修正、会话持久化与测试脚本 | 本次对话，见第 16 节 | 增加 `session.py`、`--session/--fresh`、原子保存和断点恢复；修正过期表述，补充当前边界与 CI |
 | 工具注入接缝与基准适配层 | 本次对话，见第 17 节 | `ChatLLM.chat` 支持按 case 注入 tools；新增 `benchmarks/` 通用适配层和默认行为契约测试 |
+| BFCL 官方 harness 集成 | 本次对话，见第 18 节 | 固定 `bfcl-eval` 版本和 20 样例子集；调用官方生成与评分命令，导入官方分数；ToolBench 后置 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -163,14 +164,19 @@ Multi Agent/
     ├── agent.py               # 工具、模型客户端、token 计量、主循环与会话接入
     ├── memory.py              # 消息记录、分轮、自检、摘要压缩和序列化
     ├── session.py             # 会话 JSON 的原子保存、加载与恢复判断
-    ├── benchmarks/            # 基准适配层：按 case 注入 tools，记录原始响应
+    ├── benchmarks/            # 通用基准适配 + BFCL 官方 harness 旁路集成
+    │   ├── bfcl.py            # BFCL doctor、运行编排、官方结果导入与统一报告
+    │   └── manifests/         # 固定的 BFCL V4 子集 manifest
     ├── README.md              # 运行方法与设计说明
     ├── run_tests.sh           # 全部离线测试入口
+    ├── setup_bfcl.sh          # 在独立 venv 安装固定 BFCL 官方包
+    ├── requirements-bfcl.txt  # 可选 BFCL 依赖版本
     ├── test_token_usage.py    # 模拟 API 响应的计量测试
     ├── test_run_lifecycle.py  # 模拟模型响应的主循环测试
     ├── test_session.py        # 会话保存、恢复和 CLI 测试
     ├── test_agent_contract.py # 默认提示、工具集和可选持久化契约
     ├── test_benchmarks.py     # 基准适配层离线测试
+    ├── test_bfcl.py           # BFCL 旁路编排、失败保留和官方分数导入测试
     ├── test_evaluation.py     # 评测层离线测试
     ├── test_evaluation_summary.py # 通过率及总报告测试
     ├── eval_reports/          # 首次评测后生成的报告目录，不纳入 Git
@@ -586,13 +592,13 @@ python3 -B -m unittest -v test_token_usage
 7. **提示词规则与代码约束要分别理解。** “每次一个动作”目前主要由提示词要求；路径限制由执行层检查；字符预算也不保证一定压到模型允许的上下文大小以内。
 8. **仍是单 agent。** 尚未实现子 agent 调用、任务分配、并发协作或多 agent 上下文隔离。
 9. **会话和报告包含数据。** 模型消息、工具输出和文件快照可能含敏感内容；默认目录被 git 忽略，不代表内容可以公开。
-10. **基准层只是适配骨架。** `benchmarks/` 提供按 case 注入工具和记录原始响应的通用接口，但还没有接入 BFCL/ToolBench 的官方数据、prompt、多轮状态机或 scorer。
+10. **BFCL 已有正式子集入口，仍非完整 leaderboard。** 固定 20 个 V4 单轮样例，通过官方 `generate/evaluate` 和 scorer 得分；尚未运行 full、多轮或 agentic。ToolBench 仍未接入。
 
 若继续按当前学习节奏推进，可以单独完善记忆压缩的边界条件，再讨论 token 预算、会话文件轮转/加密和更完整的错误分类。
 
 ## 10. 当前阅读与运行入口
 
-建议按“主循环 → 消息回传 → 工具说明与实现 → 计量 → 压缩 → 会话恢复 → 工具注入与基准适配”的顺序阅读，不必一次理解整个文件。
+建议按“主循环 → 消息回传 → 工具说明与实现 → 计量 → 压缩 → 会话恢复 → 通用基准适配 → BFCL 官方旁路”的顺序阅读，不必一次理解整个文件。
 
 | 关注点 | 入口 |
 |---|---|
@@ -603,6 +609,7 @@ python3 -B -m unittest -v test_token_usage
 | 历史如何压缩 | `Memory.units()`、`Memory.compact()`、`ChatLLM.summarize()` |
 | 会话如何保存/恢复 | `Memory.to_dict()`、`session.save_session()`、`session.load_session()`、`run(..., session_path=...)` |
 | 工具如何按 case 注入 | `ChatLLM.chat(messages, tools=...)`、`benchmarks/FunctionCallCase` |
+| BFCL 如何正式运行 | `benchmarks/bfcl.py`、固定 manifest、官方 `bfcl generate/evaluate` |
 | 权限在哪里检查 | `safe_path()` |
 | 程序如何结束 | `run()` 中的三种结束路径 |
 
@@ -935,7 +942,7 @@ CLI 的退出码继续表示命令与报告保存是否正常：单项或总报�
 
 Python 调用方可以将已有单项结果传给 `summarize_suite(reports, report_dir=...)`，只重新汇总并保存总报告。`save_report()` 使用 `suite` 前缀生成总报告文件名，并继续使用 UTC 时间和唯一标识避免覆盖。单项报告或总报告保存失败时，返回数据仍会包含错误信息；CLI 也会提示并返回非零退出码。
 
-本阶段通过 53 项离线测试（31 项评测层、9 项总报告、8 项主循环、5 项 token 计量）。验证涵盖全样例命令的模拟执行、多裁判的通过/失败/待判定、两种通过率的分母、运行状态独立记录、单项或总报告保存失败，以及重复运行不覆盖历史报告。10 个样例的模拟结果不代表真实模型能力；本阶段未调用真实模型。第 16 节又新增 18 项会话持久化测试，第 17 节新增 12 项契约与基准测试，当前总数为 83 项。
+本阶段通过 53 项离线测试（31 项评测层、9 项总报告、8 项主循环、5 项 token 计量）。验证涵盖全样例命令的模拟执行、多裁判的通过/失败/待判定、两种通过率的分母、运行状态独立记录、单项或总报告保存失败，以及重复运行不覆盖历史报告。10 个样例的模拟结果不代表真实模型能力；本阶段未调用真实模型。第 16 节又新增 18 项会话持久化测试，第 17 节新增 12 项契约与通用基准测试，第 18 节新增 13 项 BFCL 旁路测试，当前总数为 96 项。
 
 ## 16. 第八阶段：文档修正、会话持久化与测试脚本
 
@@ -1007,7 +1014,7 @@ Python 调用方可以将已有单项结果传给 `summarize_suite(reports, repo
 - 完整运行保存、崩溃后恢复不重复用户任务、压缩后恢复不依赖用户消息、`step_limit` 续跑、`no_tool_call` 不可恢复。
 - CLI 新建、恢复、`--fresh` 和损坏会话报错。
 
-新增 `run_tests.sh`，本阶段固定运行 71 项离线测试；第 17 节加入新测试后，脚本当前运行 83 项。`.github/workflows/tests.yml` 在 Python 3.9–3.12 上执行同一脚本。
+新增 `run_tests.sh`，本阶段固定运行 71 项离线测试；第 17 节加入新测试后为 83 项，第 18 节加入 BFCL 旁路测试后当前为 96 项。`.github/workflows/tests.yml` 在 Python 3.9–3.12 上执行同一脚本。
 
 实际执行：
 
@@ -1016,7 +1023,7 @@ cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
 ./run_tests.sh
 ```
 
-本阶段结果：`Ran 71 tests`，`OK`。这些测试使用脚本化模型和模拟 HTTP 响应，不访问网络，也不读写真实 sandbox。本地还在 Python 3.9.21 上执行了同一组测试，结果相同；3.10/3.11 由 CI 矩阵覆盖。第 17 节加入 12 项新测试后，当前总数为 83 项。
+本阶段结果：`Ran 71 tests`，`OK`。这些测试使用脚本化模型和模拟 HTTP 响应，不访问网络，也不读写真实 sandbox。本地还在 Python 3.9.21 上执行了同一组测试，结果相同；3.10/3.11 由 CI 矩阵覆盖。第 17 节加入 12 项、第 18 节加入 13 项后，当前总数为 96 项。
 
 ### 16.6 当前边界
 
@@ -1088,7 +1095,7 @@ cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
 ./run_tests.sh
 ```
 
-结果：`Ran 83 tests`，`OK`。测试分布为契约 6、基准适配 6、会话 18、评测层 31、总报告 9、主循环 8、token 5。默认 agent 的 71 项旧测试仍全部通过，新增 12 项不改变旧路径。
+结果：`Ran 83 tests`，`OK`。测试分布为契约 6、基准适配 6、会话 18、评测层 31、总报告 9、主循环 8、token 5。默认 agent 的 71 项旧测试仍全部通过，新增 12 项不改变旧路径。第 18 节继续增加 13 项 BFCL 旁路测试后，当前总数为 96 项。
 
 ### 17.6 当前边界
 
@@ -1097,3 +1104,150 @@ cd '/Users/apple/Desktop/科研/Multi Agent/toy-agent'
 - 没有基准级缓存、并发、限流或成本汇总；
 - `benchmarks/` 的结果格式是通用记录，不等于官方 leaderboard 格式；
 - toy-agent eval、BFCL subset 和官方 full leaderboard 不能直接比较。
+
+## 18. 第十阶段：正式接入 BFCL 官方 harness
+
+### 18.1 决策与范围
+
+学习者确认当前只接入 BFCL，沿用“官方 harness 旁路”的方案；ToolBench 和
+StableToolBench 后置，本阶段不安装、不调用，也不把它们的报告或分数混入 BFCL。
+
+这里的“正式接入”有明确含义：BFCL 的数据、prompt、模型 handler 和 scorer
+都来自固定版本的官方 `bfcl-eval`；toy-agent 不复制评分逻辑，只负责选择固定
+case id、启动官方命令、保存日志，并读取官方 score 文件。
+
+### 18.2 对官方实现的核对
+
+实现前检查了 BFCL 官方仓库、PyPI 元数据和 `bfcl-eval==2026.3.23` wheel 中的
+实际代码，确认：
+
+- 官方包要求 Python 3.10 以上；项目机器另有 Python 3.12，可以创建隔离环境。
+- CLI 正式链路是 `bfcl generate` 后执行 `bfcl evaluate`。
+- `--run-ids` 从 `BFCL_PROJECT_ROOT/test_case_ids_to_generate.json` 读取
+  `category -> case ids`，并忽略普通 `--test-category` 选择。
+- 子集评分要使用 `--partial-eval`；未评测类别不能当作官方完整 overall。
+- 每个官方 category score 是 JSON Lines；首行包含 `accuracy`、
+  `correct_count` 和 `total_count`，后续行记录错误样例。
+- 官方注册了 `DeepSeek-V3.2-Exp-FC`，内部使用 `deepseek-chat`、DeepSeek
+  官方 endpoint 和 `DEEPSEEK_API_KEY`。
+
+项目原有真实评测使用的是 `deepseek-flash` 和通用 `AGENT_API_KEY` 配置。
+它们不能自动等同于 BFCL 官方 DeepSeek handler，因此本阶段没有冒用现有 key，
+也没有把 dry-run 或模拟测试写成真实 BFCL 成绩。
+
+官方资料：
+
+- <https://pypi.org/project/bfcl-eval/>
+- <https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard>
+
+### 18.3 新增的旁路结构
+
+```text
+固定 manifest（20 个官方 case id）
+  → 写入 BFCL_PROJECT_ROOT/test_case_ids_to_generate.json
+  → doctor：检查固定版本、官方模型注册和凭据是否存在
+  → 官方 bfcl generate --run-ids
+  → 官方 bfcl evaluate --partial-eval
+  → 保留官方 result/、score/ 和命令日志
+  → 读取官方 category score 首行
+  → 保存 bfcl_run_report.json
+```
+
+新增文件和职责：
+
+| 文件 | 作用 |
+|---|---|
+| `toy-agent/benchmarks/bfcl.py` | manifest 校验、doctor、命令编排、日志、官方结果导入和统一报告 |
+| `toy-agent/benchmarks/__main__.py` | `python3 -m benchmarks bfcl ...` 入口 |
+| `toy-agent/benchmarks/manifests/bfcl_v4_single_turn_smoke.json` | 固定 BFCL V4 单轮 20 样例 |
+| `toy-agent/requirements-bfcl.txt` | 固定 `bfcl-eval==2026.3.23` |
+| `toy-agent/setup_bfcl.sh` | 使用 Python 3.12 创建 `.venv-bfcl` 并安装官方包 |
+| `toy-agent/test_bfcl.py` | 不安装 BFCL、不访问网络的旁路契约测试 |
+
+`benchmarks/common.py` 的通用原始响应接口继续保留；正式 BFCL 运行不把官方
+case 转换成 toy-agent 自定义评分格式，而是直接交给官方 CLI。
+
+### 18.4 固定的第一批样例
+
+manifest 名为 `bfcl_v4_single_turn_smoke_20`，明确标记 `profile=subset`，共五类：
+
+| 类别 | 数量 | 覆盖目的 |
+|---|---:|---|
+| `simple_python` | 4 | 单一工具及参数生成 |
+| `multiple` | 4 | 多个候选工具中选择一个 |
+| `parallel` | 4 | 同一工具的一次多调用 |
+| `parallel_multiple` | 4 | 多个候选工具和并行调用组合 |
+| `irrelevance` | 4 | 没有合适工具时不应调用 |
+
+manifest 同时固定 `BFCL V4` 和 `bfcl-eval==2026.3.23`。适配器拒绝空类别、
+重复 ID、类别前缀不匹配或版本漂移。写给官方 harness 的 ID 文件只保留其要求的
+映射，不夹带本项目元数据。
+
+### 18.5 隔离、凭据与命令安全
+
+BFCL 依赖很多第三方包，因此单独安装在 `.venv-bfcl/`；toy-agent 的默认运行和
+83 项原有测试仍不需要这些依赖。`.venv-bfcl/`、`benchmark_data/` 和
+`benchmark_runs/` 都被 Git 忽略。
+
+每次正式运行创建独立 `benchmark_runs/bfcl/<run-id>/`，并把它设置成
+`BFCL_PROJECT_ROOT`。官方结果、评分和锁文件不会写进安装包或覆盖其他运行。
+命令以参数数组交给 `subprocess.run()`，不经过 shell 拼接；统一报告只记录凭据
+环境变量的名称和是否存在，不记录值。
+
+默认 doctor 检查：
+
+1. 官方包版本严格等于 `2026.3.23`；
+2. 模型名称出现在官方 `bfcl models` 输出；
+3. 指定的凭据环境变量非空。
+
+该官方版本的 `version` 子命令在部分安装中可能用错误的 distribution 名查询版本。
+适配器在无法解析时，使用同一 venv 的 Python 查询 `bfcl-eval` 元数据；
+`generate/evaluate` 本身仍是官方命令。可执行文件不存在时 doctor 返回失败结构，
+不输出 Python traceback。
+
+### 18.6 报告与失败语义
+
+正式运行报告记录 benchmark/profile、20 个 ID、固定 harness 版本、模型、温度、
+线程数、toy-agent Git commit、两条官方命令、日志路径、官方文件相对路径和
+SHA-256。
+
+`official_category_scores` 直接来自官方 score 首行。本项目额外计算
+`derived_subset_micro_accuracy = 正确样例数 / 已评分样例数`，字段名明确说明这是
+20 样例的派生 micro 汇总，不是 BFCL 官方完整 leaderboard overall。
+
+状态包括：
+
+- `completed`：官方生成和评分成功，并找到 category score；
+- `dry_run`：只生成目录、ID 文件和命令，不执行 BFCL；
+- `setup_error`：版本、模型或凭据检查失败；
+- `generation_error`：官方生成命令失败，不继续评分；
+- `evaluation_error`：生成成功但官方评分失败或没有 score；
+- `orchestration_error`：本地文件、JSON 或编排发生异常。
+
+失败时仍尽量保存已存在的官方结果、stdout/stderr 和统一报告，便于定位问题。
+
+### 18.7 验证结果与当前边界
+
+新增 13 项离线测试，覆盖固定 20 样例、manifest 错误、官方 ID 文件、命令参数、
+doctor 的正确/错误版本、缺失模型、缺失凭据、缺失可执行文件、完整模拟链路、
+生成失败、评分失败、dry-run、官方 score 头校验、日志保留和密钥不进入报告。
+
+完整测试入口当前共 96 项：契约 6、BFCL 旁路 13、通用基准 6、会话 18、
+评测层 31、总报告 9、主循环 8、token 5。BFCL 测试中的“官方结果”由文件夹级
+假 harness 生成，只验证编排和导入，不代表模型能力。
+
+本阶段已经完成 dry-run，确认会生成 20 个 ID 和以下官方命令形态：
+
+```bash
+bfcl generate --model DeepSeek-V3.2-Exp-FC --run-ids --temperature 0.001 --num-threads 1
+bfcl evaluate --model DeepSeek-V3.2-Exp-FC \
+  --test-category simple_python,multiple,parallel,parallel_multiple,irrelevance \
+  --partial-eval
+```
+
+已经通过 `./setup_bfcl.sh` 在独立 `.venv-bfcl/` 中安装正式依赖。安装验证还发现
+`bfcl-eval` 间接使用的 `qwen-agent` 会导入 `soundfile`，但上游没有把它声明为依赖；
+因此 `requirements-bfcl.txt` 显式固定 `soundfile==0.14.0`，保证干净环境中的官方
+CLI 能启动。doctor 已确认固定版本和默认模型注册正确，但当前没有可确认的
+`DEEPSEEK_API_KEY`，所以尚未产生真实 BFCL 分数。只有正式凭据就绪后才运行 20 个
+真实样例。多轮、web search、memory 和 full leaderboard 均未纳入本阶段。

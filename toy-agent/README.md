@@ -8,7 +8,7 @@ toy-agent/
 ├── agent.py        循环、工具、模型客户端、会话接入
 ├── memory.py       会话记忆：消息窗口 + 超额压缩 + 序列化
 ├── session.py      会话 JSON：原子保存、加载与恢复判断
-├── benchmarks/     基准适配层：按 case 注入 tools，记录原始响应
+├── benchmarks/     基准层：通用记录 + BFCL 官方 harness 旁路集成
 ├── evaluation/     赛后评测：任务、运行器、可注册裁判
 ├── run_tests.sh    全部离线测试入口
 └── sandbox/        它唯一被允许读写的地方
@@ -270,7 +270,7 @@ python3 -B -m unittest -v test_token_usage
 | 编排层 | `run()` | 那个循环，ReAct 的核心都在这里 |
 | 记忆层 | `memory.py` 的 `Memory` | 消息窗口 + 压缩 + 序列化 |
 | 持久化 | `session.py` | 会话 JSON 的原子保存、加载与恢复判断 |
-| 基准适配 | `benchmarks/` | 按 case 注入 tools，记录原始响应；默认 agent 不依赖 |
+| 基准层 | `benchmarks/` | 通用原始响应适配 + BFCL 官方旁路；默认 agent 不依赖 |
 | 终止 | `finish` 工具 + `max_steps` | 显式终止 + 预算硬停 |
 
 ## 记忆系统（memory.py）
@@ -321,16 +321,43 @@ python3 agent.py "读取 data.txt..." --session session.json --fresh
 - 会话文件损坏、版本不兼容或历史配对不自洽时，CLI 会报错退出；可用 `--fresh` 忽略旧文件重新开始。
 - 会话写入失败会中止本次运行；上一次成功保存的文件保持不变，错误会输出到 stderr。
 
-## 基准测试适配层（benchmarks/）
+## 基准测试层（benchmarks/）
 
-这一层是为 BFCL/ToolBench 预留的接缝，不是完整基准实现；默认 `agent.run()` 不经过这里。
+这一层不进入默认 `agent.run()`。通用原始响应适配仍然存在，同时已经正式接入
+BFCL V4 官方 harness；ToolBench 暂不接入。
 
 - `ChatLLM.chat(messages, tools=None)`：不传 `tools` 时仍发送默认 `TOOLS`；传列表时按 case 注入；传 `[]` 时省略 `tools` 和 `tool_choice`。
 - `FunctionCallCase`：保存 `id`、`category`、`messages`、`tools` 和 `metadata`。
 - `run_cases()`：逐条调用模型，记录原始请求/响应和错误；不判断对错。
-- 评分、官方 prompt、BFCL AST/state transition、ToolBench pass/win rate 都留在各自官方 harness，避免自定义 scorer 造成分数不可比。
+- `benchmarks/bfcl.py`：调用固定版本的官方 `bfcl generate/evaluate`，导入官方分数；不重写 AST scorer。
+- `benchmarks/manifests/bfcl_v4_single_turn_smoke.json`：固定 5 类、20 个 BFCL V4 样例。
+- `setup_bfcl.sh`：在 `.venv-bfcl/` 安装可选依赖，不污染零依赖核心。
 
-示例和边界见 [benchmarks/README.md](benchmarks/README.md)。当前只提供骨架，尚未接入官方数据。
+快速查看将要执行的正式命令，不安装 BFCL、也不调用模型：
+
+```bash
+python3 -m benchmarks bfcl run --dry-run
+```
+
+安装并检查环境：
+
+```bash
+./setup_bfcl.sh
+export DEEPSEEK_API_KEY='你的 DeepSeek 官方 key'
+python3 -m benchmarks bfcl doctor
+```
+
+运行固定 20 样例子集：
+
+```bash
+python3 -m benchmarks bfcl run
+```
+
+结果保存在 `benchmark_runs/bfcl/`，含官方 result/score、命令日志和统一报告。
+它是 subset 结果，不能冒充 BFCL 官方 full leaderboard overall。当前项目的
+`AGENT_API_KEY/deepseek-flash` 不会自动映射成 BFCL 官方 DeepSeek 配置。
+
+完整命令、报告字段和边界见 [benchmarks/README.md](benchmarks/README.md)。
 
 ## 三个刻意的设计选择
 
@@ -358,7 +385,7 @@ python3 agent.py "读取 data.txt..." --session session.json --fresh
 ./run_tests.sh
 ```
 
-它依次运行 83 项测试：契约 6 项、基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
+它依次运行 96 项测试：契约 6 项、BFCL 旁路 13 项、通用基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：
@@ -376,7 +403,8 @@ python3 -B -m unittest -v test_session
 5. **会话和报告包含数据。** 模型消息、工具输出和文件快照可能含敏感内容；分享前要检查，默认目录虽被 git 忽略，不代表内容可以公开。
 6. **沙箱不是操作系统隔离。** `safe_path()` 限制应用层文件工具；这不是容器级安全边界。
 7. **没有任务时间上限。** 只记录耗时；单次 HTTP 超时 120 秒，`--steps` 限制决策轮数。
-8. **BFCL/ToolBench 还没有接入官方 harness。** 当前 `benchmarks/` 只提供按 case 注入工具和记录原始响应的骨架；官方 prompt、数据转换、AST/state transition 和 pass/win rate 评分尚未实现。
+8. **BFCL 当前只是固定 20 样例的正式子集入口。** 已调用官方 harness 和 scorer，但尚未运行 full leaderboard、多轮或 V4 agentic；没有官方 DeepSeek 凭据时不能产生真实分数。
+9. **ToolBench 尚未接入。** 本阶段没有安装或调用 ToolBench/StableToolBench，也不把它们的分数与 BFCL 混合。
 
 ## 想继续加什么（按难度）
 
@@ -384,5 +412,6 @@ python3 -B -m unittest -v test_session
 2. 继续完善结束状态，例如明确表示模型请求失败，并根据任务需要检查结果
 3. 一个 `run_worker` 工具，内部再起一个 `run()`（多智能体，本质只是嵌套）
 4. 会话文件的轮转、加密或按项目分目录管理
-5. BFCL 核心单轮适配：官方 prompt + 官方 scorer，先跑小样本
-6. StableToolBench 小样本：缓存 API + pass rate，win rate 后置
+5. 在正式凭据可用后运行 BFCL 20 样例，分析官方 category score
+6. BFCL 从单轮子集扩展到多轮，再决定是否进入 V4 agentic
+7. ToolBench/StableToolBench 后置，单独讨论环境、成本和评分口径
