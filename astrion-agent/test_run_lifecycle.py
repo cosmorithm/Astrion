@@ -173,7 +173,14 @@ class RunLifecycleTests(unittest.TestCase):
                 tool_call("after", "probe", '{"value":"结束之后"}'),
             ),
         ])
-        with patch.dict(agent.TOOL_IMPL, {"probe": probe}):
+        probe_spec = agent.ToolSpec(
+            name="probe", description="测试工具",
+            input_schema={"type": "object", "properties": {"value": {"type": "string"}},
+                          "required": ["value"], "additionalProperties": False},
+        )
+        with patch.dict(agent.TOOL_IMPL, {"probe": probe}), patch.object(
+            agent, "TOOL_SPECS", [*agent.TOOL_SPECS, probe_spec]
+        ):
             result = agent.run("测试任务", llm, self.memory, event_sink=recorder)
 
         self.assertEqual(result, {"status": "completed", "answer": "完成", "steps": 1})

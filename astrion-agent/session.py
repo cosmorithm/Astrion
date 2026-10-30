@@ -23,9 +23,9 @@ from pathlib import Path
 from memory import Memory
 
 SESSION_VERSION = 1
-RUN_STATUSES = {"running", "completed", "no_tool_call", "step_limit", "error"}
+RUN_STATUSES = {"running", "completed", "no_tool_call", "step_limit", "needs_input", "incomplete_plan", "error"}
 # 这两种状态说明任务没有正常收尾，重跑同一任务时应当继续，而不是重开。
-RESUMABLE_STATUSES = frozenset({"running", "step_limit"})
+RESUMABLE_STATUSES = frozenset({"running", "step_limit", "needs_input", "incomplete_plan"})
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,7 @@ class Session:
     steps: int
     model: str | None = None
     saved_at: str | None = None
+    task_plan: tuple[dict, ...] = ()
 
     def is_resumable(self, task: str) -> bool:
         """同一任务且上次没有正常结束，才按“继续”处理。"""
@@ -58,6 +59,7 @@ def save_session(
     status: str,
     steps: int,
     model: str | None = None,
+    task_plan: list[dict] | None = None,
 ) -> Path:
     """原子保存会话；返回实际写入的绝对路径。"""
     if not isinstance(memory, Memory):
@@ -84,6 +86,7 @@ def save_session(
         "steps": steps,
         "model": model,
         "memory": memory.to_dict(),
+        "task_plan": validate_task_plan(task_plan or []),
     }
     # 先完整序列化，确认可写再落盘；失败时不会留下半成品。
     text = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
@@ -108,6 +111,25 @@ def save_session(
             pass
         raise
     return target
+
+
+def validate_task_plan(plan) -> list[dict]:
+    """校验并复制模型声明的子任务状态；它不是独立验收结果。"""
+    if not isinstance(plan, list):
+        raise ValueError("task_plan 必须是列表")
+    result = []
+    seen = set()
+    for item in plan:
+        if not isinstance(item, dict) or set(item) != {"goal", "status"}:
+            raise ValueError("每项子任务必须包含 goal 和 status")
+        goal, status = item["goal"], item["status"]
+        if not isinstance(goal, str) or not goal.strip() or goal.strip() in seen:
+            raise ValueError("子任务目标必须非空且不能重复")
+        if status not in {"pending", "completed"}:
+            raise ValueError("子任务状态必须是 pending 或 completed")
+        seen.add(goal.strip())
+        result.append({"goal": goal.strip(), "status": status})
+    return result
 
 
 def load_session(
@@ -163,4 +185,5 @@ def load_session(
         steps=steps,
         model=model,
         saved_at=saved_at,
+        task_plan=tuple(validate_task_plan(data.get("task_plan", []))),
     )

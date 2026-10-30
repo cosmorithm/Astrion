@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import inspect
 import json
 import operator as _op
 import os
@@ -40,7 +39,8 @@ from typing import Callable
 
 from events import EventEmitter
 from memory import Memory
-from session import load_session, save_session
+from session import load_session, save_session, validate_task_plan
+from tooling import ToolCall, ToolRegistry, ToolResult, ToolSpec
 
 # ---------------------------------------------------------------- 终端样式
 
@@ -200,6 +200,11 @@ def finish(answer: str) -> str:
     return answer
 
 
+def ask_user(question: str) -> str:
+    """暂停并向用户询问必要信息。"""
+    return question
+
+
 # ---------------------------------------------------------------- 工具清单
 # schema 是给模型看的说明书；TOOL_IMPL 是真正执行的代码。
 # 两者分开，是为了将来能换成远程工具、加权限检查而不动模型那一侧。
@@ -275,7 +280,48 @@ TOOL_IMPL = {
     "write_file": write_file,
     "calculator": calculator,
     "finish": finish,
+    "ask_user": ask_user,
 }
+
+# 多目标计划是模型声明的工作清单，不是对任务结果的独立验收。
+TOOLS.insert(-1, {
+    "type": "function", "function": {
+        "name": "update_task_plan",
+        "description": "为多目标任务记录完整子任务清单并更新状态；完成状态必须有工具结果或其他事实依据",
+        "parameters": {"type": "object", "properties": {
+            "items": {"type": "array", "minItems": 1, "items": {
+                "type": "object", "properties": {
+                    "goal": {"type": "string", "minLength": 1},
+                    "status": {"type": "string", "enum": ["pending", "completed"]},
+                }, "required": ["goal", "status"], "additionalProperties": False,
+            }},
+        }, "required": ["items"], "additionalProperties": False},
+    },
+})
+TOOLS.insert(-1, {
+    "type": "function", "function": {
+        "name": "ask_user", "description": "缺少必要信息时暂停任务并向用户询问",
+        "parameters": {"type": "object", "properties": {
+            "question": {"type": "string", "minLength": 1},
+        }, "required": ["question"], "additionalProperties": False},
+    },
+})
+
+_TOOL_OUTPUTS = {
+    "list_files": "目录路径和文件列表", "read_file": "文件路径和文本内容（可能截断）",
+    "write_file": "写入是否成功、文件路径和字节数", "calculator": "算术表达式和计算结果",
+    "finish": "提交给用户的最终回答", "ask_user": "等待用户回答的问题",
+    "update_task_plan": "本次任务的子目标及其声明状态",
+}
+for _tool in TOOLS:
+    _tool["function"]["parameters"].setdefault("additionalProperties", False)
+TOOL_SPECS = [ToolSpec(
+    name=tool["function"]["name"], description=tool["function"]["description"],
+    input_schema=tool["function"]["parameters"],
+    output_description=_TOOL_OUTPUTS[tool["function"]["name"]],
+    terminal=tool["function"]["name"] in {"finish", "ask_user"},
+) for tool in TOOLS]
+TOOLS = [spec.as_api_tool() for spec in TOOL_SPECS]
 
 
 def tools_for_sandbox(sandbox: Path) -> dict:
@@ -293,7 +339,10 @@ SYSTEM_PROMPT = """你是 Astrion Agent，只能通过工具来观察和改变 s
 1. 一次只做一个动作，等观察结果回来再决定下一步。
 2. 不要凭空猜测文件内容，先读。
 3. 任务完成时调用 finish 工具。
-4. 用中文思考和回答。"""
+4. 用中文思考和回答。
+5. 多目标任务先用 update_task_plan 记录各子目标；有依据地更新状态，全部完成后才调用 finish。清单是工作记录，不是验收。
+6. 只使用能提供当前子目标所需结果的工具；工具不适用时说明限制。不要为了使用工具而编造参数。
+7. 缺少必要信息且无法可靠推导时调用 ask_user，等待用户补充；可选参数有默认值时尽量省略。"""
 
 SUMMARIZE_PROMPT = """你在压缩一段智能体的执行记录。
 把下面的内容写成不超过 200 字的备忘，必须保留：
@@ -418,6 +467,8 @@ def run(
     session_path: Path | str | None = None,
     resume: bool = False,
     initial_steps: int = 0,
+    user_reply: str | None = None,
+    task_plan: list[dict] | None = None,
 ) -> dict:
     """运行任务；可选独立目录、事件记录和会话持久化。
 
@@ -429,9 +480,14 @@ def run(
     """
     if type(initial_steps) is not int or initial_steps < 0:
         raise ValueError("initial_steps 必须是非负整数")
+    if user_reply is not None and (not resume or not isinstance(user_reply, str) or not user_reply.strip()):
+        raise ValueError("user_reply 需要恢复任务且必须是非空字符串")
     if resume:
         last_user = memory.last_user()
-        if last_user is not None and last_user != task:
+        if last_user is not None and not any(
+            message.get("role") == "user" and message.get("content") == task
+            for message in memory.for_model()
+        ) and memory.compactions == 0:
             raise ValueError("恢复的任务与会话中的用户任务不一致")
         # 压缩可能已经把最初的任务移进摘要，这时允许没有用户消息。
         if last_user is None and memory.compactions == 0:
@@ -439,8 +495,32 @@ def run(
     else:
         memory.add_user(task)
 
+    if user_reply is not None:
+        memory.add_user(user_reply)
     steps_taken = initial_steps
+    plan = validate_task_plan(task_plan or [])
     tool_impl = tools_for_sandbox(sandbox) if sandbox is not None else TOOL_IMPL
+
+    def update_task_plan(items: list) -> str:
+        nonlocal plan
+        updated = validate_task_plan(items)
+        if plan:
+            old_goals = {item["goal"] for item in plan}
+            new_goals = {item["goal"] for item in updated}
+            if not old_goals.issubset(new_goals):
+                raise ValueError("已有子任务不能从清单中删除")
+        plan = updated
+        return json.dumps({"items": plan}, ensure_ascii=False)
+
+    def checked_finish(answer: str) -> str:
+        pending = [item["goal"] for item in plan if item["status"] == "pending"]
+        if pending:
+            raise ValueError("仍有未完成子任务: " + "、".join(pending))
+        return tool_impl["finish"](answer=answer)
+
+    registry = ToolRegistry(TOOL_SPECS, {
+        **tool_impl, "update_task_plan": update_task_plan, "finish": checked_finish,
+    })
     event_emitter = EventEmitter(event_sink)
     model_call_count = 0
 
@@ -492,7 +572,7 @@ def run(
     def persist(status: str) -> None:
         if session_path is not None:
             save_session(session_path, memory=memory, task=task, status=status,
-                         steps=steps_taken, model=getattr(llm, "model", None))
+                         steps=steps_taken, model=getattr(llm, "model", None), task_plan=plan)
 
     print(bold(f"\n任务: {task}"))
     print(dim(f"沙箱: {sandbox if sandbox is not None else SANDBOX}"))
@@ -578,6 +658,14 @@ def run(
             print(f"  {dim('think:')} {thought}")
 
         if not calls:
+            if any(item["status"] == "pending" for item in plan):
+                print(red("\n  ! 子任务清单仍有未完成项，不能认定任务结束"))
+                report("incomplete_plan")
+                persist("incomplete_plan")
+                emit("run.finished", payload={
+                    "status": "incomplete_plan", "steps": steps_taken, "answer": thought,
+                })
+                return {"status": "incomplete_plan", "answer": thought, "steps": steps_taken}
             print(green("\n  = 模型没有再调用工具，结束"))
             report("no_tool_call")
             persist("no_tool_call")
@@ -586,23 +674,27 @@ def run(
             })
             return {"status": "no_tool_call", "answer": thought, "steps": steps_taken}
 
-        finish_answer = None
+        terminal_answer = None
+        terminal_status = None
         for call in calls:
             name = call["function"]["name"]
             tool_call_id = call["id"]
 
             # finish 之后的调用不执行，但仍需写回结果，保持这批消息配对完整。
-            if finish_answer is not None:
-                observation = "ERROR: 已调用 finish，此工具未执行"
+            if terminal_status is not None:
+                skipped = ToolResult(tool_call_id, name, "skipped", "ERROR: 已调用终止工具，此工具未执行",
+                                     error={"code": "skipped_after_terminal", "message": "此工具未执行"})
+                observation = skipped.content
                 print(f"  {cyan('act:  ')} {name}（跳过）")
                 print(f"  {red('obs:  ')} {observation}")
                 emit("tool.call.finished", step=event_step, payload={
                     "tool_call_id": tool_call_id,
                     "name": name,
-                    "outcome": "skipped",
+                    "outcome": skipped.outcome,
                     "duration_seconds": None,
                     "content": observation,
                     "raw_arguments": call["function"].get("arguments"),
+                    "error": skipped.error,
                 })
                 memory.add_tool(tool_call_id, observation)
                 continue
@@ -612,77 +704,39 @@ def run(
                 raw_args = "{}"
             print(f"  {cyan('act:  ')} {name}({raw_args})")
 
-            # 解析、工具查找和参数绑定都在真正执行前完成。失败属于 rejected，
-            # 不是工具已经开始后发生的 error。
-            try:
-                args = json.loads(raw_args)
-                if not isinstance(args, dict):
-                    raise TypeError("工具参数必须是 JSON 对象")
-                if name not in tool_impl:
-                    raise KeyError(f"未知工具: {name}")
-                if name == "finish":
-                    answer = args.get("answer")
-                    if not isinstance(answer, str) or not answer.strip():
-                        raise ValueError("finish 的 answer 必须是非空字符串")
-                implementation = tool_impl[name]
-                inspect.signature(implementation).bind(**args)
-            except Exception as e:
-                observation = f"ERROR: {type(e).__name__}: {e}"
-                print(f"  {red('obs:  ')} {observation}")
-                emit("tool.call.finished", step=event_step, payload={
-                    "tool_call_id": tool_call_id,
-                    "name": name,
-                    "outcome": "rejected",
-                    "duration_seconds": None,
-                    "content": observation,
-                    "raw_arguments": raw_args,
-                    "error": error_data(e),
-                })
-                memory.add_tool(tool_call_id, observation)
-                continue
-
             common = {
                 "tool_call_id": tool_call_id,
                 "name": name,
             }
-            emit("tool.call.started", step=event_step,
-                 payload={**common, "arguments": args})
-            tool_started = perf_counter()
-            try:
-                observation = implementation(**args)
-            except Exception as e:
-                observation = f"ERROR: {type(e).__name__}: {e}"
-                print(f"  {red('obs:  ')} {observation}")
-                terminal_payload = {
-                    **common,
-                    "outcome": "error",
-                    "duration_seconds": perf_counter() - tool_started,
-                    "content": observation,
-                    "error": error_data(e),
-                }
-            else:
-                if name == "finish":
-                    finish_answer = answer
-                print(f"  {dim('obs:  ')} {observation}")
-                terminal_payload = {
-                    **common,
-                    "outcome": "success",
-                    "duration_seconds": perf_counter() - tool_started,
-                    "content": str(observation),
-                }
-
+            result = registry.execute(
+                ToolCall(tool_call_id, name, raw_args),
+                on_start=lambda args: emit("tool.call.started", step=event_step,
+                                           payload={**common, "arguments": args}),
+            )
+            observation = result.content
+            print(f"  {red('obs:  ') if result.outcome != 'success' else dim('obs:  ')} {observation}")
+            terminal_payload = {**common, "outcome": result.outcome,
+                                "duration_seconds": result.duration_seconds,
+                                "content": observation}
+            if result.outcome == "rejected":
+                terminal_payload["raw_arguments"] = raw_args
+            if result.error is not None:
+                terminal_payload["error"] = result.error
             emit("tool.call.finished", step=event_step, payload=terminal_payload)
-            memory.add_tool(tool_call_id, str(observation))
+            memory.add_tool(tool_call_id, observation)
+            if result.outcome == "success" and name in {"finish", "ask_user"}:
+                terminal_status = "completed" if name == "finish" else "needs_input"
+                terminal_answer = observation
 
-        if finish_answer is not None:
-            print(green(f"\n  = {finish_answer}"))
+        if terminal_status is not None:
+            print(green(f"\n  = {terminal_answer}"))
             print(dim(f"\n  共 {steps_taken} 步"))
-            report("completed")
-            persist("completed")
+            report(terminal_status)
+            persist(terminal_status)
             emit("run.finished", payload={
-                "status": "completed", "steps": steps_taken, "answer": finish_answer,
+                "status": terminal_status, "steps": steps_taken, "answer": terminal_answer,
             })
-            return {"status": "completed", "answer": finish_answer, "steps": steps_taken}
+            return {"status": terminal_status, "answer": terminal_answer, "steps": steps_taken}
 
         # 这一批工具结果已经全部写回，历史此刻是自洽的，可以存档。
         persist("running")
@@ -712,6 +766,8 @@ def main() -> None:
                         help="会话 JSON 路径；存在时恢复记忆，运行中每轮自动保存")
     parser.add_argument("--fresh", action="store_true",
                         help="忽略已有会话文件，从空记忆开始（需要 --session）")
+    parser.add_argument("--reply", default=None,
+                        help="回答 needs_input 会话提出的问题，并继续原任务")
     args = parser.parse_args()
 
     if args.steps < 0:
@@ -720,6 +776,8 @@ def main() -> None:
         parser.error("--budget 必须为正整数")
     if args.fresh and args.session is None:
         parser.error("--fresh 需要同时指定 --session")
+    if args.reply is not None and (args.session is None or args.fresh or not args.reply.strip()):
+        parser.error("--reply 需要已有会话、非空回答，且不能与 --fresh 同用")
 
     # 先加载 .env，再用统一的方式读配置
     env_files = load_env(find_env_files(Path(__file__).resolve().parent))
@@ -756,6 +814,14 @@ def main() -> None:
 
     if session is not None:
         memory = session.memory
+        if args.reply is not None:
+            if session.status != "needs_input":
+                parser.error("--reply 只能用于等待用户回答的会话")
+            if args.task != parser.get_default("task") and args.task != session.task:
+                parser.error("--reply 的任务必须与会话中的原任务一致")
+            args.task = session.task
+        if session.status == "needs_input" and args.reply is None:
+            parser.error("会话等待用户回答；请使用 --reply 提供补充信息")
         resume = session.is_resumable(args.task)
         initial_steps = session.steps if resume else 0
         if resume:
@@ -765,6 +831,8 @@ def main() -> None:
             if session.task != args.task:
                 print(dim(f"      上次任务: {session.task}"))
     else:
+        if args.reply is not None:
+            parser.error("--reply 需要一个已存在的 needs_input 会话")
         memory = Memory(SYSTEM_PROMPT, budget_chars=args.budget)
         resume = False
         initial_steps = 0
@@ -773,7 +841,8 @@ def main() -> None:
 
     try:
         run(args.task, llm, memory, max_steps=args.steps, session_path=session_path,
-            resume=resume, initial_steps=initial_steps)
+            resume=resume, initial_steps=initial_steps, user_reply=args.reply,
+            task_plan=list(session.task_plan) if session is not None and resume else None)
     except OSError as exc:
         print(red(f"错误: 会话文件写入失败: {exc}"), file=sys.stderr)
         raise SystemExit(1)

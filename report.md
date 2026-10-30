@@ -2111,3 +2111,50 @@ effective_api_model = deepseek-flash
 命令包装、registry/scorer 保持、默认 CLI 的 flash/temperature 参数和成绩查看器
 的双模型标注。完整离线测试总数由 123 增加到 127；测试不读取真实密钥、
 不访问网络、不产生 API 费用。
+
+## 29. 根据错题与技术愿景完善 Astrion 的工具和任务状态
+
+### 29.1 从错题到架构
+
+BFCL 200 中，`parallel_multiple_175` 有并列任务未全部提出调用，`irrelevance_222`
+出现猜测未提供的商店位置，`parallel_multiple_195` 出现参数类型不匹配，
+`irrelevance_114` 出现工具相关但不足以直接回答目标的问题。错题也包含有争议的标签、
+参考答案或 schema：不把所有 fail 简化成 Astrion 缺陷，也不针对具体 case 写特例。
+
+用户要求以 `TECHNICAL_VISION.md` 为目标：错题用于发现能力缺口，再将改进落到决策、
+工具、运行时和评测层。明确 Astrion Agent 是正式演进的 Agent 系统；可读和从零学习
+是开发方式，不是把产品定义为玩具。
+
+### 29.2 工具契约
+
+新增 `astrion-agent/tooling.py`：
+
+- `ToolSpec` 声明输入 schema、输出能力和终止属性；`ToolCall` 表示模型提议；
+  `ToolResult` 记录执行结果。registry 把声明与本地 Python 实现绑定。
+- 模型工具清单由 `ToolSpec` 生成；启动 registry 时检查声明与实现的参数一致性，
+  未实现的 schema 关键字被拒绝，避免把部分实现说成完整 JSON Schema。
+- 执行前检查工具名、JSON、对象、必填、额外参数、类型和枚举等；失败结果为
+  `rejected`，不会开始执行。执行后失败为 `error`，并写入稳定错误代码。
+- Event 和 Memory 从同一个工具结果生成；终止工具后的调用写入 `skipped`。
+  既有 Event v1 外壳和 tool message 配对规则保持不变。
+
+### 29.3 缺失信息、多目标清单与工具适用性
+
+- 新增 `ask_user` 控制工具和 `needs_input` 状态；会话需要用户回复才能继续：
+
+  ```bash
+  python3 agent.py --session session.json --reply "文件名是 data.txt"
+  ```
+
+- 多目标任务可用 `update_task_plan` 保存子目标及 `pending/completed` 状态。仍有
+  待办时 `finish` 会返回错误；模型无工具调用直接退出时状态是 `incomplete_plan`。
+  清单随 session 保存，旧 v1 会话没有清单字段时按空清单加载。
+- 清单由模型声明，不能保证覆盖所有目标，也不是对完成结果的独立验收。工具描述增加
+  输出能力，系统提示引导模型只选择能提供所需结果的工具；这不是确定性的语义验证。
+
+### 29.4 设计记录与验证
+
+架构决定记录在 `docs/adr/0001-tool-contract-and-task-state.md`。离线测试覆盖契约、
+非法调用不执行、结构化错误、询问与恢复、清单未完成时的结束行为和原有功能回归。
+本次没有执行真实模型调用，没有产生新的 BFCL 分数。BFCL `astrion-run` 不走完整
+`agent.run()`，所以不能把此次改造直接宣称为 BFCL 或真实多轮任务的性能提升。

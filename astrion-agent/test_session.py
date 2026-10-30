@@ -164,6 +164,17 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(loaded.memory.budget_chars, 999)
         self.assertEqual(loaded.memory.keep_recent, 1)
 
+    def test_legacy_v1_session_without_plan_loads_as_empty(self):
+        save_session(self.path, memory=self.make_memory(), task="测试任务",
+                     status="running", steps=1)
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data.pop("task_plan")
+        self.path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        restored = load_session(self.path)
+        self.assertEqual(restored.task_plan, ())
+        self.assertTrue(restored.is_resumable("测试任务"))
+
     def test_save_keeps_the_old_file_when_replace_fails(self):
         save_session(self.path, memory=self.make_memory(), task="测试任务",
                      status="running", steps=1)

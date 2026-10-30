@@ -8,12 +8,13 @@
 项目的长期架构、五层技术路线和安全原则见根目录的
 [`TECHNICAL_VISION.md`](../TECHNICAL_VISION.md)。本 README 只说明当前已经实现且可以运行的能力。
 
-当前版本仍保持最初“从零读懂 Agent”的原则：**ReAct 循环 + 四个业务工具 + `finish` + 沙箱 + 独立记忆 + 可恢复会话**。
+当前版本保持“从零读懂 Agent”的原则：**ReAct 循环 + 四个业务工具 + 任务控制工具 + 沙箱 + 独立记忆 + 可恢复会话**。
 全部标准库，没有第三方依赖。
 
 ```
 astrion-agent/
 ├── agent.py        循环、工具、模型客户端、会话接入
+├── tooling.py      ToolSpec / ToolCall / ToolResult 与调用验证
 ├── events.py       Run/Step/Event v1：结构化运行事实与 JSON 导出
 ├── memory.py       会话记忆：消息窗口 + 超额压缩 + 序列化
 ├── session.py      会话 JSON：原子保存、加载与恢复判断
@@ -50,6 +51,7 @@ python3 agent.py "任务" --session session.json   # 可恢复会话
 | `--model M` | 临时换模型，覆盖 `.env` |
 | `--base-url U` | 临时换服务端，覆盖 `.env` |
 | `--session PATH` | 会话 JSON 路径；存在时恢复记忆，运行中每轮自动保存 |
+| `--reply TEXT` | 回答 `needs_input` 会话的问题并继续原任务；需要 `--session` |
 | `--fresh` | 忽略已有会话文件，从空记忆开始（需配合 `--session`） |
 
 ## 配置
@@ -226,15 +228,30 @@ python3 -B -m unittest -v test_session test_evaluation_summary test_evaluation t
 | `completed` | 模型发出了有效的 `finish` 调用 | `finish` 中的回答 |
 | `no_tool_call` | 模型没有请求工具，主循环结束 | 模型文本，可能为空 |
 | `step_limit` | 达到最大轮数，程序停止 | `None`，不能据此认定任务已完成 |
+| `needs_input` | 模型调用 `ask_user`，等待用户补充 | 要向用户提出的问题 |
+| `incomplete_plan` | 模型没有调用工具，但已声明的清单仍有待办 | 模型文本，不能认定任务已完成 |
 
 `steps` 是主循环中已完成的模型决策调用次数，不包含用于记忆压缩的摘要调用。
 程序也会在终端打印 `[状态]`。例如，模型调用 `finish` 并不证明目标文件一定正确，
 它表达的是模型给出的完成信号。
 
 每条工具调用都要有对应的结果。有效的 `finish` 会先写入一条 `tool` 消息，再结束。
-如果同一批调用中还有排在 `finish` 后面的工具，程序不执行它们，并写入“未执行”的结果。
-非法 JSON、非对象参数，以及无效的 `finish.answer` 都会变成工具错误消息，交给下一轮模型；
+如果同一批调用中还有排在 `finish` 或 `ask_user` 后面的工具，程序不执行它们，并写入“未执行”的结果。
+非法 JSON、非对象参数、缺失或多余参数、类型错误，以及无效的 `finish.answer` 都会变成工具错误消息，交给下一轮模型；
 如果已到达步数上限，则按 `step_limit` 结束。
+
+多目标任务可以通过 `update_task_plan` 登记 `pending` / `completed` 子目标。清单有待办时，
+`finish` 会返回错误；如果模型直接结束，状态是 `incomplete_plan`。清单由模型创建和更新，
+无法保证模型列全目标或正确声明完成；真正的任务结果仍由外部裁判或用户验收。简单任务不强制建立清单。
+
+工具契约由 `tooling.py` 提供：`ToolSpec` 是声明，`ToolCall` 是模型提议，`ToolResult`
+记录验证或执行结果。`ToolRegistry` 在执行前检查工具名、JSON、必填项、类型和额外参数，
+并在注册时检查支持的 schema 与 Python 函数签名。支持的 schema 子集为 `object`、`array`、
+`string`、`integer`、`number`、`boolean`、`null`、`required`、`additionalProperties`、
+`items`、`enum`、`minLength`、`minItems`；未支持的关键字会被拒绝，不声称实现完整 JSON Schema。
+错误事件提供稳定 `code`，验证失败是 `rejected`，工具已开始后的异常是 `error`。
+工具输出能力写入工具描述，系统提示要求只选能提供当前子目标所需结果的工具；这是一项模型引导，
+不是已被证明的语义判断器，也不能保证模型不会错选工具。
 
 离线验证主循环与 token 计量（模拟模型和 HTTP 响应，不访问网络）：
 
@@ -334,7 +351,7 @@ python3 -B -m unittest -v test_token_usage
 
 | 层 | 位置 | 说明 |
 |---|---|---|
-| 工具 schema | `agent.py` 的 `TOOLS` | 给模型看的说明书（JSON Schema） |
+| 工具契约 | `tooling.py`，`agent.py` 的 `TOOL_SPECS` | 工具声明、调用、结果、注册与验证；生成模型工具清单 |
 | 工具实现 | `list_files` 等 | 真正执行的函数 |
 | 策略层 | `safe_path()` | 路径钉死在 sandbox，越界即抛错 |
 | 模型层 | `ChatLLM` | 一个 `_post` 管所有 HTTP，`chat` 支持可选 tools，`summarize` 共用 |
@@ -372,7 +389,7 @@ if memory.needs_compaction():            # 超预算了
 
 ## 会话持久化（session.py）
 
-`--session` 把记忆、任务、结束状态和累计步数写进一个 JSON 文件；默认不开启，保持原来的一次性运行行为。
+`--session` 把记忆、任务、子任务清单、结束状态和累计步数写进一个 JSON 文件；默认不开启。
 
 ```bash
 python3 agent.py "读取 data.txt..." --session session.json
@@ -381,13 +398,17 @@ python3 agent.py "读取 data.txt..." --session session.json
 
 # 忽略旧文件，从空记忆开始；第一次保存时覆盖
 python3 agent.py "读取 data.txt..." --session session.json --fresh
+
+# 如果 Agent 通过 ask_user 请求补充信息，回答问题并继续原任务
+python3 agent.py --session session.json --reply "文件名是 data.txt"
 ```
 
 规则：
 
 - **保存点在每轮结束。** 只有一整批工具结果都写回 `Memory` 之后才保存，文件里的历史始终能通过 `check()`。如果进程在模型请求或一批工具执行中途终止，恢复点最多回退到上一轮，那一批工具可能重做。
 - **原子写入。** 先写临时文件并 `fsync`，再用 `os.replace` 替换；不会留下半个 JSON。POSIX 下会话文件权限设为 600。
-- **按任务判断是否继续。** 同一任务且上次状态是 `running` 或 `step_limit` 时，自动继续，不重复添加用户消息；其他情况会在已有记忆上追加新任务，不会自动继续旧任务。
+- **按任务判断是否继续。** 同一任务且上次状态是 `running`、`step_limit` 或 `incomplete_plan` 时，自动继续；`needs_input` 需要通过 `--reply` 提供补充信息。原任务不重复加入记忆。
+- **旧会话兼容。** 没有 `task_plan` 字段的 v1 会话按空清单加载；恢复后保存时会增加该字段。
 - **恢复时的配置来自当前命令行。** 系统提示、`--budget` 和 `--steps` 使用本次运行的值；`--steps` 表示本次还能进行多少轮决策，结果里的 `steps` 是会话累计值。
 - **内容可能敏感。** 会话文件包含模型可见的消息和工具输出，可能含文件内容；默认已被 `.gitignore` 的 `session*.json` 覆盖，不要提交或分享。
 - 会话文件损坏、版本不兼容或历史配对不自洽时，CLI 会报错退出；可用 `--fresh` 忽略旧文件重新开始。
@@ -594,15 +615,15 @@ python3 show_bfcl_score.py --run <运行ID> --json
 2. **工具失败也回填给模型**
    `except` 里不 raise，而是把 `ERROR: FileNotFoundError: ...` 作为 observation 塞回去。模型下一轮看到报错，通常会改策略。这是最便宜的自我纠错。
 
-3. **schema 和执行分离**
-   `TOOLS` 是说明书，`TOOL_IMPL` 是执行体。中间那层就是将来放权限检查、日志、超时、缓存的位置。
+3. **声明和执行分离**
+   `TOOL_SPECS` 描述工具，`TOOL_IMPL` 提供本地实现，`ToolRegistry` 验证并执行；`TOOLS` 由声明生成。
 
 ## 试过就知道了的坑
 
 - **把 `--steps` 调到 2**，看它在预算耗尽时是什么状态：不是失败，是"被截断"。
 - **把 `--budget` 调到 1500**，观察 `[记忆]` 那几行的压缩过程。
 - **注释掉 `safe_path` 的检查**，让它读 `../../etc/hosts` 试试。真实智能体的危险就来自这里。
-- **给 `TOOLS` 加一个 schema 但不加实现**，看模型调用时会发生什么（答案是：一条看不懂的 `KeyError`）。
+- **给工具声明增加一个未绑定实现的工具**，看 registry 如何在运行前拒绝不一致的配置。
 
 ## 测试与 CI
 
@@ -612,7 +633,7 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 127 项测试：契约 6 项、BFCL 官方旁路与 API 模型覆盖 19 项、Astrion BFCL 适配 7 项、BFCL 成绩查看 11 项、通用基准适配 6 项、事件协议 5 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 10 项、token 计量 5 项。
+它依次运行 138 项测试，覆盖工具契约、暂停与恢复、子任务清单、BFCL、事件、会话、赛后评测、主循环和 token 计量。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：
@@ -633,6 +654,7 @@ python3 -B -m unittest -v test_session
 8. **BFCL 默认基准是固定 200 条单轮子集。** 五个核心类别各 40 条、等间隔确定性抽样；官方 handler 另有显式 `all-scoring` 入口。Astrion 单轮适配器只支持固定 ID 的 3/20/200 条子集，不能覆盖多轮、memory、live 或 web-search 类别。
 9. **ToolBench 尚未接入。** 本阶段没有安装或调用 ToolBench/StableToolBench，也不把它们的分数与 BFCL 混合。
 10. **Event v1 还不是恢复事实源。** 它是只追加的旁观日志；session 仍按完整消息轮次保存，不能从事件重放副作用或恢复运行。
+11. **清单和工具适用性依赖模型判断。** 清单可能漏项或被错误标为完成；工具描述与提示词不提供语义正确性保证。当前尚无通用权限、执行超时或人工批准机制。
 
 ## 想继续加什么（按难度）
 
