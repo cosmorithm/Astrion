@@ -16,8 +16,10 @@ from benchmarks.bfcl import (
     PINNED_BFCL_VERSION,
     _bfcl_python,
     _parse_version,
+    build_progress_snapshot,
     build_commands,
     collect_official_outputs,
+    format_progress,
     load_bfcl_env,
     load_manifest,
     official_id_payload,
@@ -330,6 +332,16 @@ class BFCLTests(unittest.TestCase):
         self.assertTrue(all(Path(root) == output.resolve() for root in fake.seen_roots))
         self.assertTrue(all(key == "do-not-record" for key in fake.seen_openai_keys))
         self.assertTrue(report["config"]["deepseek_openai_bootstrap_alias"])
+        progress = json.loads((output / "bfcl_progress.json").read_text(encoding="utf-8"))
+        self.assertEqual(progress["phase"], "completed")
+        self.assertEqual(progress["generation"]["completed_entries"], 200)
+        self.assertEqual(progress["completed_generation_groups"], 5)
+        self.assertEqual(progress["scored_groups"], 5)
+        self.assertIn("总条目 200/200", format_progress(progress))
+        self.assertEqual(
+            build_progress_snapshot(output, load_manifest(), "completed")["generation"],
+            progress["generation"],
+        )
 
     def test_generation_failure_is_saved_and_evaluation_is_skipped(self):
         fake = FakeBFCL(generation_returncode=7)
@@ -344,6 +356,32 @@ class BFCLTests(unittest.TestCase):
         self.assertEqual(report["status"], "generation_error")
         self.assertEqual([call[1] for call in fake.calls], ["version", "models", "generate"])
         self.assertEqual(json.loads((output / "bfcl_run_report.json").read_text()), report)
+        progress = json.loads((output / "bfcl_progress.json").read_text())
+        self.assertEqual(progress["phase"], "generation_error")
+        self.assertEqual(progress["generation"]["completed_entries"], 0)
+
+        interrupted_fake = FakeBFCL()
+        interrupted_output = self.root / "interrupted"
+
+        def interrupted(command, env, cwd):
+            if command[1] == "generate":
+                raise KeyboardInterrupt
+            return interrupted_fake(command, env, cwd)
+
+        interrupted_report = run_bfcl(
+            model=MODEL,
+            bfcl_bin="bfcl",
+            output_dir=interrupted_output,
+            env={"DEEPSEEK_API_KEY": "secret"},
+            credential_env="DEEPSEEK_API_KEY",
+            command_runner=interrupted,
+        )
+        self.assertEqual(interrupted_report["status"], "interrupted")
+        self.assertEqual(interrupted_report["error"]["type"], "KeyboardInterrupt")
+        self.assertEqual(
+            json.loads((interrupted_output / "bfcl_progress.json").read_text())["phase"],
+            "interrupted",
+        )
 
     def test_evaluation_failure_preserves_generated_results_and_report(self):
         fake = FakeBFCL(evaluation_returncode=9)
@@ -377,6 +415,10 @@ class BFCLTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertTrue((output / "test_case_ids_to_generate.json").is_file())
         self.assertEqual(json.loads((output / "bfcl_run_report.json").read_text()), report)
+        self.assertEqual(
+            json.loads((output / "bfcl_progress.json").read_text())["phase"],
+            "dry_run",
+        )
 
         full_output = self.root / "full-dry-run"
         full_report = run_bfcl(
@@ -392,6 +434,10 @@ class BFCLTests(unittest.TestCase):
         self.assertFalse(full_report["benchmark"]["subset"])
         self.assertIsNone(full_report["official_id_file"])
         self.assertFalse((full_output / "test_case_ids_to_generate.json").exists())
+        self.assertEqual(
+            json.loads((full_output / "bfcl_progress.json").read_text())["group_count"],
+            22,
+        )
         self.assertEqual(calls, [])
 
     def test_collect_official_outputs_rejects_a_score_without_header(self):

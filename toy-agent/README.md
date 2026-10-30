@@ -372,6 +372,11 @@ python3 -m benchmarks bfcl run --benchmark all-scoring
 预计最终计分目标为 5,106 个。它包含 live、多轮、memory 和 web search，调用次数、
 时间和费用都远高于 200 条默认基准；项目不会自动运行它。
 
+运行时终端会显示当前/最近是第几组、本组完成数、总条目进度和评分组数；类别、
+完成组或总进度跨过约 1% 时输出，无变化时每 60 秒打印心跳。状态也会写入本次目录的
+`bfcl_progress.json`。默认每 5 秒检查一次，可用 `--progress-interval 10` 调整，
+不会增加模型调用。
+
 若要重跑原来的 20 条 smoke：
 
 ```bash
@@ -401,6 +406,12 @@ python3 show_bfcl_score.py --list
 
 # 精确查看某次运行；也可以传运行目录或报告文件路径
 python3 show_bfcl_score.py --run <运行ID>
+
+# 查看最近一个运行（包括尚未完成）的分组进度
+python3 show_bfcl_score.py --progress
+
+# 查看指定运行的分组进度
+python3 show_bfcl_score.py --progress --run <运行ID>
 
 # 机器可读输出
 python3 show_bfcl_score.py --run <运行ID> --json
@@ -434,7 +445,7 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 104 项测试：契约 6 项、BFCL 旁路 13 项、BFCL 成绩查看 8 项、通用基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
+它依次运行 105 项测试：契约 6 项、BFCL 旁路 13 项、BFCL 成绩查看 9 项、通用基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：

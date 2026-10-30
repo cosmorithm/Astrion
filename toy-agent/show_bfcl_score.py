@@ -9,6 +9,13 @@ import json
 import sys
 from pathlib import Path
 
+from benchmarks.bfcl import (
+    BUILTIN_BENCHMARKS,
+    build_progress_snapshot,
+    format_progress,
+    load_manifest,
+)
+
 
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parent / "benchmark_runs" / "bfcl"
 REPORT_NAME = "bfcl_run_report.json"
@@ -128,6 +135,97 @@ def latest_completed_report(runs_dir: Path | str = DEFAULT_RUNS_DIR) -> Path:
     raise ScoreReportError("没有找到已完成的 BFCL 运行；可先用 --list 查看历史记录")
 
 
+def resolve_run_dir(selector: str, runs_dir: Path | str = DEFAULT_RUNS_DIR) -> Path:
+    """解析运行目录；未指定时选择最近修改的目录，包括尚无报告的运行。"""
+    root = Path(runs_dir).expanduser().resolve()
+    if selector:
+        direct = Path(selector).expanduser()
+        candidate = direct if direct.exists() else root / selector
+        if candidate.is_file():
+            candidate = candidate.parent
+        candidate = candidate.resolve()
+        if not candidate.is_dir():
+            raise ScoreReportError(f"没有找到 BFCL 运行目录: {candidate}")
+        return candidate
+    candidates = [path for path in root.iterdir() if path.is_dir()] if root.is_dir() else []
+    if not candidates:
+        raise ScoreReportError("没有找到 BFCL 运行目录")
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    # 优先查看未产生报告或仍为 preparing 的运行，避免较新的 dry-run 遮住长任务。
+    for candidate in candidates:
+        report_path = candidate / REPORT_NAME
+        if not report_path.is_file():
+            return candidate.resolve()
+        try:
+            if load_report(report_path).get("status") == "preparing":
+                return candidate.resolve()
+        except ScoreReportError:
+            continue
+    return candidates[0].resolve()
+
+
+def _manifest_for_run(run_dir: Path):
+    report_path = run_dir / REPORT_NAME
+    if report_path.is_file():
+        try:
+            report = load_report(report_path)
+            manifest_path = (report.get("benchmark") or {}).get("manifest_path")
+            if manifest_path and Path(manifest_path).is_file():
+                return load_manifest(manifest_path), report.get("status")
+        except (ScoreReportError, ValueError, OSError):
+            pass
+
+    id_path = run_dir / "test_case_ids_to_generate.json"
+    if id_path.is_file():
+        try:
+            payload = json.loads(id_path.read_text(encoding="utf-8"))
+            for name in ("baseline-200", "smoke-20", "trial-3"):
+                manifest = load_manifest(BUILTIN_BENCHMARKS[name])
+                if payload == manifest.categories:
+                    return manifest, None
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        raise ScoreReportError("无法识别该运行的 case-id manifest")
+
+    # 官方 collection 不写 ID 文件；当前唯一内置 collection 是 all-scoring。
+    return load_manifest(BUILTIN_BENCHMARKS["all-scoring"]), None
+
+
+def inspect_progress(selector: str = "", runs_dir: Path | str = DEFAULT_RUNS_DIR) -> dict:
+    """扫描运行中的 result/score，返回最新分组进度。"""
+    run_dir = resolve_run_dir(selector, runs_dir)
+    manifest, status = _manifest_for_run(run_dir)
+    score_files = list((run_dir / "score").rglob("BFCL_v*_score.json"))
+    terminal_statuses = {
+        "completed", "dry_run", "setup_error", "generation_error",
+        "evaluation_error", "orchestration_error", "interrupted",
+    }
+    phase = (
+        status if status in terminal_statuses
+        else ("evaluation" if score_files else "generation")
+    )
+    snapshot = build_progress_snapshot(run_dir, manifest, phase)
+    snapshot["inspection_source"] = (
+        "progress_file_and_filesystem"
+        if (run_dir / "bfcl_progress.json").is_file()
+        else "filesystem_scan"
+    )
+    return snapshot
+
+
+def format_progress_detail(snapshot: dict) -> str:
+    lines = [
+        "BFCL 运行进度",
+        f"运行 ID：{snapshot['run_id']}",
+        format_progress(snapshot),
+        f"查看来源：{snapshot.get('inspection_source', 'filesystem_scan')}",
+        f"进度文件：{snapshot['progress_path']}",
+    ]
+    if snapshot.get("inspection_source") == "filesystem_scan":
+        lines.append("注意：这是落盘文件快照，不能仅凭此判断进程仍在运行。")
+    return "\n".join(lines)
+
+
 def _percent(value) -> str:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return f"{value:.2%}"
@@ -216,16 +314,31 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="查看 BFCL 运行成绩；不会调用模型")
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR,
                         help="BFCL 运行目录；默认 benchmark_runs/bfcl")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--list", action="store_true", help="列出全部历史运行")
-    group.add_argument("--run", default="", metavar="ID_OR_PATH",
-                       help="指定运行 ID、运行目录或 bfcl_run_report.json")
+    action_group = parser.add_mutually_exclusive_group()
+    action_group.add_argument("--list", action="store_true", help="列出全部历史运行")
+    action_group.add_argument("--progress", action="store_true", help="查看正在运行或指定运行的分组进度")
+    parser.add_argument("--run", default="", metavar="ID_OR_PATH",
+                        help="指定运行 ID、运行目录或 bfcl_run_report.json")
     parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     args = parser.parse_args(argv)
 
     if args.list:
+        if args.run:
+            parser.error("--list 不能与 --run 同时使用")
         runs = discover_runs(args.runs_dir)
         print(json.dumps(runs, ensure_ascii=False, indent=2) if args.json else format_run_list(runs))
+        return 0
+
+    if args.progress:
+        try:
+            progress = inspect_progress(args.run, args.runs_dir)
+        except ScoreReportError as exc:
+            print(f"错误：{exc}", file=sys.stderr)
+            return 2
+        print(
+            json.dumps(progress, ensure_ascii=False, indent=2)
+            if args.json else format_progress_detail(progress)
+        )
         return 0
 
     try:

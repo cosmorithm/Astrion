@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from time import perf_counter
+from time import monotonic, perf_counter, sleep
 from typing import Callable
 
 from agent import find_env_files, load_env
@@ -496,6 +496,230 @@ def _json_lines(path: Path) -> list[dict]:
     return records
 
 
+def _count_nonempty_lines(path: Path) -> int:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            count = 0
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    json.loads(line)
+                except json.JSONDecodeError:
+                    # 写入线程可能正处于一行中间；下次轮询再计入。
+                    continue
+                count += 1
+            return count
+    except OSError:
+        return 0
+
+
+def _artifact_category(path: Path, artifact: str) -> str | None:
+    match = re.match(rf"BFCL_v\d+_(.+)_{artifact}\.json$", path.name)
+    if not match:
+        return None
+    category = match.group(1)
+    if artifact == "result" and category.endswith("_prereq"):
+        category = category.removesuffix("_prereq")
+    return category
+
+
+def build_progress_snapshot(
+    project_root: Path | str,
+    manifest: BFCLManifest,
+    phase: str,
+) -> dict:
+    """从正在写入的官方文件计算类别组和总进度。"""
+    root = Path(project_root).expanduser().resolve()
+    category_names = list(manifest.category_counts)
+    generated_by_category = {category: 0 for category in category_names}
+    result_mtimes: dict[str, int] = {}
+    result_root = root / "result"
+    if result_root.exists():
+        for path in result_root.rglob("BFCL_v*_result.json"):
+            category = _artifact_category(path, "result")
+            if category not in generated_by_category:
+                continue
+            generated_by_category[category] += _count_nonempty_lines(path)
+            try:
+                result_mtimes[category] = max(
+                    result_mtimes.get(category, 0), path.stat().st_mtime_ns
+                )
+            except OSError:
+                pass
+
+    scored_categories = set()
+    score_mtimes: dict[str, int] = {}
+    score_root = root / "score"
+    if score_root.exists():
+        for path in score_root.rglob("BFCL_v*_score.json"):
+            category = _artifact_category(path, "score")
+            if category not in manifest.category_counts:
+                continue
+            scored_categories.add(category)
+            try:
+                score_mtimes[category] = max(
+                    score_mtimes.get(category, 0), path.stat().st_mtime_ns
+                )
+            except OSError:
+                pass
+
+    completed_generation = [
+        category for category in category_names
+        if generated_by_category[category] >= manifest.category_counts[category]
+    ]
+    generated_entries = sum(generated_by_category.values())
+    generation_percent = (
+        generated_entries / manifest.expected_generation_entries
+        if manifest.expected_generation_entries
+        else 0.0
+    )
+
+    if phase == "evaluation" and score_mtimes:
+        active_category = max(score_mtimes, key=score_mtimes.get)
+    elif result_mtimes:
+        active_category = max(result_mtimes, key=result_mtimes.get)
+    else:
+        active_category = None
+
+    current_group = None
+    if active_category is not None:
+        current_group = {
+            "position": category_names.index(active_category) + 1,
+            "total_groups": len(category_names),
+            "category": active_category,
+            "generated_entries": generated_by_category[active_category],
+            "expected_entries": manifest.category_counts[active_category],
+            "generation_complete": active_category in completed_generation,
+            "score_file_present": active_category in scored_categories,
+        }
+
+    return {
+        "kind": "bfcl_progress",
+        "phase": phase,
+        "run_id": root.name,
+        "manifest_name": manifest.name,
+        "profile": manifest.profile,
+        "official_collection": manifest.official_collection,
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "pid": os.getpid(),
+        "group_count": len(category_names),
+        "completed_generation_groups": len(completed_generation),
+        "scored_groups": len(scored_categories),
+        "current_group": current_group,
+        "generation": {
+            "completed_entries": generated_entries,
+            "expected_entries": manifest.expected_generation_entries,
+            "percent": generation_percent,
+            "by_category": generated_by_category,
+        },
+        "evaluation": {
+            "completed_groups": len(scored_categories),
+            "expected_groups": len(category_names),
+        },
+        "progress_path": str(root / "bfcl_progress.json"),
+    }
+
+
+def _write_progress(project_root: Path, manifest: BFCLManifest, phase: str) -> dict:
+    snapshot = build_progress_snapshot(project_root, manifest, phase)
+    _atomic_write_json(project_root / "bfcl_progress.json", snapshot)
+    return snapshot
+
+
+def format_progress(snapshot: dict) -> str:
+    """生成一行适合终端观察的进度。"""
+    phase = snapshot["phase"]
+    current = snapshot.get("current_group")
+    group_text = "尚未写出首条结果"
+    if current is not None:
+        group_text = (
+            f"当前/最近组 {current['position']}/{current['total_groups']} "
+            f"{current['category']} "
+            f"{current['generated_entries']}/{current['expected_entries']}"
+        )
+    generation = snapshot["generation"]
+    return (
+        f"[BFCL进度] {phase} | {group_text} | "
+        f"生成完成组 {snapshot['completed_generation_groups']}/{snapshot['group_count']} | "
+        f"总条目 {generation['completed_entries']}/{generation['expected_entries']} "
+        f"({generation['percent']:.2%}) | "
+        f"评分完成组 {snapshot['scored_groups']}/{snapshot['group_count']}"
+    )
+
+
+def _progress_command_runner(
+    command: list[str],
+    env: dict[str, str],
+    cwd: Path,
+    *,
+    manifest: BFCLManifest,
+    phase: str,
+    interval_seconds: float,
+) -> dict:
+    """执行长命令，同时轮询官方文件并输出分组进度。"""
+    started = perf_counter()
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout_file, \
+            tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            env=env,
+            text=True,
+            stdout=stdout_file,
+            stderr=stderr_file,
+        )
+        last_signature = None
+        last_printed = 0.0
+        progress_step = max(1, manifest.expected_generation_entries // 100)
+        try:
+            while process.poll() is None:
+                snapshot = _write_progress(cwd, manifest, phase)
+                current = snapshot.get("current_group") or {}
+                signature = (
+                    snapshot["phase"],
+                    current.get("category"),
+                    snapshot["generation"]["completed_entries"] // progress_step,
+                    snapshot["completed_generation_groups"],
+                    snapshot["scored_groups"],
+                )
+                now = monotonic()
+                if signature != last_signature or now - last_printed >= 60:
+                    print(format_progress(snapshot), file=sys.stderr, flush=True)
+                    last_signature = signature
+                    last_printed = now
+                sleep(interval_seconds)
+            returncode = process.wait()
+        except BaseException:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise
+
+        snapshot = _write_progress(cwd, manifest, phase)
+        current = snapshot.get("current_group") or {}
+        final_signature = (
+            snapshot["phase"],
+            current.get("category"),
+            snapshot["generation"]["completed_entries"] // progress_step,
+            snapshot["completed_generation_groups"],
+            snapshot["scored_groups"],
+        )
+        if final_signature != last_signature:
+            print(format_progress(snapshot), file=sys.stderr, flush=True)
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        return {
+            "command": list(command),
+            "returncode": returncode,
+            "duration_seconds": perf_counter() - started,
+            "stdout": stdout_file.read(),
+            "stderr": stderr_file.read(),
+        }
+
+
 def collect_official_outputs(project_root: Path | str) -> dict:
     """读取官方文件，不重新判断单条样例对错。"""
     root = Path(project_root).expanduser().resolve()
@@ -613,10 +837,17 @@ def run_bfcl(
     allow_overwrite: bool = False,
     credential_env: str | None = None,
     dry_run: bool = False,
+    progress_interval: float = 5.0,
     env: dict[str, str] | None = None,
     command_runner: CommandRunner = _default_command_runner,
 ) -> dict:
     """运行所选 BFCL 子集或官方 collection，并始终尝试保存编排报告。"""
+    if (
+        not isinstance(progress_interval, (int, float))
+        or isinstance(progress_interval, bool)
+        or progress_interval <= 0
+    ):
+        raise ValueError("progress_interval 必须是正数")
     manifest = load_manifest(manifest_path)
     root = (
         Path(output_dir).expanduser().resolve()
@@ -666,6 +897,7 @@ def run_bfcl(
             "allow_overwrite": allow_overwrite,
             "credential_env": credential_env,
             "deepseek_openai_bootstrap_alias": deepseek_bootstrap_alias,
+            "progress_interval_seconds": progress_interval,
         },
         "toy_agent_commit": _git_commit(repo_root),
         "project_root": str(root),
@@ -678,13 +910,32 @@ def run_bfcl(
         "official_outputs": None,
         "error": None,
         "report_path": str(root / "bfcl_run_report.json"),
+        "progress_path": str(root / "bfcl_progress.json"),
     }
     report_path = root / "bfcl_run_report.json"
+    _atomic_write_json(report_path, report)
+    _write_progress(root, manifest, "preparing")
 
     if dry_run:
         report["status"] = "dry_run"
         _atomic_write_json(report_path, report)
+        _write_progress(root, manifest, "dry_run")
         return report
+
+    def run_long_command(command: list[str], phase: str) -> dict:
+        _write_progress(root, manifest, phase)
+        if command_runner is _default_command_runner:
+            return _progress_command_runner(
+                command,
+                runtime_env,
+                root,
+                manifest=manifest,
+                phase=phase,
+                interval_seconds=float(progress_interval),
+            )
+        result = command_runner(command, runtime_env, root)
+        _write_progress(root, manifest, phase)
+        return result
 
     try:
         doctor = probe_bfcl(
@@ -697,7 +948,7 @@ def run_bfcl(
             report["error"] = {"type": "BFCLDoctorError", "message": "BFCL 环境检查未通过"}
             return report
 
-        generation = command_runner(generate_command, runtime_env, root)
+        generation = run_long_command(generate_command, "generation")
         report["commands"]["generate"] = _command_record(generation, log_dir, "generate", root)
         if generation.get("returncode") != 0:
             report["status"] = "generation_error"
@@ -708,7 +959,7 @@ def run_bfcl(
             report["official_outputs"] = collect_official_outputs(root)
             return report
 
-        evaluation = command_runner(evaluate_command, runtime_env, root)
+        evaluation = run_long_command(evaluate_command, "evaluation")
         report["commands"]["evaluate"] = _command_record(evaluation, log_dir, "evaluate", root)
         report["official_outputs"] = collect_official_outputs(root)
         if evaluation.get("returncode") != 0:
@@ -727,6 +978,17 @@ def run_bfcl(
             return report
         report["status"] = "completed"
         return report
+    except KeyboardInterrupt:
+        report["status"] = "interrupted"
+        report["error"] = {
+            "type": "KeyboardInterrupt",
+            "message": "用户中断了 BFCL 运行",
+        }
+        try:
+            report["official_outputs"] = collect_official_outputs(root)
+        except (OSError, ValueError, TypeError):
+            pass
+        return report
     except (OSError, ValueError, TypeError) as exc:
         report["status"] = "orchestration_error"
         report["error"] = {"type": type(exc).__name__, "message": str(exc)}
@@ -737,6 +999,10 @@ def run_bfcl(
         return report
     finally:
         _atomic_write_json(report_path, report)
+        try:
+            _write_progress(root, manifest, report["status"])
+        except OSError:
+            pass
 
 
 def _default_bfcl_bin() -> str:
@@ -773,6 +1039,12 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--allow-overwrite", action="store_true")
     run_parser.add_argument("--credential-env", default="DEEPSEEK_API_KEY")
     run_parser.add_argument("--dry-run", action="store_true")
+    run_parser.add_argument(
+        "--progress-interval",
+        type=float,
+        default=5.0,
+        help="实时进度刷新秒数；默认 5",
+    )
 
     args = parser.parse_args(argv)
     # doctor 和真实 run 需要凭据时才读取 .env；dry-run 不接触密钥文件。
@@ -796,6 +1068,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_overwrite=args.allow_overwrite,
         credential_env=args.credential_env or None,
         dry_run=args.dry_run,
+        progress_interval=args.progress_interval,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
     return 0 if result["status"] in {"completed", "dry_run"} else 1

@@ -191,6 +191,32 @@ python3 -m benchmarks bfcl run --benchmark all-scoring
 内置选择名称共有 `baseline-200`（默认）、`smoke-20`、`trial-3` 和
 `all-scoring`。自定义实验仍可使用 `--manifest <路径>`，它与 `--benchmark` 互斥。
 
+### 4.2 实时分组进度
+
+长任务运行时不再静默等待。运行器默认每 5 秒扫描官方 result/score 文件，终端会
+显示当前或最近活动类别是第几组/共几组、本组完成数、完整生成组数、总条目百分比
+和评分完成组数。类别、完成组、评分组变化或总进度跨过约 1% 时打印；没有变化时
+每 60 秒输出一次心跳，避免每个样例都刷一行。
+
+同一状态会原子保存为每次运行目录的 `bfcl_progress.json`，最终阶段会变为
+`completed`、`generation_error`、`evaluation_error` 等。统一报告也会在长命令开始
+前先以 `preparing` 状态写出，因此中途即可确认 manifest 和命令。刷新间隔可调：
+
+```bash
+python3 -m benchmarks bfcl run --benchmark all-scoring \
+  --progress-interval 10
+```
+
+在另一个终端查看最近运行或指定运行，不会调用模型：
+
+```bash
+python3 show_bfcl_score.py --progress
+python3 show_bfcl_score.py --progress --run <运行ID>
+```
+
+对于优化前已经启动、没有 `bfcl_progress.json` 的旧进程，查看脚本会直接扫描现有
+result/score 文件计算当前进度。官方 stdout/stderr 仍完整保存在原有日志中。
+
 每次创建独立的 `benchmark_runs/bfcl/<run-id>/`。其中包括官方要求的
 `test_case_ids_to_generate.json`、官方 `result/`、官方 `score/`、命令日志和
 `bfcl_run_report.json`。命令不经过 shell 拼接，凭据值不会写入统一报告。

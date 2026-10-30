@@ -151,6 +151,35 @@ class BFCLScoreViewerTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("没有找到 BFCL 报告", stderr.getvalue())
 
+    def test_progress_cli_inspects_a_running_all_scoring_directory(self):
+        run = self.root / "running-full"
+        result = run / "result" / "model" / "agentic" / "memory" / "vector"
+        result.mkdir(parents=True)
+        path = result / "BFCL_v4_memory_vector_prereq_result.json"
+        path.write_text(
+            "\n".join(json.dumps({"id": f"memory_vector_prereq_{index}"})
+                      for index in range(3)) + "\n",
+            encoding="utf-8",
+        )
+        newer_dry = self.make_run("newer-dry", status="dry_run", mtime=50)
+        os.utime(newer_dry.parent, (50, 50))
+        os.utime(run, (10, 10))
+        self.assertEqual(score_viewer.resolve_run_dir("", self.root), run.resolve())
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = score_viewer.main([
+                "--runs-dir", str(self.root), "--progress", "--run", "running-full",
+            ])
+
+        self.assertEqual(code, 0)
+        text = stdout.getvalue()
+        self.assertIn("[BFCL进度] generation", text)
+        self.assertIn("当前/最近组 19/22 memory_vector 3/192", text)
+        self.assertIn("总条目 3/5217", text)
+        self.assertIn("查看来源：filesystem_scan", text)
+        self.assertIn("不能仅凭此判断进程仍在运行", text)
+
 
 if __name__ == "__main__":
     unittest.main()

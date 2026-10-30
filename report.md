@@ -37,6 +37,7 @@
 | BFCL 成绩查看脚本 | 本次对话，见第 19 节 | 默认查看最近完成运行；支持列出历史、按 ID/路径指定、文本或 JSON 输出 |
 | BFCL 200 条默认基准 | 本次对话，见第 20 节 | 五个核心单轮类别各 40 条，确定性等间隔抽样；保留 3 条和 20 条旧 manifest |
 | BFCL 全部正式计分类基准 | 本次对话，见第 21 节 | 新增官方 `all_scoring` 入口；22 类、5,217 个生成条目、预计 5,106 个计分目标；不自动运行 |
+| BFCL 实时分组进度 | 本次对话，见第 22 节 | 显示当前类别组、本组/总体进度和评分组数；保存 `bfcl_progress.json`，并可跨终端查看 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -1502,3 +1503,79 @@ full-scoring 报告设置 `subset=false`，并同时记录 `case_count=5217`、
 5,217 条生成，因此本阶段没有新增模型费用，也没有 full-scoring 成绩。该完整基准
 包含 live、多轮、memory 和 web search，对运行环境、时间与费用的要求远高于
 200 条单轮基准，正式运行前应单独确认预算与外部依赖。
+
+## 22. 第十四阶段：BFCL 实时分组进度
+
+### 22.1 问题
+
+第一次真实运行 `all-scoring` 时，外层适配器使用阻塞式 `subprocess.run()`，只有
+官方 generate 完全退出后才写日志和统一报告。虽然官方 result 文件在持续增长，
+用户在另一个终端里无法直接知道“跑到第几组”，长时间网络等待也容易被误认为程序
+已经停止。
+
+检查当时的运行目录发现：进程仍存在，已经生成 75/5,217 个条目，三个 result 文件
+分别是 `memory_kv` prerequisite 37 条、`memory_rec_sum` prerequisite 37 条和
+`memory_vector` prerequisite 1 条；按 manifest 顺序，当前或最近活动类别为第
+19/22 组 `memory_vector`。尚无 score 文件，说明仍在 generation 阶段。
+
+### 22.2 进度模型
+
+`benchmarks/bfcl.py` 新增 `build_progress_snapshot()`。它不依赖官方 stdout 文案，
+而是读取稳定的 result/score 文件：
+
+- 根据文件名还原 category；memory 的 `_prereq` 与正式结果合并到同一类别；
+- 以 manifest 的 `category_counts` 为本组预期数量；
+- 统计当前或最近活动组的位置、本组生成数、生成完成组数；
+- 汇总总生成条目和百分比；
+- 以官方 category score 文件数表示评分完成组数。
+
+进度结构原子写入 `bfcl_progress.json`，包含 phase、run ID、PID、更新时间、组数、
+`current_group`、逐类别数量和 generation/evaluation 汇总。这里只扫描本地文件，
+不会产生额外模型请求或 token。
+
+### 22.3 长命令监控
+
+默认命令执行从阻塞式 `subprocess.run()` 改为受控 `Popen` 轮询：
+
+1. 创建运行目录后立即写 `bfcl_run_report.json` 的 `preparing` 状态和初始进度；
+2. generation/evaluation 期间默认每 5 秒重新计算进度；
+3. 类别、完成组、评分组变化或总进度跨过约 1% 时向 stderr 打印，避免每条刷屏；
+4. 无变化时每 60 秒打印一次心跳；
+5. 子进程结束后完整读取 stdout/stderr，继续写原有日志；
+6. 正常、失败或异常退出时把最终状态写回报告与进度文件。
+
+可通过 `--progress-interval` 调整本地扫描频率：
+
+```bash
+python3 -m benchmarks bfcl run --benchmark all-scoring --progress-interval 10
+```
+
+### 22.4 跨终端查看
+
+`show_bfcl_score.py` 增加：
+
+```bash
+python3 show_bfcl_score.py --progress
+python3 show_bfcl_score.py --progress --run <运行ID>
+```
+
+不指定 ID 时选择最近修改的运行目录，包括还没有最终报告的旧运行。新运行可通过
+报告定位 manifest；优化前启动的旧运行如果没有报告，则根据 ID 文件匹配 3/20/200
+基准，没有 ID 文件时识别为当前唯一官方 collection `all-scoring`，直接扫描已有
+结果。因此即使旧运行没有进度文件，也能还原它最后停留在第 19/22 组和 75/5,217；
+查看本身不会恢复或重启任务。
+
+优化实施期间再次检查原运行的两个 PID，均已不存在；结果文件最后停在 75/5,217，
+没有 score，报告停留在 `preparing`。因此它是一次已经中断的旧运行，而不是仍在
+后台推进。`show_bfcl_score.py --progress` 对它标记来源为 `filesystem_scan`，只
+如实展示已落盘的最后进度，不声称进程存活；新代码也不会在未经用户明确运行命令
+的情况下自动重启或产生费用。
+
+### 22.5 验证
+
+新增测试断言覆盖进度文件的 completed/error/dry-run 状态、200 条五组聚合、
+all-scoring 22 组初始状态、终端格式化和跨终端旧运行扫描。另用一个短生命周期
+子进程验证实时监控器能从 0/3 更新到第 1/3 组、1/3 条后正常回收并保留输出。
+进度查看新增 1 项旧运行扫描测试后，完整测试为 105 项，全部通过。新运行若被
+Ctrl+C 中断，会终止官方子进程并把报告/进度状态写成 `interrupted`，避免留下含义
+不清楚的永久 `preparing` 状态。
