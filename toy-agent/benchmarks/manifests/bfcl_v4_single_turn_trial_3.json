@@ -1,0 +1,21 @@
+{
+  "name": "bfcl_v4_single_turn_trial_3",
+  "benchmark": "BFCL",
+  "benchmark_version": "V4",
+  "profile": "subset",
+  "harness": {
+    "package": "bfcl-eval",
+    "version": "2026.3.23"
+  },
+  "categories": {
+    "simple_python": [
+      "simple_python_0"
+    ],
+    "multiple": [
+      "multiple_0"
+    ],
+    "irrelevance": [
+      "irrelevance_0"
+    ]
+  }
+}

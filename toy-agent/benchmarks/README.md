@@ -104,6 +104,11 @@ DEEPSEEK_API_KEY=你的_DeepSeek_官方_key
 `.env` 加载器；已有 shell 环境变量优先。`--dry-run` 不读取 `.env`。
 `.env` 已被 Git 忽略，不要把真实值写入文档、日志或版本库。
 
+`bfcl-eval==2026.3.23` 的 DeepSeek handler 会先初始化 OpenAI 父类，再创建真正的
+DeepSeek client；当前 OpenAI SDK 要求父类初始化时已有 key。适配器因此只在官方
+BFCL 子进程环境中，把 `DEEPSEEK_API_KEY` 临时复制为 `OPENAI_API_KEY` 兼容别名。
+它不会写回 `.env` 或报告，实际请求仍由官方 handler 发往 DeepSeek endpoint。
+
 项目现有的 `AGENT_API_KEY` 不会被自动改名或转发。`AGENT_BASE_URL` 和
 `AGENT_MODEL=deepseek-flash` 也不等于 BFCL 官方 DeepSeek 配置，不能据此冒充官方结果。
 换其他 BFCL 官方模型时，同时把 `--model` 和 `--credential-env` 换成对应值。
@@ -136,12 +141,23 @@ python3 -m benchmarks bfcl run
 - `parallel_multiple` 4 个；
 - `irrelevance` 4 个。
 
+最小真实试跑 manifest 位于
+`benchmarks/manifests/bfcl_v4_single_turn_trial_3.json`，分别取
+`simple_python_0`、`multiple_0` 和 `irrelevance_0`。运行命令：
+
+```bash
+python3 -m benchmarks bfcl run \
+  --manifest benchmarks/manifests/bfcl_v4_single_turn_trial_3.json
+```
+
 每次创建独立的 `benchmark_runs/bfcl/<run-id>/`。其中包括官方要求的
 `test_case_ids_to_generate.json`、官方 `result/`、官方 `score/`、命令日志和
 `bfcl_run_report.json`。命令不经过 shell 拼接，凭据值不会写入统一报告。
 
 统一报告中的 `official_category_scores` 直接读取官方 score JSON 首行的
 `accuracy`、`correct_count` 和 `total_count`；单条对错不由本项目重新判断。
+报告还会从官方 result 汇总 input/output/total tokens 和模型响应 latency，并保留
+每个结果文件的同类指标；生成与评分命令的完整耗时分别记录在 `commands` 中。
 `derived_subset_micro_accuracy` 只是对这 20 个样例按数量汇总，明确属于
 **subset**，不能当作 BFCL 官方 full leaderboard overall。
 

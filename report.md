@@ -1200,6 +1200,13 @@ toy-agent 已有的标准库加载器：doctor 和真实 run 会从脚本目录�
 文件。根目录 `.gitignore` 已忽略 `.env` 和 `.env.*`，真实值不进入代码、报告或
 Git。
 
+首次真实 3 样例试运行还暴露了一个上游初始化兼容问题：`bfcl-eval==2026.3.23`
+的 DeepSeek handler 会先初始化 OpenAI 父类，再用 `DEEPSEEK_API_KEY` 创建真正的
+DeepSeek client；当前 OpenAI SDK 在父类阶段若没有 `OPENAI_API_KEY` 会提前报错。
+适配器因此仅在 BFCL 子进程环境中把已有的 `DEEPSEEK_API_KEY` 临时复制为兼容
+别名。它不写回进程全局环境、`.env` 或报告，实际 endpoint 仍由官方 DeepSeek
+handler 固定。第一次失败被记录为 `generation_error`，未生成响应，也未进入评分。
+
 默认 doctor 检查：
 
 1. 官方包版本严格等于 `2026.3.23`；
@@ -1257,3 +1264,32 @@ bfcl evaluate --model DeepSeek-V3.2-Exp-FC \
 CLI 能启动。doctor 已确认固定版本和默认模型注册正确，但当前没有可确认的
 `DEEPSEEK_API_KEY`，所以尚未产生真实 BFCL 分数。只有正式凭据就绪后才运行 20 个
 真实样例。多轮、web search、memory 和 full leaderboard 均未纳入本阶段。
+
+### 18.8 首次真实 3 样例试跑
+
+学习者把官方 DeepSeek key 加入根目录 `.env` 后，doctor 的版本、模型注册和凭据
+三项检查全部通过。为控制成本并同时覆盖不同决策，新增固定 manifest
+`bfcl_v4_single_turn_trial_3.json`：
+
+| case | 类别 | 模型结果 | 官方评分 |
+|---|---|---|---:|
+| `simple_python_0` | `simple_python` | 调用 `calculate_triangle_area(base=10, height=5, unit="units")` | 1/1 |
+| `multiple_0` | `multiple` | 从多个工具中选择 `triangle_properties_get(side1=5, side2=4, side3=3)` | 1/1 |
+| `irrelevance_0` | `irrelevance` | 不调用工具，直接回答三角形面积为 25 平方米 | 1/1 |
+
+第一次运行在官方 generate 初始化 handler 时失败，状态为 `generation_error`；没有
+生成模型响应，也没有进入 scorer。修复兼容别名并通过 96 项离线测试后，以完全
+相同的 3 个 case 重新运行，官方 `generate` 和 `evaluate --partial-eval` 均返回 0。
+
+最终官方 category score 均为 `accuracy=1.0`，派生的 3 样例 micro accuracy 为
+`3/3 = 100%`。三条响应合计 input 1,424 tokens、output 248 tokens，共 1,672 tokens；
+模型响应 latency 合计约 4.84 秒，官方生成命令约 7.35 秒，评分命令约 3.03 秒。
+为避免以后再从原始 JSON 手算，`collect_official_outputs()` 同步增加 token 与模型
+latency 聚合：统一报告记录总 input/output/total tokens、总模型 latency，并在每个
+result file 条目上保留对应的小计；命令墙钟时间继续由 `commands` 分别记录。
+成功运行目录为
+`toy-agent/benchmark_runs/bfcl/20261030T092428_543691Z_DeepSeek-V3.2-Exp-FC_f6708011/`。
+凭据扫描只发现报告中的环境变量名称和 `present` 状态，没有发现 key 值。
+
+该结果仅说明这 3 个固定样例通过，不能推断 20 样例子集、BFCL full leaderboard、
+多轮或 agentic 类别的总体能力。

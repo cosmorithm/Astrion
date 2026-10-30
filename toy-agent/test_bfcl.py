@@ -44,10 +44,12 @@ class FakeBFCL:
         self.generation_returncode = generation_returncode
         self.evaluation_returncode = evaluation_returncode
         self.seen_roots = []
+        self.seen_openai_keys = []
 
     def __call__(self, command, env, cwd):
         self.calls.append(list(command))
         self.seen_roots.append(env.get("BFCL_PROJECT_ROOT"))
+        self.seen_openai_keys.append(env.get("OPENAI_API_KEY"))
         action = command[1]
         if action == "version":
             return command_result(command, stdout=f"bfcl version: {PINNED_BFCL_VERSION}\n")
@@ -63,7 +65,13 @@ class FakeBFCL:
                 path = result_dir / f"BFCL_v4_{category}_result.json"
                 ids = load_manifest().categories[category]
                 path.write_text("".join(
-                    json.dumps({"id": case_id, "result": []}) + "\n"
+                    json.dumps({
+                        "id": case_id,
+                        "result": [],
+                        "input_token_count": 10,
+                        "output_token_count": 2,
+                        "latency": 0.1,
+                    }) + "\n"
                     for case_id in ids
                 ), encoding="utf-8")
             return command_result(command, stdout="generation complete\n")
@@ -108,6 +116,15 @@ class BFCLTests(unittest.TestCase):
         self.assertEqual(len(manifest.categories), 5)
         self.assertEqual(len(manifest.case_ids), 20)
         self.assertEqual(len(set(manifest.case_ids)), 20)
+
+        trial = load_manifest(
+            DEFAULT_MANIFEST.with_name("bfcl_v4_single_turn_trial_3.json")
+        )
+        self.assertEqual(len(trial.case_ids), 3)
+        self.assertEqual(
+            trial.case_ids,
+            ["simple_python_0", "multiple_0", "irrelevance_0"],
+        )
 
     def test_manifest_rejects_duplicate_and_mismatched_ids(self):
         data = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
@@ -243,6 +260,12 @@ class BFCLTests(unittest.TestCase):
         self.assertEqual(official["correct_cases"], 19)
         self.assertEqual(official["scored_cases"], 20)
         self.assertEqual(official["derived_subset_micro_accuracy"], 0.95)
+        self.assertEqual(official["token_usage"], {
+            "input_tokens": 200,
+            "output_tokens": 40,
+            "total_tokens": 240,
+        })
+        self.assertAlmostEqual(official["model_latency_seconds"], 2.0)
         self.assertEqual(sum(item["record_count"] for item in official["result_files"]), 20)
         self.assertTrue((output / report["commands"]["generate"]["stdout_log"]).is_file())
         self.assertTrue((output / report["commands"]["evaluate"]["stdout_log"]).is_file())
@@ -250,6 +273,8 @@ class BFCLTests(unittest.TestCase):
         self.assertEqual(saved, report)
         self.assertNotIn("do-not-record", json.dumps(saved))
         self.assertTrue(all(Path(root) == output.resolve() for root in fake.seen_roots))
+        self.assertTrue(all(key == "do-not-record" for key in fake.seen_openai_keys))
+        self.assertTrue(report["config"]["deepseek_openai_bootstrap_alias"])
 
     def test_generation_failure_is_saved_and_evaluation_is_skipped(self):
         fake = FakeBFCL(generation_returncode=7)

@@ -71,6 +71,24 @@ def load_bfcl_env(start: Path | str | None = None) -> list[Path]:
     return load_env(find_env_files(search_start))
 
 
+def _prepare_runtime_env(model: str, env: dict[str, str]) -> tuple[dict[str, str], bool]:
+    """为官方 DeepSeek handler 的父类初始化补充进程内兼容别名。"""
+    runtime_env = dict(env)
+    bridged = False
+    if (
+        model.startswith("DeepSeek-")
+        and runtime_env.get("DEEPSEEK_API_KEY")
+        and not runtime_env.get("OPENAI_API_KEY")
+    ):
+        # bfcl-eval 2026.3.23 的 DeepSeek handler 会先初始化 OpenAI 父类，
+        # 随后才用 DEEPSEEK_API_KEY 重建真正访问 DeepSeek endpoint 的 client。
+        # 新版 OpenAI SDK 要求父类初始化时也必须有 key，因此只在子进程环境中
+        # 提供同值别名；不写回 os.environ、.env 或运行报告。
+        runtime_env["OPENAI_API_KEY"] = runtime_env["DEEPSEEK_API_KEY"]
+        bridged = True
+    return runtime_env, bridged
+
+
 def _require_text(value, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} 必须是非空字符串")
@@ -412,13 +430,35 @@ def collect_official_outputs(project_root: Path | str) -> dict:
         })
 
     result_files = []
+    input_tokens = 0
+    output_tokens = 0
+    model_latency_seconds = 0.0
     result_root = root / "result"
     if result_root.exists():
         for path in sorted(result_root.rglob("BFCL_v*_result.json")):
             records = _json_lines(path)
+            file_input_tokens = sum(
+                item["input_token_count"] for item in records
+                if type(item.get("input_token_count")) is int
+            )
+            file_output_tokens = sum(
+                item["output_token_count"] for item in records
+                if type(item.get("output_token_count")) is int
+            )
+            file_latency = sum(
+                float(item["latency"]) for item in records
+                if isinstance(item.get("latency"), (int, float))
+                and not isinstance(item.get("latency"), bool)
+            )
+            input_tokens += file_input_tokens
+            output_tokens += file_output_tokens
+            model_latency_seconds += file_latency
             result_files.append({
                 "path": _relative(path, root),
                 "record_count": len(records),
+                "input_tokens": file_input_tokens,
+                "output_tokens": file_output_tokens,
+                "model_latency_seconds": file_latency,
                 "sha256": _sha256(path),
             })
 
@@ -433,6 +473,12 @@ def collect_official_outputs(project_root: Path | str) -> dict:
         "derived_subset_micro_accuracy": correct / total if total else None,
         "correct_cases": correct,
         "scored_cases": total,
+        "token_usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+        "model_latency_seconds": model_latency_seconds,
         "result_files": result_files,
         "official_csv_files": csv_files,
     }
@@ -493,7 +539,9 @@ def run_bfcl(
         bfcl_bin, model, manifest, temperature=temperature,
         num_threads=num_threads, allow_overwrite=allow_overwrite,
     )
-    runtime_env = dict(os.environ if env is None else env)
+    runtime_env, deepseek_bootstrap_alias = _prepare_runtime_env(
+        model, dict(os.environ if env is None else env)
+    )
     runtime_env["BFCL_PROJECT_ROOT"] = str(root)
     repo_root = Path(__file__).resolve().parents[2]
 
@@ -522,6 +570,7 @@ def run_bfcl(
             "num_threads": num_threads,
             "allow_overwrite": allow_overwrite,
             "credential_env": credential_env,
+            "deepseek_openai_bootstrap_alias": deepseek_bootstrap_alias,
         },
         "toy_agent_commit": _git_commit(repo_root),
         "project_root": str(root),

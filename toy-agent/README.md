@@ -331,6 +331,7 @@ BFCL V4 官方 harness；ToolBench 暂不接入。
 - `run_cases()`：逐条调用模型，记录原始请求/响应和错误；不判断对错。
 - `benchmarks/bfcl.py`：调用固定版本的官方 `bfcl generate/evaluate`，导入官方分数；不重写 AST scorer。
 - `benchmarks/manifests/bfcl_v4_single_turn_smoke.json`：固定 5 类、20 个 BFCL V4 样例。
+- `benchmarks/manifests/bfcl_v4_single_turn_trial_3.json`：正式调用前后的最小 3 样例试跑。
 - `setup_bfcl.sh`：在 `.venv-bfcl/` 安装可选依赖，不污染零依赖核心。
 
 快速查看将要执行的正式命令，不安装 BFCL、也不调用模型：
@@ -355,6 +356,13 @@ BFCL 命令会自动查找 `.env`，且不会覆盖 shell 中已经 `export` 的
 
 ```bash
 python3 -m benchmarks bfcl run
+```
+
+若只想先验证 3 条：
+
+```bash
+python3 -m benchmarks bfcl run \
+  --manifest benchmarks/manifests/bfcl_v4_single_turn_trial_3.json
 ```
 
 结果保存在 `benchmark_runs/bfcl/`，含官方 result/score、命令日志和统一报告。
