@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import argparse
 import ast
-import copy
+import inspect
 import json
 import operator as _op
 import os
@@ -35,8 +35,10 @@ import urllib.error
 import urllib.request
 from functools import partial
 from pathlib import Path
+from time import perf_counter
 from typing import Callable
 
+from events import EventEmitter
 from memory import Memory
 from session import load_session, save_session
 
@@ -315,6 +317,8 @@ class ChatLLM:
         self.usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.usage_calls = 0
         self.usage_unknown = 0
+        # 最近一次调用的服务端 usage，供结构化运行事件读取；未知时明确为 None。
+        self.last_usage: dict | None = None
 
     def _record_usage(self, usage: dict | None, purpose: str) -> None:
         """记录一次响应的用量。缺失或不完整时标记未知，不按零计算。"""
@@ -324,11 +328,13 @@ class ChatLLM:
             for key in self.usage_totals
         )
         if valid:
+            self.last_usage = {key: usage[key] for key in self.usage_totals}
             for key in self.usage_totals:
                 self.usage_totals[key] += usage[key]
             print(dim(f"  [token][{purpose}] 本次：输入 {usage['prompt_tokens']}"
                       f" / 输出 {usage['completion_tokens']} / 合计 {usage['total_tokens']}"))
         else:
+            self.last_usage = None
             self.usage_unknown += 1
             print(dim(f"  [token][{purpose}] 本次：未知（API 未返回完整有效的 usage）"))
 
@@ -343,6 +349,8 @@ class ChatLLM:
                   f" / 输出 {totals['completion_tokens']} / 合计 {totals['total_tokens']}{note}"))
 
     def _post(self, payload: dict, purpose: str = "决策") -> dict:
+        # 请求失败时不能沿用上一次成功调用的 usage。
+        self.last_usage = None
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -413,6 +421,8 @@ def run(
 ) -> dict:
     """运行任务；可选独立目录、事件记录和会话持久化。
 
+    event_sink 会同步接收 Event v1；sink 抛错会立即中止运行。Event 当前只用于
+    观察和评测，不参与 session 恢复。
     session_path 不为空时，在开始、每轮工具结果全部写回以及结束状态确定后保存，
     保证文件里的历史始终自洽。resume=True 表示 task 已在 memory 中，不会重复
     写入用户消息；initial_steps 是本次之前已经完成的决策轮数，用于累计步数。
@@ -431,11 +441,53 @@ def run(
 
     steps_taken = initial_steps
     tool_impl = tools_for_sandbox(sandbox) if sandbox is not None else TOOL_IMPL
+    event_emitter = EventEmitter(event_sink)
+    model_call_count = 0
 
-    def emit(event: dict) -> None:
-        # 独立副本避免后续消息变化改写已经记录的事件。
-        if event_sink is not None:
-            event_sink(copy.deepcopy(event))
+    def emit(event_type: str, *, step: int | None = None,
+             payload: dict | None = None) -> dict:
+        return event_emitter.emit(event_type, step=step, payload=payload)
+
+    def error_data(exc: BaseException) -> dict:
+        return {"type": type(exc).__name__, "message": str(exc)}
+
+    def call_model(fn: Callable[[], object], *, purpose: str, step: int,
+                   input_metadata: dict) -> object:
+        """记录一次模型调用；不在 Event 中重复保存完整输入上下文。"""
+        nonlocal model_call_count
+        model_call_count += 1
+        call_id = f"{event_emitter.run_id}:model:{model_call_count:04d}"
+        common = {
+            "model_call_id": call_id,
+            "purpose": purpose,
+            "model": getattr(llm, "model", None),
+        }
+        emit("model.call.started", step=step,
+             payload={**common, "input": input_metadata})
+        started = perf_counter()
+        try:
+            response = fn()
+        except BaseException as exc:
+            failed_usage = getattr(llm, "last_usage", None)
+            if not isinstance(failed_usage, dict):
+                failed_usage = None
+            emit("model.call.failed", step=step, payload={
+                **common,
+                "duration_seconds": perf_counter() - started,
+                "usage": failed_usage,
+                "error": error_data(exc),
+            })
+            raise
+        usage = getattr(llm, "last_usage", None)
+        if not isinstance(usage, dict):
+            usage = None
+        emit("model.call.finished", step=step, payload={
+            **common,
+            "duration_seconds": perf_counter() - started,
+            "usage": usage,
+            "response": response,
+        })
+        return response
 
     def persist(status: str) -> None:
         if session_path is not None:
@@ -452,24 +504,52 @@ def run(
         print(dim(f"  [记忆] {len(memory)} 条消息 / {memory.chars()} 字符"
                   f" / 压缩 {memory.compactions} 次"))
 
+    emit("run.started", payload={
+        "task": task,
+        "model": getattr(llm, "model", None),
+        "max_steps": max_steps,
+        "initial_steps": initial_steps,
+        "resume": resume,
+        "sandbox": str(sandbox if sandbox is not None else SANDBOX),
+    })
     persist("running")
     for step in range(1, max_steps + 1):
+        event_step = initial_steps + step
         if memory.needs_compaction():
             before_chars = memory.chars()
             print(dim(f"  [记忆] {before_chars} 字符 > 预算 {memory.budget_chars}，压缩最旧的轮次…"))
+            emit("memory.compaction.started", step=event_step, payload={
+                "before_chars": before_chars,
+                "budget_chars": memory.budget_chars,
+                "compactions_before": memory.compactions,
+            })
 
             def summarize(transcript: str) -> str:
-                emit({"type": "summary_request", "step": step, "messages": [
-                    {"role": "system", "content": SUMMARIZE_PROMPT},
-                    {"role": "user", "content": transcript},
-                ]})
-                summary = llm.summarize(transcript)
-                emit({"type": "summary_response", "step": step, "content": summary})
-                return summary
+                return call_model(
+                    lambda: llm.summarize(transcript),
+                    purpose="compaction",
+                    step=event_step,
+                    input_metadata={"transcript_chars": len(transcript)},
+                )
 
-            compacted = memory.compact(summarize)
-            emit({"type": "memory_compaction", "step": step, "compacted": compacted,
-                  "before_chars": before_chars, "after_chars": memory.chars()})
+            compaction_started = perf_counter()
+            try:
+                compacted = memory.compact(summarize)
+            except BaseException as exc:
+                emit("memory.compaction.failed", step=event_step, payload={
+                    "before_chars": before_chars,
+                    "after_chars": memory.chars(),
+                    "duration_seconds": perf_counter() - compaction_started,
+                    "error": error_data(exc),
+                })
+                raise
+            emit("memory.compaction.finished", step=event_step, payload={
+                "compacted": compacted,
+                "before_chars": before_chars,
+                "after_chars": memory.chars(),
+                "duration_seconds": perf_counter() - compaction_started,
+                "compactions_after": memory.compactions,
+            })
             if compacted:
                 print(dim(f"  [记忆] 压缩后 {memory.chars()} 字符"))
             else:
@@ -478,11 +558,18 @@ def run(
         print(bold(f"[{step}]"))
 
         messages = memory.for_model()
-        emit({"type": "model_request", "step": step, "messages": messages})
-        msg = llm.chat(messages)
-        steps_taken = initial_steps + step
+        msg = call_model(
+            lambda: llm.chat(messages),
+            purpose="decision",
+            step=event_step,
+            input_metadata={
+                "message_count": len(messages),
+                "message_chars": len(json.dumps(messages, ensure_ascii=False)),
+                "tool_count": len(TOOLS),
+            },
+        )
+        steps_taken = event_step
         memory.add_assistant(msg)
-        emit({"type": "model_response", "step": step, "message": memory.for_model()[-1]})
 
         thought = (msg.get("content") or "").strip()
         calls = msg.get("tool_calls") or []
@@ -494,55 +581,107 @@ def run(
             print(green("\n  = 模型没有再调用工具，结束"))
             report("no_tool_call")
             persist("no_tool_call")
-            emit({"type": "run_end", "status": "no_tool_call", "steps": steps_taken})
+            emit("run.finished", payload={
+                "status": "no_tool_call", "steps": steps_taken, "answer": thought,
+            })
             return {"status": "no_tool_call", "answer": thought, "steps": steps_taken}
 
         finish_answer = None
         for call in calls:
             name = call["function"]["name"]
+            tool_call_id = call["id"]
 
             # finish 之后的调用不执行，但仍需写回结果，保持这批消息配对完整。
             if finish_answer is not None:
                 observation = "ERROR: 已调用 finish，此工具未执行"
                 print(f"  {cyan('act:  ')} {name}（跳过）")
                 print(f"  {red('obs:  ')} {observation}")
-                memory.add_tool(call["id"], observation)
-                emit({"type": "tool_result", "step": step, "name": name,
-                      "tool_call_id": call["id"], "outcome": "skipped", "content": observation})
+                emit("tool.call.finished", step=event_step, payload={
+                    "tool_call_id": tool_call_id,
+                    "name": name,
+                    "outcome": "skipped",
+                    "duration_seconds": None,
+                    "content": observation,
+                    "raw_arguments": call["function"].get("arguments"),
+                })
+                memory.add_tool(tool_call_id, observation)
                 continue
 
             raw_args = call["function"].get("arguments")
             if raw_args is None or raw_args == "":
                 raw_args = "{}"
             print(f"  {cyan('act:  ')} {name}({raw_args})")
-            outcome = "ok"
+
+            # 解析、工具查找和参数绑定都在真正执行前完成。失败属于 rejected，
+            # 不是工具已经开始后发生的 error。
             try:
                 args = json.loads(raw_args)
                 if not isinstance(args, dict):
                     raise TypeError("工具参数必须是 JSON 对象")
+                if name not in tool_impl:
+                    raise KeyError(f"未知工具: {name}")
                 if name == "finish":
                     answer = args.get("answer")
                     if not isinstance(answer, str) or not answer.strip():
                         raise ValueError("finish 的 answer 必须是非空字符串")
-                observation = tool_impl[name](**args)
+                implementation = tool_impl[name]
+                inspect.signature(implementation).bind(**args)
+            except Exception as e:
+                observation = f"ERROR: {type(e).__name__}: {e}"
+                print(f"  {red('obs:  ')} {observation}")
+                emit("tool.call.finished", step=event_step, payload={
+                    "tool_call_id": tool_call_id,
+                    "name": name,
+                    "outcome": "rejected",
+                    "duration_seconds": None,
+                    "content": observation,
+                    "raw_arguments": raw_args,
+                    "error": error_data(e),
+                })
+                memory.add_tool(tool_call_id, observation)
+                continue
+
+            common = {
+                "tool_call_id": tool_call_id,
+                "name": name,
+            }
+            emit("tool.call.started", step=event_step,
+                 payload={**common, "arguments": args})
+            tool_started = perf_counter()
+            try:
+                observation = implementation(**args)
+            except Exception as e:
+                observation = f"ERROR: {type(e).__name__}: {e}"
+                print(f"  {red('obs:  ')} {observation}")
+                terminal_payload = {
+                    **common,
+                    "outcome": "error",
+                    "duration_seconds": perf_counter() - tool_started,
+                    "content": observation,
+                    "error": error_data(e),
+                }
+            else:
                 if name == "finish":
                     finish_answer = answer
                 print(f"  {dim('obs:  ')} {observation}")
-            except Exception as e:
-                outcome = "error"
-                observation = f"ERROR: {type(e).__name__}: {e}"
-                print(f"  {red('obs:  ')} {observation}")
+                terminal_payload = {
+                    **common,
+                    "outcome": "success",
+                    "duration_seconds": perf_counter() - tool_started,
+                    "content": str(observation),
+                }
 
-            memory.add_tool(call["id"], str(observation))
-            emit({"type": "tool_result", "step": step, "name": name,
-                  "tool_call_id": call["id"], "outcome": outcome, "content": str(observation)})
+            emit("tool.call.finished", step=event_step, payload=terminal_payload)
+            memory.add_tool(tool_call_id, str(observation))
 
         if finish_answer is not None:
             print(green(f"\n  = {finish_answer}"))
             print(dim(f"\n  共 {steps_taken} 步"))
             report("completed")
             persist("completed")
-            emit({"type": "run_end", "status": "completed", "steps": steps_taken})
+            emit("run.finished", payload={
+                "status": "completed", "steps": steps_taken, "answer": finish_answer,
+            })
             return {"status": "completed", "answer": finish_answer, "steps": steps_taken}
 
         # 这一批工具结果已经全部写回，历史此刻是自洽的，可以存档。
@@ -551,7 +690,9 @@ def run(
     print(red(f"\n  ! 达到本次最大步数 {max_steps}，强制停止"))
     report("step_limit")
     persist("step_limit")
-    emit({"type": "run_end", "status": "step_limit", "steps": steps_taken})
+    emit("run.finished", payload={
+        "status": "step_limit", "steps": steps_taken, "answer": None,
+    })
     return {"status": "step_limit", "answer": None, "steps": steps_taken}
 
 

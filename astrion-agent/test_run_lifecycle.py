@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 import agent
+from events import EventRecorder
 from memory import Memory
 
 
@@ -44,14 +45,29 @@ class RunLifecycleTests(unittest.TestCase):
         llm = ScriptedLLM([
             tool_message(tool_call("finish-1", "finish", '{"answer":"计算完成"}')),
         ])
+        recorder = EventRecorder()
 
-        result = agent.run("测试任务", llm, self.memory)
+        result = agent.run("测试任务", llm, self.memory, event_sink=recorder)
 
         self.assertEqual(result, {"status": "completed", "answer": "计算完成", "steps": 1})
         self.assertEqual(self.memory.check(), [])
         self.assertEqual(self.memory.for_model()[-1], {
             "role": "tool", "tool_call_id": "finish-1", "content": "计算完成",
         })
+        events = recorder.events
+        self.assertEqual([event["type"] for event in events], [
+            "run.started",
+            "model.call.started",
+            "model.call.finished",
+            "tool.call.started",
+            "tool.call.finished",
+            "run.finished",
+        ])
+        self.assertEqual([event["sequence"] for event in events], list(range(1, 7)))
+        self.assertEqual(len({event["run_id"] for event in events}), 1)
+        self.assertNotIn("messages", events[1]["payload"]["input"])
+        self.assertEqual(events[4]["payload"]["outcome"], "success")
+        self.assertEqual(events[-1]["payload"]["status"], "completed")
 
     def test_same_memory_can_be_used_for_another_task_after_finish(self):
         llm = ScriptedLLM([
@@ -128,15 +144,23 @@ class RunLifecycleTests(unittest.TestCase):
             tool_message(tool_call("bad-calc", "calculator", "[1, 2]")),
             {"role": "assistant", "content": "参数需要修正"},
         ])
+        recorder = EventRecorder()
 
-        result = agent.run("测试任务", llm, self.memory, max_steps=2)
+        result = agent.run("测试任务", llm, self.memory, max_steps=2,
+                           event_sink=recorder)
 
         self.assertEqual(result, {"status": "no_tool_call", "answer": "参数需要修正", "steps": 2})
         self.assertEqual(self.memory.check(), [])
         self.assertIn("工具参数必须是 JSON 对象", llm.inputs[1][-1]["content"])
+        bad_events = [event for event in recorder.events
+                      if event["payload"].get("tool_call_id") == "bad-calc"]
+        self.assertEqual([event["type"] for event in bad_events], ["tool.call.finished"])
+        self.assertEqual(bad_events[0]["payload"]["outcome"], "rejected")
+        self.assertIsNone(bad_events[0]["payload"]["duration_seconds"])
 
     def test_calls_after_finish_are_skipped_but_all_tool_results_are_recorded(self):
         executions = []
+        recorder = EventRecorder()
 
         def probe(value):
             executions.append(value)
@@ -150,7 +174,7 @@ class RunLifecycleTests(unittest.TestCase):
             ),
         ])
         with patch.dict(agent.TOOL_IMPL, {"probe": probe}):
-            result = agent.run("测试任务", llm, self.memory)
+            result = agent.run("测试任务", llm, self.memory, event_sink=recorder)
 
         self.assertEqual(result, {"status": "completed", "answer": "完成", "steps": 1})
         self.assertEqual(executions, ["结束之前"])
@@ -158,6 +182,39 @@ class RunLifecycleTests(unittest.TestCase):
         tools = [message for message in self.memory.for_model() if message["role"] == "tool"]
         self.assertEqual([message["tool_call_id"] for message in tools], ["before", "finish-1", "after"])
         self.assertIn("此工具未执行", tools[-1]["content"])
+        after_events = [event for event in recorder.events
+                        if event["payload"].get("tool_call_id") == "after"]
+        self.assertEqual([event["type"] for event in after_events], ["tool.call.finished"])
+        self.assertEqual(after_events[0]["payload"]["outcome"], "skipped")
+
+    def test_model_failure_is_recorded_without_a_false_run_finished_event(self):
+        class FailingLLM:
+            def chat(self, messages):
+                raise RuntimeError("模型中断")
+
+        recorder = EventRecorder()
+
+        with self.assertRaisesRegex(RuntimeError, "模型中断"):
+            agent.run("测试任务", FailingLLM(), self.memory, event_sink=recorder)
+
+        events = recorder.events
+        self.assertEqual([event["type"] for event in events], [
+            "run.started", "model.call.started", "model.call.failed",
+        ])
+        self.assertEqual(events[-1]["payload"]["error"], {
+            "type": "RuntimeError", "message": "模型中断",
+        })
+
+    def test_event_sink_failure_stops_before_the_model_is_called(self):
+        llm = ScriptedLLM([{"role": "assistant", "content": "不应调用"}])
+
+        def broken_sink(event):
+            raise RuntimeError("记录器失败")
+
+        with self.assertRaisesRegex(RuntimeError, "记录器失败"):
+            agent.run("测试任务", llm, self.memory, event_sink=broken_sink)
+
+        self.assertEqual(llm.inputs, [])
 
 
 if __name__ == "__main__":

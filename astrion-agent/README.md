@@ -14,6 +14,7 @@
 ```
 astrion-agent/
 ├── agent.py        循环、工具、模型客户端、会话接入
+├── events.py       Run/Step/Event v1：结构化运行事实与 JSON 导出
 ├── memory.py       会话记忆：消息窗口 + 超额压缩 + 序列化
 ├── session.py      会话 JSON：原子保存、加载与恢复判断
 ├── benchmarks/     基准层：通用记录 + BFCL 官方 harness 旁路集成
@@ -131,7 +132,7 @@ agent 运行报错或评测环境准备失败时，也会尝试保存报告：�
 一次评测分为：
 
 1. **准备任务**：为本次任务创建临时沙箱，只写入 `initial_files`。裁判参考答案保存在任务配置中，不随任务消息发给模型。
-2. **运行 agent**：记录模型决策、摘要请求与结果、工具结果和结束状态；运行记录与可压缩的 `Memory` 分开。
+2. **运行 agent**：按 Event v1 记录模型调用、工具调用、压缩和结束状态；运行记录与可压缩的 `Memory` 分开。
 3. **保存运行事实**：统计 `run()` 的耗时、已知 token 用量、最终文件快照和运行状态，然后清理临时沙箱。
 4. **赛后评判和报告**：每个已注册裁判获取任务和运行记录的独立副本，返回自己的结论；每项任务的报告和整批的总报告分别写入文件。
 
@@ -150,7 +151,7 @@ agent 运行报错或评测环境准备失败时，也会尝试保存报告：�
 原有的 agent `--steps` 步数限制和单次 HTTP 请求的 120 秒超时仍然存在。
 
 每份单任务 JSON 报告包含 `case`（完整评测配置）、`run`（`result`、`duration_seconds`、
-`model`、`agent_config`、`token_usage`、`trace`、`artifacts` 和 `artifact_errors`）、
+`model`、`agent_config`、`token_usage`、`run_id`、`event_schema_version`、`trace`、`artifacts` 和 `artifact_errors`）、
 `judgments`（各裁判的结果和耗时）及 `report_path` / `report_error`（保存结果）。`run.result.status` 是运行状态；
 `judgments` 中的 `pass` 或 `fail` 是裁判判断，两者独立。裁判错误是 `error`，
 不是自动判定 agent 失败；证据不足可返回 `unknown`，等待人工处理可返回 `pending`。
@@ -241,6 +242,64 @@ python3 -B -m unittest -v test_session test_evaluation_summary test_evaluation t
 python3 -B -m unittest -v test_run_lifecycle test_token_usage
 ```
 
+## 结构化运行事件（events.py）
+
+`Message` 保存模型需要看到的上下文；`Event` 记录运行时真实发生的事情；文件等任务产物由
+评测报告的 `artifacts` 保存。三者不再混成一份终端文本。
+
+每条 Event v1 都有相同外壳：
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "run_abc:event:000007",
+  "run_id": "run_abc",
+  "sequence": 7,
+  "type": "tool.call.finished",
+  "occurred_at": "2026-10-30T12:00:00.123Z",
+  "step": 2,
+  "payload": {}
+}
+```
+
+`sequence` 是一次运行内的权威顺序；时间戳用于观察，不用于解决事件先后冲突。当前事件类型覆盖：
+
+- `run.started` / `run.finished`；
+- `model.call.started` / `finished` / `failed`；
+- `tool.call.started` / `finished`；
+- `memory.compaction.started` / `finished` / `failed`。
+
+工具终止事件用 `outcome` 区分 `success`、`error`、`rejected` 和 `skipped`。只有已经通过
+JSON 解析、工具查找和参数绑定的调用才会产生 `tool.call.started`；因此 started 后没有
+finished，表示工具执行或事件记录在中途被打断，需要按“不确定副作用”处理。
+
+第一版是**旁观日志**：Event 不参与 session 恢复，也不能重放任务。模型或进程异常时会留下
+`model.call.failed` 或最后一条已成功记录的事件，但不会伪造 `run.finished`。事件 sink 在运行中失败会
+立即中止 Agent；运行结束后单独导出 JSON 失败，不会倒改已经得到的任务结果。
+
+程序化记录和导出：
+
+```python
+from events import EventRecorder
+
+recorder = EventRecorder()
+result = run(task, llm, memory, event_sink=recorder)
+recorder.save("events.json")
+```
+
+模型调用事件只保存输入消息数量、字符数等元数据，不在每一轮重复复制完整 prompt；完成事件保存
+assistant 响应、单次 usage 和耗时。工具结果目前原样保存在事件中，所以事件文件可能包含用户数据，
+POSIX 下导出文件默认权限为 600，分享前仍需检查内容。
+
+评测报告继续使用 `run.trace` 承载这组 Event v1，并另外保存 `run_id` 和
+`event_schema_version`。这样裁判、调试和未来恢复层消费同一份运行事实，不维护第二套平行日志。
+
+离线验证：
+
+```bash
+python3 -B -m unittest -v test_events test_run_lifecycle test_evaluation
+```
+
 ## Token 计量
 
 每次模型调用结束后，读取 API 响应中的 `usage`，显示本次和累计用量。例如：
@@ -280,6 +339,7 @@ python3 -B -m unittest -v test_token_usage
 | 策略层 | `safe_path()` | 路径钉死在 sandbox，越界即抛错 |
 | 模型层 | `ChatLLM` | 一个 `_post` 管所有 HTTP，`chat` 支持可选 tools，`summarize` 共用 |
 | 编排层 | `run()` | 那个循环，ReAct 的核心都在这里 |
+| 运行事实 | `events.py` | Event v1 外壳、连续顺序校验、内存记录与原子 JSON 导出 |
 | 记忆层 | `memory.py` 的 `Memory` | 消息窗口 + 压缩 + 序列化 |
 | 持久化 | `session.py` | 会话 JSON 的原子保存、加载与恢复判断 |
 | 基准层 | `benchmarks/` | 通用原始响应适配 + BFCL 官方旁路；默认 agent 不依赖 |
@@ -471,7 +531,7 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 108 项测试：契约 6 项、BFCL 旁路 16 项、BFCL 成绩查看 9 项、通用基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
+它依次运行 115 项测试：契约 6 项、BFCL 旁路 16 项、BFCL 成绩查看 9 项、通用基准适配 6 项、事件协议 5 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 10 项、token 计量 5 项。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：
@@ -491,13 +551,14 @@ python3 -B -m unittest -v test_session
 7. **没有任务时间上限。** 只记录耗时；单次 HTTP 超时 120 秒，`--steps` 限制决策轮数。
 8. **BFCL 默认基准是固定 200 条单轮子集。** 五个核心类别各 40 条、等间隔确定性抽样；另有显式 `all-scoring` 正式计分类入口，目前有一次中断且尚未完成的运行，绝不会由默认命令触发。
 9. **ToolBench 尚未接入。** 本阶段没有安装或调用 ToolBench/StableToolBench，也不把它们的分数与 BFCL 混合。
+10. **Event v1 还不是恢复事实源。** 它是只追加的旁观日志；session 仍按完整消息轮次保存，不能从事件重放副作用或恢复运行。
 
 ## 想继续加什么（按难度）
 
-1. `delete_file` 工具 + 删除前的确认钩子（体验一次策略层）
-2. 继续完善结束状态，例如明确表示模型请求失败，并根据任务需要检查结果
-3. 一个 `run_worker` 工具，内部再起一个 `run()`（多智能体，本质只是嵌套）
-4. 会话文件的轮转、加密或按项目分目录管理
+1. 把 ReAct 循环显式化为可检查的决策状态机，并保持 Event v1 行为可对比
+2. 让评测裁判按统一事件分析轨迹、效率、稳定性和安全性
+3. 讨论 Event 与 session checkpoint 的关联方式，但暂不直接承诺可重放副作用
+4. 提炼 `ToolSpec` / `ToolCall` / `ToolResult` 契约，为 MCP 适配做准备
 5. 运行并分析 BFCL 200 条默认基准，保留 20 条结果作为历史 smoke 对照
-6. 评估是否有必要、预算和环境运行 `all-scoring` 的多轮、memory 与 web search
-7. ToolBench/StableToolBench 后置，单独讨论环境、成本和评分口径
+6. 会话文件的轮转、加密或按项目分目录管理
+7. MCP、长期记忆、CodeAct、Computer Use 与多 Agent 按技术愿景和评测证据逐步接入

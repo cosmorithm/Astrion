@@ -9,6 +9,7 @@ exec python3 -B -m unittest \
   test_bfcl \
   test_bfcl_score \
   test_benchmarks \
+  test_events \
   test_session \
   test_evaluation_summary \
   test_evaluation \

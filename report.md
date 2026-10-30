@@ -10,7 +10,7 @@
 
 记录日期：2026-10-30（Asia/Shanghai）  
 项目根目录：`/Users/apple/Desktop/科研/Multi Agent`  
-记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层、BFCL 官方集成、断点续跑、Astrion Agent 命名迁移和测试自动化的实现及验证。
+记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层、BFCL 官方集成、断点续跑、Astrion Agent 命名迁移、结构化运行事件和测试自动化的实现及验证。
 
 ## 1. 记录依据与项目目标
 
@@ -49,6 +49,7 @@
 | BFCL 安全断点续跑 | 本次对话，见第 23 节 | 只读审计已有结果，备份并重试错误记录；memory 状态回退到连续有效 checkpoint 前缀；保留多次 attempt 历史 |
 | Astrion Agent 命名迁移 | 本次对话，见第 24 节 | 产品名、目录、CLI、文档和报告字段统一迁移；保留旧目录兼容链接与旧 BFCL 报告字段读取能力 |
 | 五层技术愿景确立 | 本次对话，见第 25 节 | 将决策、工具、上下文、运行时和评测确立为长期技术主线；安全作为横切面；区分当前实现、下一阶段与长期探索 |
+| Run/Step/Event v1 | 本次对话，见第 26 节 | 将临时 trace 升级为带版本、运行 ID、连续序号和开始/终止语义的旁观事件日志；评测直接消费同一份事实 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -178,6 +179,7 @@ Multi Agent/
 │       └── tests.yml          # CI：Python 3.9–3.12 运行离线测试
 └── astrion-agent/
     ├── agent.py               # 工具、模型客户端、token 计量、主循环与会话接入
+    ├── events.py              # Event v1 生成、校验、内存记录和原子 JSON 导出
     ├── memory.py              # 消息记录、分轮、自检、摘要压缩和序列化
     ├── session.py             # 会话 JSON 的原子保存、加载与恢复判断
     ├── benchmarks/            # 通用基准适配 + BFCL 官方 harness 旁路集成
@@ -189,6 +191,7 @@ Multi Agent/
     ├── setup_bfcl.sh          # 在独立 venv 安装固定 BFCL 官方包
     ├── requirements-bfcl.txt  # 可选 BFCL 依赖版本
     ├── test_token_usage.py    # 模拟 API 响应的计量测试
+    ├── test_events.py         # Event v1 envelope、顺序、隔离与原子导出测试
     ├── test_run_lifecycle.py  # 模拟模型响应的主循环测试
     ├── test_session.py        # 会话保存、恢复和 CLI 测试
     ├── test_agent_contract.py # 默认提示、工具集和可选持久化契约
@@ -768,7 +771,7 @@ python3 -B -m unittest -v test_run_lifecycle test_token_usage
 | 裁判注册表 | `astrion-agent/evaluation/judges.py` 的 `JudgeRegistry` | 注册函数、分别调用裁判、检查返回值并记录裁判自己的耗时和错误 |
 | 内置裁判 | `astrion-agent/evaluation/judges.py` 的 `file_equals` | 检查目标文件快照；首尾空白忽略，比较其余文本 |
 | 命令行 | `astrion-agent/evaluation/__main__.py` | 选择任务和模型配置；将 agent 日志输出到 stderr，将 JSON 报告输出到 stdout |
-| 事件记录 | `astrion-agent/agent.py` 的 `run(..., event_sink=...)` | 可选地记录决策输入与输出、工具结果、摘要及压缩事件 |
+| 事件记录 | `astrion-agent/events.py` 与 `run(..., event_sink=...)` | 生成 Event v1；记录模型、工具、压缩和运行生命周期，评测器直接消费 |
 | 目录隔离 | `safe_path(..., sandbox=...)` 和 `tools_for_sandbox()` | 为一轮评测绑定独立目录，不更改全局默认 `SANDBOX` |
 | 测试 | `astrion-agent/test_evaluation.py` | 使用脚本化模型或模拟 HTTP 响应验证评测链路 |
 
@@ -797,7 +800,7 @@ python3 -B -m unittest -v test_run_lifecycle test_token_usage
 - `duration_seconds`：`agent.run()` 这次调用的墙钟耗时，使用 `time.perf_counter()` 测量。包括模型等待、工具执行、摘要和同步事件记录，不包括准备环境、获取快照和赛后裁判。
 - `model` 与 `agent_config`：模型名称、步数预算、字符预算和本次工具说明；其中不保存连接 API 的 key。
 - `token_usage`：本次 agent 运行的已知用量增量、已报告调用数、未知调用数和 `complete`。包含决策与摘要；缺少用量或运行异常时不把未确认用量当作零。
-- `trace`：`model_request`、`model_response`、`summary_request`、`summary_response`、`memory_compaction`、`tool_result`、`run_end` 等事件。事件存为独立副本，即使模型上下文后来被压缩，早前记录仍保留；异常前尚未发生的事件自然不会出现。
+- `run_id`、`event_schema_version` 和 `trace`：Event v1 使用统一 envelope、连续 `sequence` 和 started/finished/failed 语义。事件存为独立副本，不随 Memory 压缩消失；模型输入只记录消息数量和字符数等元数据，不逐轮复制完整 prompt。
 - `artifacts` 和 `artifact_errors`：运行结束后可读取的文本文件及读取失败的信息。
 
 模型响应按现有 `Memory.add_assistant()` 保留标准消息字段；评测器不假设能够获取模型内部的隐藏推理。裁判也各自有 `duration_seconds`，它们的评测耗时不计入 agent 的运行时间。第一版不自动计算外部模型裁判的 token 用量，但注册的裁判可以在自己的结果中附加用量字段。
@@ -1751,3 +1754,84 @@ execution 和多 Agent 编排仍是未来方向，不能写成现有能力。
 以及关闭或回退方式，避免把技术名词列表直接变成开发清单。
 
 本阶段只建立文档与路线，不修改 Agent 的运行行为，也不产生模型调用或 API 费用。
+
+## 26. 第十八阶段：Run/Step/Event v1 统一运行事实
+
+### 26.1 从临时 trace 到事件协议
+
+评测层此前已经通过 `event_sink` 收集 `model_request`、`tool_result`、`run_end` 等扁平
+字典，但它们没有 schema 版本、运行 ID、全局顺序号或开始/终止配对，而且每次模型
+请求都会复制完整上下文。随着恢复、轨迹评测和外部工具接入，这种临时结构无法可靠
+回答同一条事实属于哪次运行、先后顺序是什么，以及一个操作是否在中途被打断。
+
+新增 `astrion-agent/events.py`，确立 Message、Event 和 Artifact 的职责边界：Message
+是模型可见上下文，可能被压缩；Event 是只追加的运行事实，不随 Memory 改写；Artifact
+是文件等任务产物。第一版 Event 是旁观日志，不参与 session 恢复、状态重放或副作用执行。
+
+### 26.2 Event v1 envelope
+
+每条事件统一包含：
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "run_abc:event:000007",
+  "run_id": "run_abc",
+  "sequence": 7,
+  "type": "tool.call.finished",
+  "occurred_at": "2026-10-30T12:00:00.123Z",
+  "step": 2,
+  "payload": {}
+}
+```
+
+`sequence` 是一次 run 内的权威顺序，不能只依赖可能相同或跳变的墙钟时间。事件在
+进入 sink 前检查固定字段、已知类型、正整数 sequence/step 和 JSON 可序列化性；sink
+获得深拷贝，不能通过修改参数反向改写已生成的事件。`EventRecorder` 进一步要求只记录
+一个 `run_id` 且 sequence 从 1 连续增长，并可用临时文件、`fsync` 和 `os.replace`
+原子导出 JSON；POSIX 下文件权限为 600。
+
+### 26.3 生命周期与失败语义
+
+首批类型包括：
+
+- `run.started` / `run.finished`；
+- `model.call.started` / `finished` / `failed`；
+- `tool.call.started` / `finished`；
+- `memory.compaction.started` / `finished` / `failed`。
+
+模型调用通过 `purpose` 区分正常决策和 compaction。started 只记录模型、消息数量、
+字符数或待摘要文本长度等元数据，不逐轮复制完整 prompt；finished 保存响应、单次
+usage 和耗时。异常会产生 `model.call.failed` 并继续向上抛出，不伪造正常结束。
+
+工具调用先解析 JSON、查找实现并用函数签名绑定参数。通过这些检查后才发出
+`tool.call.started`。`tool.call.finished.payload.outcome` 有四种：成功执行为 `success`，
+执行体抛错为 `error`，执行前校验失败为 `rejected`，有效 `finish` 后的剩余调用为
+`skipped`。started 后缺少 finished 表示执行或事件记录中途终止，未来处理副作用时
+必须视为不确定状态，不能看到“没有完成记录”就盲目重试。
+
+正常的 `completed`、`no_tool_call` 和 `step_limit` 会发出 `run.finished`。模型异常或
+记录器异常会让 `run()` 继续抛错，日志停在最后一条确认事实，不补写虚假的结束事件。
+运行中的 sink 失败会立即停止 Agent；`EventRecorder.save()` 是运行结束后的独立导出，
+它失败时不改变已经获得的任务结果，并保留原有目标文件。
+
+### 26.4 与评测和会话的关系
+
+评测运行器改用 `EventRecorder`，原报告的 `run.trace` 字段直接承载 Event v1，并新增
+`run_id` 与 `event_schema_version`。没有另建第二份 events 数组，因此裁判、调试和未来
+恢复设计面对的是同一份运行事实。异常运行的完成步数根据 purpose 为 `decision` 的
+`model.call.finished` 计算，不把 compaction 模型调用误算为 Agent 决策步。
+
+session 保存和恢复行为本阶段不变。Event 尚不是恢复事实源，也不承诺重放；这避免在
+没有幂等、checkpoint 关联和副作用协议时，把一份观察日志误当成 durable execution。
+后续应先设计 Event 与 session checkpoint 的关联，再决定哪些状态能够由事件可靠重建。
+
+### 26.5 验证
+
+新增 `test_events.py` 的 5 项测试，覆盖 envelope、深拷贝隔离、连续 sequence、单 run
+限制、不可序列化 payload、原子导出、600 权限和写入失败保留旧文件。主循环新增模型
+失败与 sink 失败测试，并在原有完成、拒绝和跳过场景中检查事件顺序和 outcome；评测
+测试整体迁移到 Event v1，同时确认 trace 不重复保存完整 messages。
+
+完整 `run_tests.sh` 从 108 项增加到 115 项，全部通过。测试使用脚本化模型和本地临时
+文件，不访问网络、不读取真实 API key，也没有产生模型费用。

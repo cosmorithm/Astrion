@@ -99,11 +99,17 @@ class EvaluationTests(unittest.TestCase):
         self.assertTrue(any(tool["function"]["name"] == "read_file" for tool in run["agent_config"]["tools"]))
         self.assertIsNone(run["token_usage"])  # 脚本化模型没有服务端用量。
         self.assertEqual(report["judgments"][0]["status"], "pass")
-        tools = [event for event in run["trace"] if event["type"] == "tool_result"]
-        self.assertEqual([event["name"] for event in tools], ["read_file", "calculator", "write_file", "finish"])
-        self.assertEqual([event["tool_call_id"] for event in tools], ["read-1", "calc-1", "write-1", "finish-1"])
-        self.assertTrue(all(event["outcome"] == "ok" for event in tools))
-        self.assertEqual(run["trace"][-1]["type"], "run_end")
+        self.assertEqual(run["event_schema_version"], 1)
+        self.assertTrue(run["run_id"].startswith("run_"))
+        self.assertTrue(all(event["run_id"] == run["run_id"] for event in run["trace"]))
+        tools = [event for event in run["trace"]
+                 if event["type"] == "tool.call.finished"]
+        self.assertEqual([event["payload"]["name"] for event in tools],
+                         ["read_file", "calculator", "write_file", "finish"])
+        self.assertEqual([event["payload"]["tool_call_id"] for event in tools],
+                         ["read-1", "calc-1", "write-1", "finish-1"])
+        self.assertTrue(all(event["payload"]["outcome"] == "success" for event in tools))
+        self.assertEqual(run["trace"][-1]["type"], "run.finished")
         self.assertEqual((agent.SANDBOX / "data.txt").read_bytes(), original_input)
         self.assertEqual((agent.SANDBOX / "result.txt").read_bytes(), original_output)
 
@@ -127,7 +133,8 @@ class EvaluationTests(unittest.TestCase):
                 self.assertEqual(run["result"]["error"]["type"], type(error).__name__)
                 self.assertEqual(run["result"]["steps"], 0)
                 self.assertGreaterEqual(run["duration_seconds"], 0)
-                self.assertEqual(run["trace"][0]["type"], "model_request")
+                self.assertEqual(run["trace"][0]["type"], "run.started")
+                self.assertEqual(run["trace"][-1]["type"], "model.call.failed")
                 self.assertEqual(report["judgments"][0]["status"], "fail")
 
     def test_multiple_custom_judges_cannot_mutate_each_others_record(self):
@@ -166,7 +173,7 @@ class EvaluationTests(unittest.TestCase):
 
         def judge(case, record, spec):
             self.assertEqual(record["result"]["status"], "completed")
-            self.assertEqual(record["trace"][-1]["type"], "run_end")
+            self.assertEqual(record["trace"][-1]["type"], "run.finished")
             self.assertFalse(sandboxes[0].exists())
             return {"status": "pass", "reason": "裁判在结束后检查快照"}
 
@@ -234,7 +241,11 @@ class EvaluationTests(unittest.TestCase):
             "known_totals": {"prompt_tokens": 33, "completion_tokens": 7, "total_tokens": 40},
             "reported_calls": 3, "unknown_calls": 0, "complete": True,
         })
-        self.assertIn("summary_request", [event["type"] for event in report["run"]["trace"]])
+        self.assertTrue(any(
+            event["type"] == "model.call.started"
+            and event["payload"]["purpose"] == "compaction"
+            for event in report["run"]["trace"]
+        ))
         self.assertEqual(report["run"]["result"]["steps"], 2)
 
     def test_time_measurement_does_not_impose_a_time_limit(self):
@@ -258,11 +269,17 @@ class EvaluationTests(unittest.TestCase):
 
         trace = report["run"]["trace"]
         kinds = [event["type"] for event in trace]
-        self.assertIn("summary_request", kinds)
-        self.assertIn("summary_response", kinds)
-        self.assertIn("memory_compaction", kinds)
-        first_request = next(event for event in trace if event["type"] == "model_request")
-        self.assertEqual(first_request["messages"][-1]["content"], case["task"])
+        self.assertIn("memory.compaction.started", kinds)
+        self.assertIn("memory.compaction.finished", kinds)
+        compaction_calls = [event for event in trace
+                            if event["type"] == "model.call.started"
+                            and event["payload"]["purpose"] == "compaction"]
+        self.assertEqual(len(compaction_calls), 1)
+        first_decision = next(event for event in trace
+                              if event["type"] == "model.call.started"
+                              and event["payload"]["purpose"] == "decision")
+        self.assertNotIn("messages", first_decision["payload"]["input"])
+        self.assertGreater(first_decision["payload"]["input"]["message_count"], 0)
         self.assertEqual(report["run"]["result"]["status"], "completed")
 
     def test_case_cannot_create_files_outside_its_sandbox(self):
@@ -282,10 +299,11 @@ class EvaluationTests(unittest.TestCase):
         ])
         report = evaluate_case(case_data(), lambda: llm)
         errors = [event for event in report["run"]["trace"]
-                  if event["type"] == "tool_result" and event["tool_call_id"] == "read-outside"]
+                  if event["type"] == "tool.call.finished"
+                  and event["payload"]["tool_call_id"] == "read-outside"]
         self.assertEqual(len(errors), 1)
-        self.assertEqual(errors[0]["outcome"], "error")
-        self.assertIn("PermissionError", errors[0]["content"])
+        self.assertEqual(errors[0]["payload"]["outcome"], "error")
+        self.assertIn("PermissionError", errors[0]["payload"]["content"])
 
     def test_invalid_judge_result_is_reported_as_judge_error(self):
         registry = JudgeRegistry()
@@ -340,7 +358,8 @@ class EvaluationTests(unittest.TestCase):
         saved = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
         self.assertEqual(saved, report)
         self.assertEqual(saved["run"]["result"]["error"]["message"], "连接中断")
-        self.assertEqual(saved["run"]["trace"][0]["type"], "model_request")
+        self.assertEqual(saved["run"]["trace"][0]["type"], "run.started")
+        self.assertEqual(saved["run"]["trace"][-1]["type"], "model.call.failed")
 
     def test_filename_collision_is_retried_without_overwriting_old_report(self):
         fixed_time = datetime(2026, 10, 30, 1, 2, 3, tzinfo=timezone.utc)

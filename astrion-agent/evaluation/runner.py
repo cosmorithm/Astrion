@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import Callable
 
 import agent
+from events import EVENT_SCHEMA_VERSION, EventRecorder
 from memory import Memory
 
 from .judges import JudgeRegistry, default_registry
@@ -89,6 +90,8 @@ def _setup_error(exc: BaseException, max_steps: int, budget_chars: int) -> dict:
         "agent_config": {"max_steps": max_steps, "budget_chars": budget_chars,
                          "tools": copy.deepcopy(agent.TOOLS)},
         "token_usage": None,
+        "run_id": None,
+        "event_schema_version": EVENT_SCHEMA_VERSION,
         "trace": [],
         "artifacts": {},
         "artifact_errors": {},
@@ -146,18 +149,23 @@ def evaluate_case(
         except (Exception, SystemExit) as exc:
             run_record = _setup_error(exc, max_steps, budget_chars)
         else:
-            trace: list[dict] = []
+            recorder = EventRecorder()
             usage_before = _usage_snapshot(llm)
 
             # 只计 agent.run：准备目录、读取快照、裁判和保存报告均不计入。
             started = perf_counter()
             try:
                 result = agent.run(case["task"], llm, memory, max_steps=max_steps,
-                                   sandbox=root, event_sink=trace.append)
+                                   sandbox=root, event_sink=recorder)
             except (Exception, SystemExit) as exc:
+                trace = recorder.events
                 result = {
                     "status": "error", "answer": None,
-                    "steps": sum(event["type"] == "model_response" for event in trace),
+                    "steps": sum(
+                        event["type"] == "model.call.finished"
+                        and event["payload"].get("purpose") == "decision"
+                        for event in trace
+                    ),
                     "error": {"type": type(exc).__name__, "message": str(exc)},
                 }
             finally:
@@ -165,6 +173,7 @@ def evaluate_case(
 
             usage_after = _usage_snapshot(llm)
             artifacts, artifact_errors = _snapshot(root)
+            trace = recorder.events
             run_record = {
                 "result": result,
                 "duration_seconds": duration,
@@ -175,6 +184,8 @@ def evaluate_case(
                     "tools": copy.deepcopy(agent.TOOLS),
                 },
                 "token_usage": _usage_difference(usage_before, usage_after, result["status"] == "error"),
+                "run_id": recorder.run_id,
+                "event_schema_version": EVENT_SCHEMA_VERSION,
                 "trace": trace,
                 "artifacts": artifacts,
                 "artifact_errors": artifact_errors,
