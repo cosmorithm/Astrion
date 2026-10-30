@@ -15,6 +15,7 @@
 astrion-agent/
 ├── agent.py        循环、工具、模型客户端、会话接入
 ├── tooling.py      ToolSpec / ToolCall / ToolResult 与调用验证
+├── decision.py     共享的任务分解、调用复核与有界修正
 ├── events.py       Run/Step/Event v1：结构化运行事实与 JSON 导出
 ├── memory.py       会话记忆：消息窗口 + 超额压缩 + 序列化
 ├── session.py      会话 JSON：原子保存、加载与恢复判断
@@ -52,6 +53,7 @@ python3 agent.py "任务" --session session.json   # 可恢复会话
 | `--base-url U` | 临时换服务端，覆盖 `.env` |
 | `--session PATH` | 会话 JSON 路径；存在时恢复记忆，运行中每轮自动保存 |
 | `--reply TEXT` | 回答 `needs_input` 会话的问题并继续原任务；需要 `--session` |
+| `--decision-mode enhanced` | 启用增强决策；每个决策轮次使用 3 次模型调用，需修正时最多 4 次 |
 | `--fresh` | 忽略已有会话文件，从空记忆开始（需配合 `--session`） |
 
 ## 配置
@@ -252,6 +254,16 @@ python3 -B -m unittest -v test_session test_evaluation_summary test_evaluation t
 错误事件提供稳定 `code`，验证失败是 `rejected`，工具已开始后的异常是 `error`。
 工具输出能力写入工具描述，系统提示要求只选能提供当前子目标所需结果的工具；这是一项模型引导，
 不是已被证明的语义判断器，也不能保证模型不会错选工具。
+
+`decision.py` 的增强模式把任务分解、工具适用性、候选生成、参数检查和覆盖复核组合起来；
+复核或结构验证发现问题时最多再修正一次。真实 Agent 可通过以下命令使用同一决策模块：
+
+```bash
+python3 agent.py "你的任务" --decision-mode enhanced
+```
+
+默认仍是 `single` 模式。增强决策只产生候选行动；真实工具仍由 Agent 运行时的 registry
+验证并执行。增强决策的规划与复核是模型判断，可能遗漏或误判，不等于独立裁判。
 
 离线验证主循环与 token 计量（模拟模型和 HTTP 响应，不访问网络）：
 
@@ -579,6 +591,19 @@ Astrion 路径会调用 `ChatLLM.chat(messages, tools)`、记录每个 case 的 
 子集，不接受含多轮和 memory 类别的 `all-scoring`。报告中的 `execution_path` 会将
 Astrion 结果与官方 handler 基线区分开。
 
+使用与真实 Agent 相同的增强决策模块测试 BFCL 200：
+
+```bash
+python3 -m benchmarks bfcl astrion-run --benchmark baseline-200 \
+  --api-model deepseek-flash --mode enhanced
+```
+
+先验证 3 条可将 `baseline-200` 改为 `trial-3`；添加 `--dry-run` 只检查命令，
+不读取密钥、不调用模型。增强模式每题正常使用 3 次模型请求，需修正时使用 4 次；
+200 条约为 600–800 次模型请求，费用和耗时高于单次路径。BFCL 工具不会执行，也不伪造结果。
+运行报告记录每个阶段的调用、用量、初始和最终候选，分别使用官方 scorer 评分并对比逐题改善与退步。
+该测试是单轮题上的增强决策实验，不覆盖完整 ReAct 或 BFCL 多轮环境。内部复核不是赛后裁判。
+
 结果保存在 `benchmark_runs/bfcl/`，含官方 result/score、命令日志和统一报告。
 它是 subset 结果，不能冒充 BFCL 官方 full leaderboard overall。当前项目的
 `AGENT_API_KEY/deepseek-flash` 不会自动映射成 BFCL 官方 DeepSeek 配置。
@@ -633,7 +658,7 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 138 项测试，覆盖工具契约、暂停与恢复、子任务清单、BFCL、事件、会话、赛后评测、主循环和 token 计量。
+它依次运行 146 项测试，覆盖增强决策、工具契约、暂停与恢复、BFCL、事件、会话、赛后评测、主循环和 token 计量。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：

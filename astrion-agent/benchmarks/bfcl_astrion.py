@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import tempfile
+from urllib.parse import urlsplit, urlunsplit
 from collections import defaultdict
 from pathlib import Path
 from time import perf_counter
@@ -30,6 +31,7 @@ import agent
 from benchmarks.bfcl import load_manifest
 from benchmarks.common import FunctionCallCase
 from events import EVENT_SCHEMA_VERSION, EventEmitter, EventRecorder
+from decision import enhanced_decision
 
 
 SUPPORTED_CATEGORIES = frozenset({
@@ -288,6 +290,73 @@ def run_case(case: FunctionCallCase, llm, event_dir: Path) -> tuple[dict, dict]:
     return official, record
 
 
+def run_enhanced_case(case: FunctionCallCase, llm, event_dir: Path) -> tuple[dict, dict]:
+    """通过 Astrion 共用决策模块完成一轮题目；不执行 BFCL 工具。"""
+    recorder = EventRecorder()
+    emitter = EventEmitter(recorder)
+    event_dir.mkdir(parents=True, exist_ok=True)
+    event_path = event_dir / _event_file_name(case.id)
+    emitter.emit("run.started", payload={"execution_path": "astrion_enhanced_decision",
+                 "benchmark": "BFCL", "case_id": case.id, "category": case.category,
+                 "model": getattr(llm, "model", None)})
+    calls = []
+    started = perf_counter()
+
+    def call_model(messages, tools, purpose):
+        step = len(calls) + 1
+        call_id = f"{emitter.run_id}:model:{step:04d}"
+        common = {"model_call_id": call_id, "purpose": purpose, "model": getattr(llm, "model", None)}
+        emitter.emit("model.call.started", step=step, payload={**common, "input": {
+            "message_count": len(messages), "message_chars": len(json.dumps(messages, ensure_ascii=False)),
+            "tool_count": len(tools)}})
+        call_started = perf_counter()
+        try:
+            response = llm.chat(copy.deepcopy(messages), tools=copy.deepcopy(tools))
+        except (Exception, SystemExit) as exc:
+            calls.append({"purpose": purpose, "usage": None,
+                          "duration_seconds": perf_counter() - call_started, "status": "error"})
+            emitter.emit("model.call.failed", step=step, payload={**common,
+                         "duration_seconds": calls[-1]["duration_seconds"], "usage": None,
+                         "error": {"type": type(exc).__name__, "message": str(exc)}})
+            raise
+        usage = _usage(llm)
+        calls.append({"purpose": purpose, "usage": usage,
+                      "duration_seconds": perf_counter() - call_started, "status": "completed"})
+        emitter.emit("model.call.finished", step=step, payload={**common,
+                     "duration_seconds": calls[-1]["duration_seconds"], "usage": usage,
+                     "response": response})
+        return response
+
+    decision = None
+    error = None
+    try:
+        decision = enhanced_decision(case.messages, case.tools, call_model)
+        result = normalize_bfcl_result(decision["message"])
+    except (Exception, SystemExit) as exc:
+        error = {"type": type(exc).__name__, "message": str(exc)}
+        result = f"Error during inference: {error['type']}: {error['message']}"
+    duration = perf_counter() - started
+    unknown = sum(item["usage"] is None for item in calls)
+    known = {key: sum(item["usage"][key] for item in calls if item["usage"] is not None)
+             for key in ("prompt_tokens", "completion_tokens", "total_tokens")}
+    usage = known if calls and not unknown else None
+    emitter.emit("run.finished", payload={"status": "response_generated" if error is None else "adapter_error",
+                 "steps": len(calls), "answer": None, "error": error})
+    recorder.save(event_path)
+    official = {"id": case.id, "result": result,
+                "input_token_count": usage["prompt_tokens"] if usage else None,
+                "output_token_count": usage["completion_tokens"] if usage else None,
+                "latency": duration}
+    record = {"id": case.id, "category": case.category,
+              "status": "completed" if error is None else "error",
+              "run_id": recorder.run_id, "event_schema_version": EVENT_SCHEMA_VERSION,
+              "event_path": str(event_path), "latency": duration, "token_usage": usage,
+              "known_token_usage": known, "unknown_usage_calls": unknown,
+              "model_call_count": len(calls), "model_calls": calls, "decision": decision,
+              "error": error}
+    return official, record
+
+
 def _default_result_path(root: Path, scorer_model: str, category: str) -> Path:
     try:
         from bfcl_eval.utils import (
@@ -312,11 +381,15 @@ def generate(
     *,
     scorer_model: str,
     result_path: Callable[[Path, str, str], Path] = _default_result_path,
+    mode: str = "single",
 ) -> dict:
     """顺序生成结果和每 case Event；不在这里判断正确性。"""
+    if mode not in {"single", "enhanced"}:
+        raise ValueError("mode 必须是 single 或 enhanced")
     root = root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     by_category: dict[str, list[dict]] = defaultdict(list)
+    initial_by_category: dict[str, list[dict]] = defaultdict(list)
     category_paths: dict[str, Path] = {}
     case_records = []
     event_dir = root / "events"
@@ -324,7 +397,7 @@ def generate(
     total = len(cases)
     for index, case in enumerate(cases, 1):
         print(f"[Astrion BFCL] {index}/{total} {case.id}", file=sys.stderr)
-        official, record = run_case(case, llm, event_dir)
+        official, record = (run_enhanced_case if mode == "enhanced" else run_case)(case, llm, event_dir)
         by_category[case.category].append(official)
         category_path = category_paths.get(case.category)
         if category_path is None:
@@ -332,6 +405,17 @@ def generate(
             category_paths[case.category] = category_path
         # 每条完成后原子刷新当前类别，便于父进程显示进度；中断时也保留已确认结果。
         _atomic_write_jsonl(category_path, by_category[case.category])
+        if mode == "enhanced":
+            initial = dict(official)
+            decision = record.get("decision")
+            if decision is not None:
+                try:
+                    initial["result"] = normalize_bfcl_result(decision["initial_message"])
+                except (ValueError, TypeError) as exc:
+                    initial["result"] = f"Error during inference: {type(exc).__name__}: {exc}"
+            initial_by_category[case.category].append(initial)
+            initial_path = result_path(root / "initial", scorer_model, case.category)
+            _atomic_write_jsonl(initial_path, initial_by_category[case.category])
         record["event_path"] = str(Path(record["event_path"]).relative_to(root))
         case_records.append(record)
 
@@ -341,17 +425,18 @@ def generate(
     ]
 
     known_input = sum(
-        item["token_usage"]["prompt_tokens"]
-        for item in case_records if item["token_usage"] is not None
+        (item.get("known_token_usage") or item.get("token_usage") or {}).get("prompt_tokens", 0)
+        for item in case_records
     )
     known_output = sum(
-        item["token_usage"]["completion_tokens"]
-        for item in case_records if item["token_usage"] is not None
+        (item.get("known_token_usage") or item.get("token_usage") or {}).get("completion_tokens", 0)
+        for item in case_records
     )
     report = {
         "kind": "bfcl_astrion_generation",
         "status": "completed",
-        "execution_path": "astrion_single_turn_adapter",
+        "execution_path": "astrion_enhanced_decision" if mode == "enhanced" else "astrion_single_turn_adapter",
+        "decision_mode": mode,
         "api_model": getattr(llm, "model", None),
         "scorer_model": scorer_model,
         "case_count": total,
@@ -363,7 +448,15 @@ def generate(
             "known_output_tokens": known_output,
             "known_total_tokens": known_input + known_output,
             "unknown_cases": sum(item["token_usage"] is None for item in case_records),
+            "unknown_calls": sum(item.get("unknown_usage_calls", int(item["token_usage"] is None)) for item in case_records),
         },
+        "model_call_count": sum(item.get("model_call_count", 1) for item in case_records),
+        "repair_count": sum(bool((item.get("decision") or {}).get("repair_attempted")) for item in case_records),
+        "plan_parse_error_count": sum(bool((item.get("decision") or {}).get("plan_error")) for item in case_records),
+        "review_parse_error_count": sum(bool((item.get("decision") or {}).get("review_error")) for item in case_records),
+        "unchecked_schema_case_count": sum(bool((item.get("decision") or {}).get("final_validation", {}).get("unchecked")) for item in case_records),
+        "final_validation_error_count": sum(bool((item.get("decision") or {}).get("final_validation", {}).get("issues")) for item in case_records),
+        "initial_project_root": "initial" if mode == "enhanced" else None,
         "result_files": result_files,
         "cases": case_records,
     }
@@ -378,6 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-model", default="")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--scorer-model", required=True)
+    parser.add_argument("--mode", choices=("single", "enhanced"), default="single")
     args = parser.parse_args(argv)
 
     agent.load_env(agent.find_env_files(SOURCE_ROOT))
@@ -394,7 +488,13 @@ def main(argv: list[str] | None = None) -> int:
     manifest = load_manifest(args.manifest)
     cases = load_official_cases(manifest)
     llm = agent.ChatLLM(key=key, base_url=base_url, model=model)
-    report = generate(cases, llm, args.output_dir, scorer_model=args.scorer_model)
+    report = generate(cases, llm, args.output_dir, scorer_model=args.scorer_model, mode=args.mode)
+    parsed = urlsplit(base_url)
+    host = parsed.hostname or ""
+    if parsed.port is not None:
+        host += f":{parsed.port}"
+    report["effective_base_url"] = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    _atomic_write_json(args.output_dir / GENERATION_REPORT, report)
     print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
     return 0
 

@@ -106,6 +106,25 @@ class BFCLScoreViewerTests(unittest.TestCase):
             score_viewer.format_run_list([summary]),
         )
 
+    def test_enhanced_report_displays_paired_score_and_partial_usage(self):
+        path = self.make_run("enhanced", kind="bfcl_astrion_run")
+        report = json.loads(path.read_text(encoding="utf-8"))
+        report.update({
+            "execution_path": "astrion_enhanced_decision",
+            "initial_official_outputs": {"derived_subset_micro_accuracy": 0.5, "correct_cases": 2, "scored_cases": 4},
+            "paired_comparison": {"improved": 1, "regressed": 0, "both_correct": 2, "both_incorrect": 1},
+            "generation_report": {"model_call_count": 13, "repair_count": 1, "effective_base_url": "https://example.test",
+                "token_usage": {"known_input_tokens": 150, "known_output_tokens": 50,
+                                "known_total_tokens": 200, "unknown_calls": 1}},
+        })
+        summary = score_viewer.summarize_report(report, path)
+        text = score_viewer.format_summary(summary)
+        self.assertIn("初始候选：50.00%（2/4）", text)
+        self.assertIn("改善 1 题，退步 0 题", text)
+        self.assertIn("模型调用：13 次", text)
+        self.assertIn("total 200", text)
+        self.assertIn("1 次模型调用未返回完整 token", text)
+
     def test_latest_completed_skips_a_newer_failed_run(self):
         completed = self.make_run("completed", mtime=10)
         self.make_run("failed", status="generation_error", mtime=20)

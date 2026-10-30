@@ -80,6 +80,14 @@ def summarize_report(report: dict, report_path: Path | str) -> dict:
     token_usage = outputs.get("token_usage")
     if not isinstance(token_usage, dict):
         token_usage = None
+    generation = report.get("generation_report") if isinstance(report.get("generation_report"), dict) else {}
+    generation_usage = generation.get("token_usage")
+    if report.get("execution_path") == "astrion_enhanced_decision" and isinstance(generation_usage, dict):
+        token_usage = {
+            "input_tokens": generation_usage.get("known_input_tokens"),
+            "output_tokens": generation_usage.get("known_output_tokens"),
+            "total_tokens": generation_usage.get("known_total_tokens"),
+        }
 
     return {
         "run_id": path.parent.name,
@@ -97,6 +105,12 @@ def summarize_report(report: dict, report_path: Path | str) -> dict:
         "correct_cases": outputs.get("correct_cases"),
         "scored_cases": outputs.get("scored_cases"),
         "category_scores": category_scores,
+        "initial_official_outputs": report.get("initial_official_outputs"),
+        "paired_comparison": report.get("paired_comparison"),
+        "generation_metrics": {
+            key: generation.get(key)
+            for key in ("model_call_count", "repair_count", "token_usage", "effective_base_url")
+        },
         "token_usage": token_usage,
         "model_latency_seconds": outputs.get("model_latency_seconds"),
         "generate_seconds": generate_seconds,
@@ -266,6 +280,19 @@ def format_summary(summary: dict) -> str:
         f"范围：{range_text}",
         f"总分：{_percent(summary.get('score'))}（{count_text}）",
     ])
+    initial = summary.get("initial_official_outputs")
+    paired = summary.get("paired_comparison")
+    if isinstance(initial, dict):
+        lines.append(f"初始候选：{_percent(initial.get('derived_subset_micro_accuracy'))}"
+                     f"（{initial.get('correct_cases')}/{initial.get('scored_cases')}）")
+    if isinstance(paired, dict):
+        lines.append(f"复核后：改善 {paired.get('improved')} 题，退步 {paired.get('regressed')} 题，"
+                     f"都对 {paired.get('both_correct')} 题，都错 {paired.get('both_incorrect')} 题")
+    metrics = summary.get("generation_metrics") or {}
+    if metrics.get("model_call_count") is not None:
+        lines.append(f"模型调用：{metrics['model_call_count']} 次；尝试修正：{metrics.get('repair_count')} 题")
+    if metrics.get("effective_base_url"):
+        lines.append(f"实际服务地址：{metrics['effective_base_url']}")
 
     categories = summary.get("category_scores") or []
     if categories:
@@ -284,6 +311,9 @@ def format_summary(summary: dict) -> str:
             f"output {usage.get('output_tokens')}，"
             f"total {usage.get('total_tokens')}"
         )
+        gen_usage = metrics.get("token_usage") or {}
+        if gen_usage.get("unknown_calls"):
+            lines.append(f"注意：{gen_usage['unknown_calls']} 次模型调用未返回完整 token，用量为已知部分。")
     model_latency = summary.get("model_latency_seconds")
     if isinstance(model_latency, (int, float)) and not isinstance(model_latency, bool):
         lines.append(f"模型延迟：{summary['model_latency_seconds']:.2f} 秒")

@@ -2158,3 +2158,19 @@ BFCL 200 中，`parallel_multiple_175` 有并列任务未全部提出调用，`i
 非法调用不执行、结构化错误、询问与恢复、清单未完成时的结束行为和原有功能回归。
 本次没有执行真实模型调用，没有产生新的 BFCL 分数。BFCL `astrion-run` 不走完整
 `agent.run()`，所以不能把此次改造直接宣称为 BFCL 或真实多轮任务的性能提升。
+
+## 30. Astrion 共享增强决策与 BFCL 单轮增强实验
+
+用户指出：规划、检查与修正应集成到 Astrion Agent，而不是只写在 BFCL 测试脚本里。
+因此新增 `astrion-agent/decision.py`，由真实 Agent 和 BFCL 增强路径共同使用：
+任务分解与工具适用性判断 → 初始候选 → 动态 schema 检查 → 覆盖与适用性复核 →
+必要时最多一次修正。每轮 3–4 次模型调用；没有调用或伪造 BFCL 工具结果。
+
+真实 Agent 通过 `--decision-mode enhanced` 启用；BFCL 通过 `astrion-run --mode enhanced`
+启用，原单次路径与固定 176/200 baseline 保留。每个阶段均记录 Event、耗时和 token；
+BFCL 把初始候选放在 `initial/result/`、最终候选放在 `result/`，各自调用固定版官方
+scorer 后生成配对改善/退步统计。实际模型和服务地址在运行报告中标注。schema 未支持的
+约束会显示在 `unchecked`；规划或复核解析失败会记录，不能声称已经完全验证。
+
+验证包括离线单元测试、200 条官方 schema 投影检查、真实固定版 BFCL scorer 对三条模拟
+响应的初始/最终评分和配对比较，未调用真实模型。本阶段不宣称分数已提升。

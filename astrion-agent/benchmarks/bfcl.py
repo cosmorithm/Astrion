@@ -1101,6 +1101,33 @@ def collect_official_outputs(project_root: Path | str) -> dict:
     }
 
 
+def compare_paired_official_scores(initial_root: Path, final_root: Path, manifest: BFCLManifest) -> dict:
+    """根据两份官方逐题失败记录比较前后，不自己重判对错。"""
+    def failures(root: Path) -> set[str]:
+        ids = set()
+        for path in (root / "score").rglob("BFCL_v*_score.json"):
+            for row in _json_lines(path)[1:]:
+                case_id = row.get("id")
+                if not isinstance(case_id, str) or case_id not in manifest.case_ids or case_id in ids:
+                    raise ValueError("官方逐题失败记录的 ID 无效或重复")
+                ids.add(case_id)
+        return ids
+    before, after = failures(initial_root), failures(final_root)
+    for root, ids in ((initial_root, before), (final_root, after)):
+        totals = collect_official_outputs(root)
+        if len(ids) != totals["scored_cases"] - totals["correct_cases"]:
+            raise ValueError("官方逐题失败记录数量与汇总分数不一致，不能进行配对比较")
+    all_ids = set(manifest.case_ids)
+    return {
+        "both_correct": len(all_ids - before - after),
+        "both_incorrect": len(before & after),
+        "improved": len(before - after),
+        "regressed": len(after - before),
+        "improved_ids": sorted(before - after),
+        "regressed_ids": sorted(after - before),
+    }
+
+
 def _command_record(result: dict, log_dir: Path, name: str, root: Path) -> dict:
     stdout_path = log_dir / f"{name}.stdout.log"
     stderr_path = log_dir / f"{name}.stderr.log"
@@ -1447,6 +1474,7 @@ def run_astrion_bfcl(
     env: dict[str, str] | None = None,
     command_runner: CommandRunner = _default_command_runner,
     bfcl_python: str | None = None,
+    mode: str = "single",
 ) -> dict:
     """用 Astrion 的 ChatLLM 生成单轮响应，再调用 BFCL 官方 scorer。
 
@@ -1460,6 +1488,8 @@ def run_astrion_bfcl(
 
     manifest = load_manifest(manifest_path)
     validate_single_turn_manifest(manifest)
+    if mode not in {"single", "enhanced"}:
+        raise ValueError("mode 必须是 single 或 enhanced")
     if (
         not isinstance(progress_interval, (int, float))
         or isinstance(progress_interval, bool)
@@ -1478,7 +1508,7 @@ def run_astrion_bfcl(
         if output_dir is not None
         else _new_run_root(
             Path(runs_dir).expanduser().resolve(),
-            f"Astrion-{selected_api_model}",
+            f"Astrion-{'enhanced-' if mode == 'enhanced' else ''}{selected_api_model}",
         )
     )
     root.mkdir(parents=True, exist_ok=False)
@@ -1499,6 +1529,8 @@ def run_astrion_bfcl(
     ]
     if base_url:
         generate_command.extend(["--base-url", base_url])
+    if mode == "enhanced":
+        generate_command.extend(["--mode", "enhanced"])
     _unused_generate, evaluate_command = build_commands(
         bfcl_bin, scorer_model, manifest
     )
@@ -1515,7 +1547,7 @@ def run_astrion_bfcl(
         "status": "preparing",
         "created_at": created_at,
         "updated_at": created_at,
-        "execution_path": ASTRION_EXECUTION_PATH,
+        "execution_path": "astrion_enhanced_decision" if mode == "enhanced" else ASTRION_EXECUTION_PATH,
         "benchmark": {
             "name": BENCHMARK_NAME,
             "version": manifest.benchmark_version,
@@ -1546,6 +1578,7 @@ def run_astrion_bfcl(
             "credential_env": credential_env,
             "deepseek_openai_bootstrap_alias": deepseek_bootstrap_alias,
             "executes_benchmark_tools": False,
+            "decision_mode": mode,
             "progress_interval_seconds": progress_interval,
         },
         "astrion_agent_commit": _git_commit(Path(__file__).resolve().parents[2]),
@@ -1637,6 +1670,7 @@ def run_astrion_bfcl(
             or generation_report.get("kind") != "bfcl_astrion_generation"
             or generation_report.get("status") != "completed"
             or generation_report.get("case_count") != manifest.case_count
+            or generation_report.get("execution_path") != report["execution_path"]
         ):
             raise ValueError("Astrion generation report 与本次 manifest 不一致")
         report["generation_report"] = generation_report
@@ -1661,6 +1695,26 @@ def run_astrion_bfcl(
                 "message": "官方评测命令成功，但没有找到 category score 文件",
             }
             return report
+        if mode == "enhanced":
+            initial_root = root / "initial"
+            initial_env = dict(runtime_env)
+            initial_env["BFCL_PROJECT_ROOT"] = str(initial_root)
+            initial_evaluation = command_runner(evaluate_command, initial_env, initial_root)
+            report["commands"]["evaluate_initial"] = _command_record(
+                initial_evaluation, log_dir, "evaluate_initial", root
+            )
+            if initial_evaluation.get("returncode") != 0:
+                report["status"] = "evaluation_error"
+                report["error"] = {"type": "BFCLInitialEvaluationError", "message": "初始候选官方评分失败"}
+                return report
+            initial_outputs = collect_official_outputs(initial_root)
+            report["initial_official_outputs"] = initial_outputs
+            if (initial_outputs["scored_cases"] != manifest.expected_scored_cases
+                or report["official_outputs"]["scored_cases"] != manifest.expected_scored_cases):
+                report["status"] = "evaluation_error"
+                report["error"] = {"type": "BFCLScoreCountError", "message": "初始或最终评分条数不完整"}
+                return report
+            report["paired_comparison"] = compare_paired_official_scores(initial_root, root, manifest)
         report["status"] = "completed"
         return report
     except KeyboardInterrupt:
@@ -1908,6 +1962,8 @@ def main(argv: list[str] | None = None) -> int:
     astrion_parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     astrion_parser.add_argument("--output-dir", type=Path, default=None)
     astrion_parser.add_argument("--base-url", default=None)
+    astrion_parser.add_argument("--mode", choices=("single", "enhanced"), default="single",
+                                help="增强模式使用 Astrion 规划与复核，每题最多四次模型调用")
     astrion_parser.add_argument("--credential-env", default="DEEPSEEK_API_KEY")
     astrion_parser.add_argument("--dry-run", action="store_true")
     astrion_parser.add_argument(
@@ -1975,6 +2031,7 @@ def main(argv: list[str] | None = None) -> int:
             credential_env=args.credential_env or None,
             dry_run=args.dry_run,
             progress_interval=args.progress_interval,
+            mode=args.mode,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         return 0 if result["status"] in {"completed", "dry_run"} else 1

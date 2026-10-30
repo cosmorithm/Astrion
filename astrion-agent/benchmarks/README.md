@@ -204,6 +204,31 @@ Astrion v1 刻意不接受 `all-scoring`：其中含 live、多轮、memory 和 
 生成期间每条结果都会原子刷新到官方 JSONL，终端因此能显示当前类别组和总进度；
 中断时已完成的 result 与 Event 会保留，但 v1 尚未开放 Astrion 断点续跑。
 
+#### Astrion 增强决策模式
+
+`--mode enhanced` 复用 Astrion 的 `decision.py`，依次进行任务分解、候选调用、
+动态 schema 验证、模型覆盖复核；发现问题时最多修正一次。它只提出 BFCL 工具调用，
+不执行或伪造工具结果。真实 Agent 也可用 `--decision-mode enhanced` 运行同一模块。
+
+```bash
+# 无模型请求的检查
+python3 -m benchmarks bfcl astrion-run --benchmark trial-3 --api-model deepseek-flash --mode enhanced --dry-run
+# 真实 3 条
+python3 -m benchmarks bfcl astrion-run --benchmark trial-3 --api-model deepseek-flash --mode enhanced
+# 真实 200 条
+python3 -m benchmarks bfcl astrion-run --benchmark baseline-200 --api-model deepseek-flash --mode enhanced
+```
+
+每题正常 3 次请求，修正时 4 次，200 条约 600–800 次；按模型实际计费。报告路径为
+`astrion_enhanced_decision`，与单次路径、官方 baseline 分开。原始候选放在 `initial/result/`，
+最终候选放在 `result/`，两者都由同一官方 scorer 分别评分；`paired_comparison` 记录
+改善和退步题目。`astrion_generation_report.json` 和 Event 保存各次调用、已知 token、耗时、
+初次候选、计划、复核、最终候选及未覆盖的 schema 约束；内容可能包含题目和模型响应。
+
+参数验证只检查明确支持的 JSON Schema 子集，不支持的约束记录在 `unchecked`，不会报告为
+完全验证。规划和复核是模型决策，并非独立验收；如果规划或复核无法解析，会记录错误并继续，
+若最终候选仍不合法，按原样交给 scorer，不伪造修复或分数。该路径不等于完整 ReAct 或多轮 BFCL。
+
 ### 4. 运行默认 200 条基准子集
 
 ```bash

@@ -41,6 +41,7 @@ from events import EventEmitter
 from memory import Memory
 from session import load_session, save_session, validate_task_plan
 from tooling import ToolCall, ToolRegistry, ToolResult, ToolSpec
+from decision import enhanced_decision
 
 # ---------------------------------------------------------------- 终端样式
 
@@ -469,6 +470,7 @@ def run(
     initial_steps: int = 0,
     user_reply: str | None = None,
     task_plan: list[dict] | None = None,
+    decision_mode: str = "single",
 ) -> dict:
     """运行任务；可选独立目录、事件记录和会话持久化。
 
@@ -478,6 +480,8 @@ def run(
     保证文件里的历史始终自洽。resume=True 表示 task 已在 memory 中，不会重复
     写入用户消息；initial_steps 是本次之前已经完成的决策轮数，用于累计步数。
     """
+    if decision_mode not in {"single", "enhanced"}:
+        raise ValueError("decision_mode 必须是 single 或 enhanced")
     if type(initial_steps) is not int or initial_steps < 0:
         raise ValueError("initial_steps 必须是非负整数")
     if user_reply is not None and (not resume or not isinstance(user_reply, str) or not user_reply.strip()):
@@ -638,16 +642,28 @@ def run(
         print(bold(f"[{step}]"))
 
         messages = memory.for_model()
-        msg = call_model(
-            lambda: llm.chat(messages),
-            purpose="decision",
-            step=event_step,
-            input_metadata={
-                "message_count": len(messages),
-                "message_chars": len(json.dumps(messages, ensure_ascii=False)),
-                "tool_count": len(TOOLS),
-            },
-        )
+        if decision_mode == "enhanced":
+            def enhanced_call(request_messages, request_tools, purpose):
+                return call_model(
+                    lambda: llm.chat(request_messages, tools=request_tools),
+                    purpose=purpose, step=event_step,
+                    input_metadata={"message_count": len(request_messages),
+                                    "message_chars": len(json.dumps(request_messages, ensure_ascii=False)),
+                                    "tool_count": len(request_tools)},
+                )
+            decision = enhanced_decision(messages, TOOLS, enhanced_call)
+            msg = decision["message"]
+        else:
+            msg = call_model(
+                lambda: llm.chat(messages),
+                purpose="decision",
+                step=event_step,
+                input_metadata={
+                    "message_count": len(messages),
+                    "message_chars": len(json.dumps(messages, ensure_ascii=False)),
+                    "tool_count": len(TOOLS),
+                },
+            )
         steps_taken = event_step
         memory.add_assistant(msg)
 
@@ -768,6 +784,8 @@ def main() -> None:
                         help="忽略已有会话文件，从空记忆开始（需要 --session）")
     parser.add_argument("--reply", default=None,
                         help="回答 needs_input 会话提出的问题，并继续原任务")
+    parser.add_argument("--decision-mode", choices=("single", "enhanced"), default="single",
+                        help="决策模式；enhanced 每轮最多四次模型调用，费用更高")
     args = parser.parse_args()
 
     if args.steps < 0:
@@ -842,7 +860,8 @@ def main() -> None:
     try:
         run(args.task, llm, memory, max_steps=args.steps, session_path=session_path,
             resume=resume, initial_steps=initial_steps, user_reply=args.reply,
-            task_plan=list(session.task_plan) if session is not None and resume else None)
+            task_plan=list(session.task_plan) if session is not None and resume else None,
+            decision_mode=args.decision_mode)
     except OSError as exc:
         print(red(f"错误: 会话文件写入失败: {exc}"), file=sys.stderr)
         raise SystemExit(1)
