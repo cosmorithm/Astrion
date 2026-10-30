@@ -19,6 +19,7 @@ from benchmarks.bfcl import (
 
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parent / "benchmark_runs" / "bfcl"
 REPORT_NAME = "bfcl_run_report.json"
+REPORT_KINDS = frozenset({"bfcl_official_run", "bfcl_astrion_run"})
 
 
 class ScoreReportError(ValueError):
@@ -36,7 +37,7 @@ def load_report(path: Path | str) -> dict:
         raise ScoreReportError(f"报告不是有效 JSON {target}: {exc}") from exc
     if not isinstance(data, dict):
         raise ScoreReportError(f"报告顶层必须是 JSON 对象: {target}")
-    if data.get("kind") != "bfcl_official_run":
+    if data.get("kind") not in REPORT_KINDS:
         raise ScoreReportError(f"不是 BFCL 运行报告: {target}")
     return data
 
@@ -85,6 +86,8 @@ def summarize_report(report: dict, report_path: Path | str) -> dict:
         "status": report.get("status"),
         "created_at": report.get("created_at"),
         "model": report.get("model"),
+        "scorer_model": report.get("scorer_model"),
+        "execution_path": report.get("execution_path") or "official_model_handler",
         "profile": benchmark.get("profile"),
         "case_count": benchmark.get("case_count"),
         "expected_scored_cases": benchmark.get("expected_scored_cases"),
@@ -249,6 +252,7 @@ def format_summary(summary: dict) -> str:
         "BFCL 成绩",
         f"运行 ID：{summary.get('run_id')}",
         f"状态：{summary.get('status')}",
+        f"执行路径：{summary.get('execution_path')}",
         f"模型：{summary.get('model')}",
         f"范围：{range_text}",
         f"总分：{_percent(summary.get('score'))}（{count_text}）",
@@ -305,7 +309,8 @@ def format_run_list(runs: list[dict]) -> str:
         count_text = f"{correct}/{scored}" if correct is not None and scored is not None else "-"
         lines.append(
             f"- {item.get('run_id')} | {item.get('status')} | "
-            f"{_percent(item.get('score'))} | {count_text} | {item.get('model') or '-'}"
+            f"{_percent(item.get('score'))} | {count_text} | "
+            f"{item.get('execution_path') or '-'} | {item.get('model') or '-'}"
         )
     return "\n".join(lines)
 

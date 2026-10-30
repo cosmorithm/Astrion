@@ -6,8 +6,9 @@
 - `benchmarks/`：把 **case 自己的 messages + tools** 交给模型，记录原始响应；
   对错由 BFCL/ToolBench 的官方规则或 scorer 判断。
 
-当前状态：**BFCL V4 已接入官方 harness；ToolBench 尚未接入。**
-`common.py` 仍保留为通用原始响应适配层，正式 BFCL 运行走 `bfcl.py`。
+当前状态：**BFCL V4 已接入官方 harness，并具备 Astrion 单轮决策适配路径；
+ToolBench 尚未接入。** `common.py` 仍保留为通用原始响应适配层，BFCL 的两条
+运行路径都由 `bfcl.py` 编排。
 
 **默认 agent 的行为不经过这里。** `agent.run()`、`SYSTEM_PROMPT` 和 `TOOLS`
 保持不变；这里只使用 `ChatLLM.chat(messages, tools=...)` 这个可选接缝。
@@ -67,8 +68,13 @@ print(summarize(records))
 
 ## BFCL 正式集成
 
-正式路径固定使用 `bfcl-eval==2026.3.23`，并在独立 `.venv-bfcl/` 中安装。
-Astrion Agent 不复制 BFCL 数据、prompt、model handler 或 scorer，只调用官方 CLI：
+两条路径都固定使用 `bfcl-eval==2026.3.23`，并在独立 `.venv-bfcl/` 中安装：
+
+- `bfcl run` 是官方模型 handler 基线，生成和评分都走官方 CLI；
+- `bfcl astrion-run` 用 Astrion 的 `ChatLLM` 生成响应和 Event v1，再把结果交给
+  同一个官方 scorer。
+
+Astrion Agent 不复制 BFCL 数据、prompt 或 scorer。官方基线路径是：
 
 ```text
 benchmarks/bfcl.py
@@ -77,6 +83,22 @@ benchmarks/bfcl.py
   → 读取官方 result/score
   → 保存 bfcl_run_report.json
 ```
+
+Astrion 路径是：
+
+```text
+BFCL 官方 dataset + function schema
+  → bfcl_astrion.py
+  → Astrion ChatLLM.chat(messages, tools)
+  → 每条 case 保存 Event v1
+  → 写入 BFCL 官方 result JSONL
+  → bfcl evaluate --partial-eval
+  → 保存统一 bfcl_run_report.json
+```
+
+BFCL 单轮任务的目标就是预测函数名和参数，因此这条路径**不会真正执行 case 工具**，
+也不会进入多步 `agent.run()` 循环。它测到的是 Astrion 的模型客户端、工具注入、响应
+规范化、token 计量和事件记录，不代表 Memory、ReAct 多轮执行或本地工具运行能力。
 
 ### 1. 安装隔离环境
 
@@ -126,6 +148,35 @@ python3 -m benchmarks bfcl run --dry-run
 `doctor` 要求版本严格等于 `2026.3.23`，避免数据、prompt 和 scorer 漂移。
 适配器兼容该版本 `bfcl version` 在部分安装中的 distribution 名问题，会退回到同一
 venv 的 Python 查询 `bfcl-eval` 元数据。
+
+### 3.1 用 BFCL 测 Astrion 的单轮工具决策
+
+先只检查将执行的 worker、manifest 和官方评分命令，不读 `.env`、不调用模型：
+
+```bash
+python3 -m benchmarks bfcl astrion-run \
+  --benchmark trial-3 \
+  --dry-run
+```
+
+确认后运行 3 条真实样例：
+
+```bash
+python3 -m benchmarks bfcl astrion-run --benchmark trial-3
+```
+
+默认 API 模型依次取 `--api-model`、`AGENT_MODEL`、`deepseek-chat`；服务地址依次取
+`--base-url`、`AGENT_BASE_URL`、DeepSeek 默认地址。模型请求使用 `AGENT_API_KEY`，
+没有时再尝试 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`。官方 scorer 仍需默认的
+`DEEPSEEK_API_KEY` 完成其 handler 初始化。
+
+3 条验证完成后，可以将 `trial-3` 换成 `smoke-20` 或默认的 `baseline-200`。
+Astrion v1 刻意不接受 `all-scoring`：其中含 live、多轮、memory 和 web-search 类别，
+不能被单轮适配器诚实覆盖。统一报告用 `kind=bfcl_astrion_run` 和
+`execution_path=astrion_single_turn_adapter` 与官方 handler 基线明确区分；这类结果默认
+是项目内部对比，不冒充 BFCL 官方排行榜提交。
+生成期间每条结果都会原子刷新到官方 JSONL，终端因此能显示当前类别组和总进度；
+中断时已完成的 result 与 Event 会保留，但 v1 尚未开放 Astrion 断点续跑。
 
 ### 4. 运行默认 200 条基准子集
 

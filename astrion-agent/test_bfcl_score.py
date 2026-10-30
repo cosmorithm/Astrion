@@ -20,7 +20,7 @@ class BFCLScoreViewerTests(unittest.TestCase):
         self.root = Path(storage.name)
 
     def make_run(self, run_id: str, *, status: str = "completed", score=0.75,
-                 mtime: int = 1) -> Path:
+                 mtime: int = 1, kind: str = "bfcl_official_run") -> Path:
         run = self.root / run_id
         run.mkdir()
         outputs = None if status == "dry_run" else {
@@ -41,7 +41,7 @@ class BFCLScoreViewerTests(unittest.TestCase):
             "model_latency_seconds": 1.25,
         }
         report = {
-            "kind": "bfcl_official_run",
+            "kind": kind,
             "status": status,
             "created_at": "2026-10-30T00:00:00+00:00",
             "benchmark": {"profile": "subset", "case_count": 4},
@@ -67,6 +67,23 @@ class BFCLScoreViewerTests(unittest.TestCase):
         self.assertEqual(summary["score"], 0.75)
         self.assertEqual(summary["token_usage"]["total_tokens"], 120)
         self.assertEqual(summary["command_total_seconds"], 2.5)
+        self.assertEqual(summary["execution_path"], "official_model_handler")
+
+    def test_accepts_and_labels_astrion_adapter_report(self):
+        path = self.make_run("astrion", kind="bfcl_astrion_run")
+        report = json.loads(path.read_text(encoding="utf-8"))
+        report["execution_path"] = "astrion_single_turn_adapter"
+        report["scorer_model"] = "DeepSeek-V3.2-Exp-FC"
+        path.write_text(json.dumps(report), encoding="utf-8")
+
+        summary = score_viewer.summarize_report(score_viewer.load_report(path), path)
+
+        self.assertEqual(summary["execution_path"], "astrion_single_turn_adapter")
+        self.assertEqual(summary["scorer_model"], "DeepSeek-V3.2-Exp-FC")
+        self.assertIn(
+            "执行路径：astrion_single_turn_adapter",
+            score_viewer.format_summary(summary),
+        )
 
     def test_latest_completed_skips_a_newer_failed_run(self):
         completed = self.make_run("completed", mtime=10)

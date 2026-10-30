@@ -7,6 +7,7 @@ cd "$(dirname "$0")"
 exec python3 -B -m unittest \
   test_agent_contract \
   test_bfcl \
+  test_bfcl_astrion \
   test_bfcl_score \
   test_benchmarks \
   test_events \

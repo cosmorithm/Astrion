@@ -49,6 +49,11 @@ BUILTIN_BENCHMARKS = {
 DEFAULT_BENCHMARK = "baseline-200"
 DEFAULT_MANIFEST = BUILTIN_BENCHMARKS[DEFAULT_BENCHMARK]
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parent.parent / "benchmark_runs" / "bfcl"
+ASTRION_BENCHMARKS = {
+    name: path for name, path in BUILTIN_BENCHMARKS.items()
+    if name != "all-scoring"
+}
+ASTRION_EXECUTION_PATH = "astrion_single_turn_adapter"
 
 CommandRunner = Callable[[list[str], dict[str, str], Path], dict]
 
@@ -1359,6 +1364,261 @@ def run_bfcl(
             pass
 
 
+def run_astrion_bfcl(
+    *,
+    api_model: str | None,
+    scorer_model: str = DEFAULT_MODEL,
+    bfcl_bin: str,
+    manifest_path: Path | str = DEFAULT_MANIFEST,
+    runs_dir: Path | str = DEFAULT_RUNS_DIR,
+    output_dir: Path | str | None = None,
+    base_url: str | None = None,
+    credential_env: str | None = "DEEPSEEK_API_KEY",
+    dry_run: bool = False,
+    progress_interval: float = 5.0,
+    env: dict[str, str] | None = None,
+    command_runner: CommandRunner = _default_command_runner,
+    bfcl_python: str | None = None,
+) -> dict:
+    """用 Astrion 的 ChatLLM 生成单轮响应，再调用 BFCL 官方 scorer。
+
+    这条路径不会执行 case 中的工具。它只评测模型根据 messages/tools 提议的
+    function call，并把结果写成固定 BFCL 版本能够读取的官方 JSONL。
+    """
+    from benchmarks.bfcl_astrion import (
+        GENERATION_REPORT,
+        validate_single_turn_manifest,
+    )
+
+    manifest = load_manifest(manifest_path)
+    validate_single_turn_manifest(manifest)
+    if (
+        not isinstance(progress_interval, (int, float))
+        or isinstance(progress_interval, bool)
+        or progress_interval <= 0
+    ):
+        raise ValueError("progress_interval 必须是正数")
+    runtime_env = dict(os.environ if env is None else env)
+    selected_api_model = (
+        api_model or runtime_env.get("AGENT_MODEL") or "deepseek-chat"
+    )
+    _require_text(selected_api_model, "api_model")
+    _require_text(scorer_model, "scorer_model")
+
+    root = (
+        Path(output_dir).expanduser().resolve()
+        if output_dir is not None
+        else _new_run_root(
+            Path(runs_dir).expanduser().resolve(),
+            f"Astrion-{selected_api_model}",
+        )
+    )
+    root.mkdir(parents=True, exist_ok=False)
+    id_file = write_official_id_file(manifest, root)
+    interpreter = bfcl_python or _bfcl_python(bfcl_bin) or "python3"
+    worker_path = Path(__file__).resolve().with_name("bfcl_astrion.py")
+    generate_command = [
+        interpreter,
+        str(worker_path),
+        "--manifest",
+        str(manifest.path),
+        "--output-dir",
+        str(root),
+        "--api-model",
+        selected_api_model,
+        "--scorer-model",
+        scorer_model,
+    ]
+    if base_url:
+        generate_command.extend(["--base-url", base_url])
+    _unused_generate, evaluate_command = build_commands(
+        bfcl_bin, scorer_model, manifest
+    )
+    runtime_env, deepseek_bootstrap_alias = _prepare_runtime_env(
+        scorer_model, runtime_env
+    )
+    runtime_env["BFCL_PROJECT_ROOT"] = str(root)
+    created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    report_path = root / "bfcl_run_report.json"
+    generation_report_path = root / GENERATION_REPORT
+    log_dir = root / "logs"
+    report = {
+        "kind": "bfcl_astrion_run",
+        "status": "preparing",
+        "created_at": created_at,
+        "updated_at": created_at,
+        "execution_path": ASTRION_EXECUTION_PATH,
+        "benchmark": {
+            "name": BENCHMARK_NAME,
+            "version": manifest.benchmark_version,
+            "profile": manifest.profile,
+            "subset": True,
+            "selection_mode": manifest.selection_mode,
+            "official_collection": None,
+            "manifest_name": manifest.name,
+            "manifest_path": str(manifest.path),
+            "case_count": manifest.case_count,
+            "expected_scored_cases": manifest.expected_scored_cases,
+            "category_counts": dict(manifest.category_counts),
+            "categories": {
+                key: list(value) for key, value in manifest.categories.items()
+            },
+        },
+        "official_harness": {
+            "package": PACKAGE_NAME,
+            "required_version": manifest.harness_version,
+            "bfcl_bin": bfcl_bin,
+            "role": "dataset_schema_and_scorer",
+        },
+        "model": selected_api_model,
+        "api_model": selected_api_model,
+        "scorer_model": scorer_model,
+        "config": {
+            "base_url": base_url,
+            "credential_env": credential_env,
+            "deepseek_openai_bootstrap_alias": deepseek_bootstrap_alias,
+            "executes_benchmark_tools": False,
+            "progress_interval_seconds": progress_interval,
+        },
+        "astrion_agent_commit": _git_commit(Path(__file__).resolve().parents[2]),
+        "project_root": str(root),
+        "official_id_file": _relative(id_file, root),
+        "commands": {
+            "generate": {
+                "command": generate_command,
+                "command_display": shlex.join(generate_command),
+            },
+            "evaluate": {
+                "command": evaluate_command,
+                "command_display": shlex.join(evaluate_command),
+            },
+        },
+        "doctor": None,
+        "generation_report": None,
+        "official_outputs": None,
+        "error": None,
+        "report_path": str(report_path),
+        "progress_path": str(root / "bfcl_progress.json"),
+    }
+    _atomic_write_json(report_path, report)
+    _write_progress(root, manifest, "preparing")
+
+    if dry_run:
+        report["status"] = "dry_run"
+        report["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _atomic_write_json(report_path, report)
+        _write_progress(root, manifest, "dry_run")
+        return report
+
+    try:
+        if _bfcl_python(bfcl_bin) is None and bfcl_python is None:
+            report["status"] = "setup_error"
+            report["error"] = {
+                "type": "BFCLPythonError",
+                "message": "无法找到与 bfcl CLI 相同环境中的 Python",
+            }
+            return report
+        doctor = probe_bfcl(
+            bfcl_bin,
+            scorer_model,
+            env=runtime_env,
+            cwd=root,
+            credential_env=credential_env,
+            command_runner=command_runner,
+        )
+        report["doctor"] = doctor
+        if not doctor["ok"]:
+            report["status"] = "setup_error"
+            report["error"] = {
+                "type": "BFCLDoctorError",
+                "message": "BFCL 环境检查未通过",
+            }
+            return report
+
+        _write_progress(root, manifest, "generation")
+        if command_runner is _default_command_runner:
+            generation = _progress_command_runner(
+                generate_command,
+                runtime_env,
+                root,
+                manifest=manifest,
+                phase="generation",
+                interval_seconds=float(progress_interval),
+            )
+        else:
+            generation = command_runner(generate_command, runtime_env, root)
+        report["commands"]["generate"] = _command_record(
+            generation, log_dir, "astrion_generate", root
+        )
+        _write_progress(root, manifest, "generation")
+        if generation.get("returncode") != 0:
+            report["status"] = "generation_error"
+            report["error"] = {
+                "type": "AstrionGenerationError",
+                "message": "Astrion BFCL worker 返回非零状态",
+            }
+            report["official_outputs"] = collect_official_outputs(root)
+            return report
+        if not generation_report_path.is_file():
+            raise ValueError("Astrion worker 成功退出，但缺少 generation report")
+        generation_report = json.loads(
+            generation_report_path.read_text(encoding="utf-8")
+        )
+        if (
+            not isinstance(generation_report, dict)
+            or generation_report.get("kind") != "bfcl_astrion_generation"
+            or generation_report.get("status") != "completed"
+            or generation_report.get("case_count") != manifest.case_count
+        ):
+            raise ValueError("Astrion generation report 与本次 manifest 不一致")
+        report["generation_report"] = generation_report
+
+        _write_progress(root, manifest, "evaluation")
+        evaluation = command_runner(evaluate_command, runtime_env, root)
+        report["commands"]["evaluate"] = _command_record(
+            evaluation, log_dir, "evaluate", root
+        )
+        report["official_outputs"] = collect_official_outputs(root)
+        if evaluation.get("returncode") != 0:
+            report["status"] = "evaluation_error"
+            report["error"] = {
+                "type": "BFCLEvaluationError",
+                "message": "官方 bfcl evaluate 返回非零状态",
+            }
+            return report
+        if not report["official_outputs"]["official_category_scores"]:
+            report["status"] = "evaluation_error"
+            report["error"] = {
+                "type": "BFCLMissingScoreError",
+                "message": "官方评测命令成功，但没有找到 category score 文件",
+            }
+            return report
+        report["status"] = "completed"
+        return report
+    except KeyboardInterrupt:
+        report["status"] = "interrupted"
+        report["error"] = {
+            "type": "KeyboardInterrupt",
+            "message": "用户中断了 Astrion BFCL 运行",
+        }
+        return report
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        report["status"] = "orchestration_error"
+        report["error"] = {"type": type(exc).__name__, "message": str(exc)}
+        try:
+            report["official_outputs"] = collect_official_outputs(root)
+        except (OSError, ValueError, TypeError):
+            pass
+        return report
+    finally:
+        report["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _atomic_write_json(report_path, report)
+        try:
+            _write_progress(root, manifest, report["status"])
+        except OSError:
+            pass
+
+
 def _resolve_run_root(run: Path | str, runs_dir: Path | str) -> Path:
     selector = Path(run).expanduser()
     if selector.is_absolute() or len(selector.parts) > 1:
@@ -1534,6 +1794,43 @@ def main(argv: list[str] | None = None) -> int:
         help="实时进度刷新秒数；默认 5",
     )
 
+    astrion_parser = subparsers.add_parser(
+        "astrion-run",
+        help="用 Astrion 生成单轮 tool calls，再调用官方 BFCL scorer",
+    )
+    astrion_parser.add_argument("--bfcl-bin", default=_default_bfcl_bin())
+    astrion_parser.add_argument(
+        "--api-model",
+        default=None,
+        help="Astrion 实际调用的模型；默认读取 AGENT_MODEL，再退回 deepseek-chat",
+    )
+    astrion_parser.add_argument(
+        "--scorer-model",
+        default=DEFAULT_MODEL,
+        help="BFCL 用于定位解码器和结果目录的官方注册模型",
+    )
+    astrion_selection = astrion_parser.add_mutually_exclusive_group()
+    astrion_selection.add_argument(
+        "--benchmark",
+        choices=tuple(ASTRION_BENCHMARKS),
+        default=DEFAULT_BENCHMARK,
+        help="选择单轮固定 ID 基准；默认 baseline-200",
+    )
+    astrion_selection.add_argument(
+        "--manifest", type=Path, default=None, help="使用自定义单轮固定 ID manifest"
+    )
+    astrion_parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
+    astrion_parser.add_argument("--output-dir", type=Path, default=None)
+    astrion_parser.add_argument("--base-url", default=None)
+    astrion_parser.add_argument("--credential-env", default="DEEPSEEK_API_KEY")
+    astrion_parser.add_argument("--dry-run", action="store_true")
+    astrion_parser.add_argument(
+        "--progress-interval",
+        type=float,
+        default=5.0,
+        help="实时进度刷新秒数；默认 5",
+    )
+
     resume_parser = subparsers.add_parser(
         "resume", help="审计并从同一目录续跑一次未完成的 BFCL 运行"
     )
@@ -1559,6 +1856,7 @@ def main(argv: list[str] | None = None) -> int:
     if (
         args.command == "doctor"
         or (args.command == "run" and not args.dry_run)
+        or (args.command == "astrion-run" and not args.dry_run)
         or (args.command == "resume" and not args.check)
     ):
         load_bfcl_env()
@@ -1579,6 +1877,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         return 0 if result["status"] in {"completed", "ready"} else 1
+    if args.command == "astrion-run":
+        result = run_astrion_bfcl(
+            api_model=args.api_model,
+            scorer_model=args.scorer_model,
+            bfcl_bin=args.bfcl_bin,
+            manifest_path=args.manifest or ASTRION_BENCHMARKS[args.benchmark],
+            runs_dir=args.runs_dir,
+            output_dir=args.output_dir,
+            base_url=args.base_url,
+            credential_env=args.credential_env or None,
+            dry_run=args.dry_run,
+            progress_interval=args.progress_interval,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+        return 0 if result["status"] in {"completed", "dry_run"} else 1
 
     result = run_bfcl(
         model=args.model,

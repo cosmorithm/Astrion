@@ -17,7 +17,7 @@ astrion-agent/
 ├── events.py       Run/Step/Event v1：结构化运行事实与 JSON 导出
 ├── memory.py       会话记忆：消息窗口 + 超额压缩 + 序列化
 ├── session.py      会话 JSON：原子保存、加载与恢复判断
-├── benchmarks/     基准层：通用记录 + BFCL 官方 harness 旁路集成
+├── benchmarks/     基准层：BFCL 官方基线 + Astrion 单轮决策适配
 ├── evaluation/     赛后评测：任务、运行器、可注册裁判
 ├── run_tests.sh    全部离线测试入口
 ├── show_bfcl_score.py  查看最近或指定 BFCL 运行成绩
@@ -401,7 +401,8 @@ BFCL V4 官方 harness；ToolBench 暂不接入。
 - `ChatLLM.chat(messages, tools=None)`：不传 `tools` 时仍发送默认 `TOOLS`；传列表时按 case 注入；传 `[]` 时省略 `tools` 和 `tool_choice`。
 - `FunctionCallCase`：保存 `id`、`category`、`messages`、`tools` 和 `metadata`。
 - `run_cases()`：逐条调用模型，记录原始请求/响应和错误；不判断对错。
-- `benchmarks/bfcl.py`：调用固定版本的官方 `bfcl generate/evaluate`，导入官方分数；不重写 AST scorer。
+- `benchmarks/bfcl.py`：编排官方模型基线和 Astrion 单轮路径，统一调用官方 scorer。
+- `benchmarks/bfcl_astrion.py`：把官方单轮 case 交给 `ChatLLM`，保存 Event v1，并转换为官方结果格式；不执行 case 工具。
 - `benchmarks/manifests/bfcl_v4_single_turn_baseline_200.json`：默认基准，5 类各 40 条，共 200 条。
 - `benchmarks/manifests/bfcl_v4_all_scoring_full.json`：官方 `all_scoring`，22 类、5,217 个生成条目、预计 5,106 个计分目标。
 - `benchmarks/manifests/bfcl_v4_single_turn_smoke.json`：保留原来的 20 条 smoke 子集。
@@ -477,6 +478,20 @@ python3 -m benchmarks bfcl run \
   --benchmark trial-3
 ```
 
+上面测试的是 BFCL 官方 model handler 基线。若要用同一批官方 case 和 scorer 测试
+Astrion 的单轮工具选择链路，先 dry-run，再显式运行：
+
+```bash
+python3 -m benchmarks bfcl astrion-run --benchmark trial-3 --dry-run
+python3 -m benchmarks bfcl astrion-run --benchmark trial-3
+```
+
+Astrion 路径会调用 `ChatLLM.chat(messages, tools)`、记录每个 case 的 Event v1，并把
+建议的函数名和参数交给官方 BFCL scorer；它不会实际执行 benchmark 工具，也不进入
+多步 ReAct 循环。当前只支持 `trial-3`、`smoke-20` 和 `baseline-200` 三个固定单轮
+子集，不接受含多轮和 memory 类别的 `all-scoring`。报告中的 `execution_path` 会将
+Astrion 结果与官方 handler 基线区分开。
+
 结果保存在 `benchmark_runs/bfcl/`，含官方 result/score、命令日志和统一报告。
 它是 subset 结果，不能冒充 BFCL 官方 full leaderboard overall。当前项目的
 `AGENT_API_KEY/deepseek-flash` 不会自动映射成 BFCL 官方 DeepSeek 配置。
@@ -531,7 +546,7 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 115 项测试：契约 6 项、BFCL 旁路 16 项、BFCL 成绩查看 9 项、通用基准适配 6 项、事件协议 5 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 10 项、token 计量 5 项。
+它依次运行 123 项测试：契约 6 项、BFCL 官方旁路 16 项、Astrion BFCL 适配 7 项、BFCL 成绩查看 10 项、通用基准适配 6 项、事件协议 5 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 10 项、token 计量 5 项。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：
@@ -549,7 +564,7 @@ python3 -B -m unittest -v test_session
 5. **会话和报告包含数据。** 模型消息、工具输出和文件快照可能含敏感内容；分享前要检查，默认目录虽被 git 忽略，不代表内容可以公开。
 6. **沙箱不是操作系统隔离。** `safe_path()` 限制应用层文件工具；这不是容器级安全边界。
 7. **没有任务时间上限。** 只记录耗时；单次 HTTP 超时 120 秒，`--steps` 限制决策轮数。
-8. **BFCL 默认基准是固定 200 条单轮子集。** 五个核心类别各 40 条、等间隔确定性抽样；另有显式 `all-scoring` 正式计分类入口，目前有一次中断且尚未完成的运行，绝不会由默认命令触发。
+8. **BFCL 默认基准是固定 200 条单轮子集。** 五个核心类别各 40 条、等间隔确定性抽样；官方 handler 另有显式 `all-scoring` 入口。Astrion 单轮适配器只支持固定 ID 的 3/20/200 条子集，不能覆盖多轮、memory、live 或 web-search 类别。
 9. **ToolBench 尚未接入。** 本阶段没有安装或调用 ToolBench/StableToolBench，也不把它们的分数与 BFCL 混合。
 10. **Event v1 还不是恢复事实源。** 它是只追加的旁观日志；session 仍按完整消息轮次保存，不能从事件重放副作用或恢复运行。
 
@@ -559,6 +574,6 @@ python3 -B -m unittest -v test_session
 2. 让评测裁判按统一事件分析轨迹、效率、稳定性和安全性
 3. 讨论 Event 与 session checkpoint 的关联方式，但暂不直接承诺可重放副作用
 4. 提炼 `ToolSpec` / `ToolCall` / `ToolResult` 契约，为 MCP 适配做准备
-5. 运行并分析 BFCL 200 条默认基准，保留 20 条结果作为历史 smoke 对照
+5. 先运行 Astrion BFCL 3 条真实试验，再视结果扩展到 20 条和 200 条并与官方 handler 基线对比
 6. 会话文件的轮转、加密或按项目分目录管理
 7. MCP、长期记忆、CodeAct、Computer Use 与多 Agent 按技术愿景和评测证据逐步接入

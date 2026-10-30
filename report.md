@@ -10,7 +10,7 @@
 
 记录日期：2026-10-30（Asia/Shanghai）  
 项目根目录：`/Users/apple/Desktop/科研/Multi Agent`  
-记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层、BFCL 官方集成、断点续跑、Astrion Agent 命名迁移、结构化运行事件和测试自动化的实现及验证。
+记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层、BFCL 官方集成、断点续跑、Astrion Agent 命名迁移、结构化运行事件、Astrion BFCL 单轮适配和测试自动化的实现及验证。
 
 ## 1. 记录依据与项目目标
 
@@ -50,6 +50,7 @@
 | Astrion Agent 命名迁移 | 本次对话，见第 24 节 | 产品名、目录、CLI、文档和报告字段统一迁移；保留旧目录兼容链接与旧 BFCL 报告字段读取能力 |
 | 五层技术愿景确立 | 本次对话，见第 25 节 | 将决策、工具、上下文、运行时和评测确立为长期技术主线；安全作为横切面；区分当前实现、下一阶段与长期探索 |
 | Run/Step/Event v1 | 本次对话，见第 26 节 | 将临时 trace 升级为带版本、运行 ID、连续序号和开始/终止语义的旁观事件日志；评测直接消费同一份事实 |
+| Astrion BFCL 单轮适配 | 本次对话，见第 27 节 | 用 Astrion `ChatLLM` 生成 BFCL 单轮函数调用，每条保存 Event v1，仍由固定版本官方 scorer 判分；与官方 model handler 基线分轨记录 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -184,6 +185,7 @@ Multi Agent/
     ├── session.py             # 会话 JSON 的原子保存、加载与恢复判断
     ├── benchmarks/            # 通用基准适配 + BFCL 官方 harness 旁路集成
     │   ├── bfcl.py            # BFCL doctor、运行编排、官方结果导入与统一报告
+    │   ├── bfcl_astrion.py    # Astrion 单轮生成、Event v1 与 BFCL 结果转换
     │   └── manifests/         # 固定的 BFCL V4 子集 manifest
     ├── README.md              # 运行方法与设计说明
     ├── run_tests.sh           # 全部离线测试入口
@@ -197,6 +199,7 @@ Multi Agent/
     ├── test_agent_contract.py # 默认提示、工具集和可选持久化契约
     ├── test_benchmarks.py     # 基准适配层离线测试
     ├── test_bfcl.py           # BFCL 旁路编排、失败保留和官方分数导入测试
+    ├── test_bfcl_astrion.py   # Astrion BFCL 适配、事件、编排和评分接缝测试
     ├── test_bfcl_score.py     # BFCL 成绩发现、选择、格式化与错误处理测试
     ├── test_evaluation.py     # 评测层离线测试
     ├── test_evaluation_summary.py # 通过率及总报告测试
@@ -1835,3 +1838,114 @@ session 保存和恢复行为本阶段不变。Event 尚不是恢复事实源，
 
 完整 `run_tests.sh` 从 108 项增加到 115 项，全部通过。测试使用脚本化模型和本地临时
 文件，不访问网络、不读取真实 API key，也没有产生模型费用。
+
+## 27. 第十九阶段：用 BFCL 测试 Astrion 的单轮工具决策
+
+### 27.1 问题与边界
+
+学习者询问能否“用 BFCL 测试我们的 Agent”。检查现有代码后发现，原有
+`python3 -m benchmarks bfcl run` 是可复现的官方模型基线：BFCL 自己的
+model handler 负责请求模型，并未经过 Astrion 的 `ChatLLM`、Event 或运行时。
+因此，它能检验 BFCL 环境和模型基线，却不能直接证明 Astrion 这条链路的表现。
+
+双方同意保留原有基线，另增一条明确标记的 Astrion 单轮适配路径。没有把
+BFCL 单轮 case 强行塞入完整 `agent.run()`：这类 case 的目标就是评判“应该提议哪个
+函数及参数”，如果本地真正执行工具，反而改变了 benchmark 的语义。所以当前路径
+测到的是 Astrion 的模型客户端、case 工具注入、响应规范化、token 计量和 Event v1，
+而不是 Memory、多轮 ReAct 或工具执行能力。
+
+### 27.2 双路径设计
+
+```mermaid
+flowchart LR
+    D["BFCL 官方数据与 function schema"] --> O["官方 handler 基线<br/>bfcl run"]
+    D --> A["Astrion 单轮适配<br/>bfcl astrion-run"]
+    A --> C["ChatLLM.chat(messages, tools)"]
+    C --> E["每 case 一份 Event v1"]
+    C --> R["BFCL result JSONL"]
+    O --> S["固定版 bfcl-eval scorer"]
+    R --> S
+    S --> U["统一 bfcl_run_report.json"]
+```
+
+两条路径共用 `bfcl-eval==2026.3.23`、同一份 manifest、官方 schema 转换和官方
+scorer，但报告绝不混淆：官方基线使用 `kind=bfcl_official_run`；Astrion 路径使用
+`kind=bfcl_astrion_run` 和 `execution_path=astrion_single_turn_adapter`。成绩查看器同时
+读取两种报告，文本和列表输出都显示执行路径。
+
+### 27.3 实现内容
+
+新增 `astrion-agent/benchmarks/bfcl_astrion.py`：
+
+1. 只接受固定 ID 的单轮类别：`simple_python`、`multiple`、`parallel`、
+   `parallel_multiple` 和 `irrelevance`；显式拒绝 `all-scoring`。
+2. 从固定版 BFCL 加载问题与函数说明，使用官方 `convert_to_tool` 转为 OpenAI-compatible
+   tools，并严格按 manifest 顺序选择 case。
+3. 每个 case 只请求模型一次。工具调用转为 BFCL 要求的 `[{function_name:
+   arguments_json_string}]`；无工具调用时保留助手文本，供 `irrelevance` 评分。
+4. 每条 case 保存 `run.started`、`model.call.started/finished/failed` 和正常
+   `run.finished`。不产生 `tool.call.*`，因为这条路径没有执行工具。
+5. 结果按官方目录与文件名写入 JSONL；每完成一条就原子刷新当前类别，
+   供父进程显示实时分组进度，也让中断后保留已确认结果。另保存
+   `astrion_generation_report.json`，汇总 case 状态、token、延迟、错误和 Event 文件路径。
+
+`benchmarks/bfcl.py` 新增 `astrion-run` 编排：先运行环境 doctor，再用同一 BFCL
+venv 中的 Python 执行 Astrion worker，校验 generation report，最后调用官方
+`bfcl evaluate --partial-eval`。统一报告包含 API model、scorer model、manifest、commit、
+命令日志、官方分类分数、token 和延迟；密钥值不进入命令或报告。
+
+### 27.4 命令、产物与限制
+
+不读取 `.env`、不调用模型的检查命令：
+
+```bash
+python3 -m benchmarks bfcl astrion-run --benchmark trial-3 --dry-run
+```
+
+真实 3 条试验命令：
+
+```bash
+python3 -m benchmarks bfcl astrion-run --benchmark trial-3
+```
+
+每次运行目录中保存 `result/`、`score/`、`events/`、`logs/`、
+`astrion_generation_report.json`、`bfcl_progress.json` 和统一 `bfcl_run_report.json`。
+完成后仍用 `python3 show_bfcl_score.py --run <运行ID>` 查看。
+
+当前 Astrion 路径不支持 `all-scoring`、不支持断点续跑，也不作为官方排行榜提交。
+这是有意的第一版边界：先让 3/20/200 条单轮子集可重现、可区分、可审计，
+再根据实际失败决定是否扩展。
+
+### 27.5 问答摘要
+
+- **问：现在能不能用 BFCL 测试我们的 Agent？**
+
+  **答：**可以，但要先区分“官方 model handler 基线”与“Astrion 自身生成链路”。
+  原有 `bfcl run` 只是前者；新的 `bfcl astrion-run` 才经过 Astrion `ChatLLM` 和 Event。
+- **问：为什么不让 Agent 真正调用 BFCL 工具？**
+
+  **答：**BFCL 单轮函数调用评测的产物就是工具提议本身；执行虚拟工具不仅没有必要，
+  还会使评测语义改变。所以 Event 中只有模型调用，没有伪造的工具执行。
+- **问：这个分数能代表完整 Astrion 吗？**
+
+  **答：**不能。它主要表示单轮 tool selection/argument generation，不覆盖记忆、多步规划、
+  工具执行、安全边界和长任务稳定性。
+
+### 27.6 验证
+
+本地固定版 BFCL 实际加载 `trial-3` 成功：
+
+```text
+simple_python_0  -> 1 条消息 / 1 个工具
+multiple_0       -> 1 条消息 / 2 个工具
+irrelevance_0    -> 1 条消息 / 1 个工具
+```
+
+`astrion-run --benchmark trial-3 --dry-run` 也成功生成了独立报告、worker 命令和
+官方 partial-eval 命令。完整 `run_tests.sh` 从 115 项增加到 123 项，全部通过；
+新增的 8 项覆盖 manifest 限制、官方 case 转换、响应规范化、Event v1、结果分类写入、
+dry-run、完整 worker-to-scorer 编排和成绩查看器双路径识别。
+
+本阶段没有执行真实 `astrion-run`，因此没有发起模型 API 请求、没有产生新的
+BFCL 真实分数，也没有产生 API 费用。下一步应先显式运行 3 条，检查函数名、参数、
+Event 和官方分数，再决定是否扩展到 20 或 200 条。
