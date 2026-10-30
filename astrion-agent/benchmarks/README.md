@@ -70,7 +70,8 @@ print(summarize(records))
 
 两条路径都固定使用 `bfcl-eval==2026.3.23`，并在独立 `.venv-bfcl/` 中安装：
 
-- `bfcl run` 是官方模型 handler 基线，生成和评分都走官方 CLI；
+- `bfcl run` 是官方模型 handler 基线；当前为了与 Astrion 严格对照，
+  默认保留 `DeepSeek-V3.2-Exp-FC` registry/scorer，但把 handler 实际 API 请求模型覆盖为 `deepseek-flash`；
 - `bfcl astrion-run` 用 Astrion 的 `ChatLLM` 生成响应和 Event v1，再把结果交给
   同一个官方 scorer。
 
@@ -78,7 +79,8 @@ Astrion Agent 不复制 BFCL 数据、prompt 或 scorer。官方基线路径是�
 
 ```text
 benchmarks/bfcl.py
-  → bfcl generate --run-ids
+  → bfcl_official.py 临时覆盖 registry config 的 API model
+  → 官方 bfcl generate --run-ids
   → bfcl evaluate --partial-eval
   → 读取官方 result/score
   → 保存 bfcl_run_report.json
@@ -114,8 +116,8 @@ cd '/Users/apple/Desktop/科研/Multi Agent/astrion-agent'
 
 ### 2. 配置官方模型凭据
 
-默认模型是 BFCL 官方注册的 `DeepSeek-V3.2-Exp-FC`。官方 handler 固定访问
-DeepSeek 官方 endpoint，并读取 `DEEPSEEK_API_KEY`。可以把它写在项目根目录
+默认 registry/scorer 是 BFCL 官方注册的 `DeepSeek-V3.2-Exp-FC`。官方 handler
+固定访问 DeepSeek 官方 endpoint，并读取 `DEEPSEEK_API_KEY`。可以把它写在项目根目录
 `/Users/apple/Desktop/科研/Multi Agent/.env`：
 
 ```dotenv
@@ -131,9 +133,9 @@ DeepSeek client；当前 OpenAI SDK 要求父类初始化时已有 key。适配�
 BFCL 子进程环境中，把 `DEEPSEEK_API_KEY` 临时复制为 `OPENAI_API_KEY` 兼容别名。
 它不会写回 `.env` 或报告，实际请求仍由官方 handler 发往 DeepSeek endpoint。
 
-项目现有的 `AGENT_API_KEY` 不会被自动改名或转发。`AGENT_BASE_URL` 和
-`AGENT_MODEL=deepseek-flash` 也不等于 BFCL 官方 DeepSeek 配置，不能据此冒充官方结果。
-换其他 BFCL 官方模型时，同时把 `--model` 和 `--credential-env` 换成对应值。
+项目现有的 `AGENT_API_KEY`、`AGENT_BASE_URL` 和 `AGENT_MODEL` 不会自动转发给官方
+handler。`bfcl run` 的 API 模型覆盖是显式命令参数，仍由官方 DeepSeek handler
+使用 `DEEPSEEK_API_KEY` 请求官方 endpoint。
 
 ### 3. 环境检查与 dry-run
 
@@ -149,7 +151,31 @@ python3 -m benchmarks bfcl run --dry-run
 适配器兼容该版本 `bfcl version` 在部分安装中的 distribution 名问题，会退回到同一
 venv 的 Python 查询 `bfcl-eval` 元数据。
 
-### 3.1 用 BFCL 测 Astrion 的单轮工具决策
+### 3.1 严格对照时的 baseline API 模型
+
+固定版 BFCL 原始将 `DeepSeek-V3.2-Exp-FC` 映射为 `deepseek-chat`。当前默认命令
+为了和 Astrion 的 `deepseek-flash` 运行对照，会通过项目内的
+`benchmarks/bfcl_official.py` 在当次子进程内把 handler 的 `model_name` 覆盖为
+`deepseek-flash`。它不修改 `.venv-bfcl` 中的第三方文件，不改 registry name、
+函数 schema、结果目录或官方 scorer。默认温度也从官方原配置的 `0.001`
+调为与 Astrion `ChatLLM` 一致的 `0`；仍可用 `--temperature` 显式覆盖。
+
+```bash
+# 默认：官方 handler 实际请求 deepseek-flash
+python3 -m benchmarks bfcl run --benchmark baseline-200
+
+# 如需复现旧的原始映射
+python3 -m benchmarks bfcl run \
+  --benchmark baseline-200 \
+  --api-model deepseek-chat
+```
+
+新报告会同时记录 `registry_model=DeepSeek-V3.2-Exp-FC`、
+`api_model=deepseek-flash` 和 `execution_path=official_model_handler_api_override`。
+这类结果是“官方 handler + API model 覆盖”的项目内对照，不应冒充
+BFCL 官方默认模型配置或排行榜提交。
+
+### 3.2 用 BFCL 测 Astrion 的单轮工具决策
 
 先只检查将执行的 worker、manifest 和官方评分命令，不读 `.env`、不调用模型：
 

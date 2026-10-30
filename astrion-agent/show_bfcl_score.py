@@ -86,6 +86,8 @@ def summarize_report(report: dict, report_path: Path | str) -> dict:
         "status": report.get("status"),
         "created_at": report.get("created_at"),
         "model": report.get("model"),
+        "api_model": report.get("api_model"),
+        "registry_model": report.get("registry_model"),
         "scorer_model": report.get("scorer_model"),
         "execution_path": report.get("execution_path") or "official_model_handler",
         "profile": benchmark.get("profile"),
@@ -254,9 +256,16 @@ def format_summary(summary: dict) -> str:
         f"状态：{summary.get('status')}",
         f"执行路径：{summary.get('execution_path')}",
         f"模型：{summary.get('model')}",
+    ]
+    if (
+        summary.get("api_model")
+        and summary.get("api_model") != summary.get("model")
+    ):
+        lines.append(f"实际 API 模型：{summary['api_model']}")
+    lines.extend([
         f"范围：{range_text}",
         f"总分：{_percent(summary.get('score'))}（{count_text}）",
-    ]
+    ])
 
     categories = summary.get("category_scores") or []
     if categories:
@@ -310,7 +319,13 @@ def format_run_list(runs: list[dict]) -> str:
         lines.append(
             f"- {item.get('run_id')} | {item.get('status')} | "
             f"{_percent(item.get('score'))} | {count_text} | "
-            f"{item.get('execution_path') or '-'} | {item.get('model') or '-'}"
+            f"{item.get('execution_path') or '-'} | "
+            f"{item.get('model') or '-'}"
+            + (
+                f" -> {item['api_model']}"
+                if item.get("api_model") and item.get("api_model") != item.get("model")
+                else ""
+            )
         )
     return "\n".join(lines)
 

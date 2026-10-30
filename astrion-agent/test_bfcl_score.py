@@ -85,6 +85,27 @@ class BFCLScoreViewerTests(unittest.TestCase):
             score_viewer.format_summary(summary),
         )
 
+    def test_displays_official_registry_and_effective_api_model_separately(self):
+        path = self.make_run("flash-baseline")
+        report = json.loads(path.read_text(encoding="utf-8"))
+        report.update({
+            "execution_path": "official_model_handler_api_override",
+            "registry_model": "DeepSeek-V3.2-Exp-FC",
+            "api_model": "deepseek-flash",
+        })
+        path.write_text(json.dumps(report), encoding="utf-8")
+
+        summary = score_viewer.summarize_report(score_viewer.load_report(path), path)
+        text = score_viewer.format_summary(summary)
+
+        self.assertEqual(summary["model"], "DeepSeek-V3.2-Exp-FC")
+        self.assertEqual(summary["api_model"], "deepseek-flash")
+        self.assertIn("实际 API 模型：deepseek-flash", text)
+        self.assertIn(
+            "DeepSeek-V3.2-Exp-FC -> deepseek-flash",
+            score_viewer.format_run_list([summary]),
+        )
+
     def test_latest_completed_skips_a_newer_failed_run(self):
         completed = self.make_run("completed", mtime=10)
         self.make_run("failed", status="generation_error", mtime=20)

@@ -51,6 +51,7 @@
 | 五层技术愿景确立 | 本次对话，见第 25 节 | 将决策、工具、上下文、运行时和评测确立为长期技术主线；安全作为横切面；区分当前实现、下一阶段与长期探索 |
 | Run/Step/Event v1 | 本次对话，见第 26 节 | 将临时 trace 升级为带版本、运行 ID、连续序号和开始/终止语义的旁观事件日志；评测直接消费同一份事实 |
 | Astrion BFCL 单轮适配 | 本次对话，见第 27 节 | 用 Astrion `ChatLLM` 生成 BFCL 单轮函数调用，每条保存 Event v1，仍由固定版本官方 scorer 判分；与官方 model handler 基线分轨记录 |
+| BFCL 同模型对照 | 本次对话，见第 28 节 | 保留官方 handler、registry 与 scorer，把 baseline 实际 API model 显式覆盖为 `deepseek-flash`，并将默认温度对齐为 0 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -185,6 +186,7 @@ Multi Agent/
     ├── session.py             # 会话 JSON 的原子保存、加载与恢复判断
     ├── benchmarks/            # 通用基准适配 + BFCL 官方 harness 旁路集成
     │   ├── bfcl.py            # BFCL doctor、运行编排、官方结果导入与统一报告
+    │   ├── bfcl_official.py   # 官方 DeepSeek handler 的当次 API model 覆盖启动器
     │   ├── bfcl_astrion.py    # Astrion 单轮生成、Event v1 与 BFCL 结果转换
     │   └── manifests/         # 固定的 BFCL V4 子集 manifest
     ├── README.md              # 运行方法与设计说明
@@ -1966,7 +1968,7 @@ flowchart TB
         direction TB
         O1["bfcl run"]
         O2["doctor<br/>校验 bfcl-eval 版本、模型注册与凭据"]
-        O3["bfcl generate --run-ids"]
+        O3["bfcl_official.py<br/>API model = deepseek-flash<br/>再执行 bfcl generate --run-ids"]
         O4["官方 model handler<br/>组装 messages + tools"]
         O5["官方 handler 请求模型"]
         O6["官方 result JSONL"]
@@ -2000,7 +2002,112 @@ flowchart TB
 
 两条流水线的变量控制关系是：
 
-- **共同不变项：**BFCL 版本、manifest、case ID、官方函数 schema 和 scorer。
+- **共同不变项：**BFCL 版本、manifest、case ID、官方函数 schema、scorer，
+  以及新一轮对照中的 `deepseek-flash` API model 与温度 0。
 - **主要差异项：**模型请求是经过 BFCL 官方 handler，还是经过 Astrion `ChatLLM`。
 - **Astrion 额外观测：**每条 case 的 Event v1、Astrion token 计量和 generation report。
 - **比较前提：**两条路径必须使用同一组 case；否则分数差异不能归因于生成链路。
+
+## 28. 第二十阶段：将 baseline 对齐为 `deepseek-flash`
+
+### 28.1 为什么要改
+
+首次 200 条对比中，官方 handler baseline 得分 89.5%，Astrion 得分 87.5%。
+两次使用相同 case 和 scorer，但严格检查发现模型没有对齐：
+
+```text
+旧 baseline: registry DeepSeek-V3.2-Exp-FC -> 实际 API model deepseek-chat
+Astrion:                                      实际 API model deepseek-flash
+```
+
+固定版 `bfcl-eval==2026.3.23` 的 `MODEL_CONFIG_MAPPING` 明确把
+`DeepSeek-V3.2-Exp-FC` 映射为 `deepseek-chat`；`build_handler()` 把该值传给
+`DeepSeekAPIHandler`，而 handler 最终以 `model=self.model_name` 请求
+`https://api.deepseek.com`。因此旧成绩只能作为非同模型参考，不能把 2 个百分点
+差异归因于 BFCL handler 与 Astrion `ChatLLM` 的实现差别。
+
+### 28.2 不直接修改第三方安装包
+
+新增 `astrion-agent/benchmarks/bfcl_official.py`。它在当次生成子进程内：
+
+1. 取得 `DeepSeek-V3.2-Exp-FC` 的官方 `ModelConfig`；
+2. 严格检查 handler 必须是 `DeepSeekAPIHandler`；
+3. 将 `config.model_name` 从 `deepseek-chat` 临时改为 `deepseek-flash`；
+4. 在同一进程内调用官方 `bfcl generate`。
+
+覆盖只存在于该子进程内，不改动 `.venv-bfcl` 中的第三方源码。因此
+安装环境仍可校验、重建和升级，Git 也能完整记录对照逻辑。评分阶段仍使用：
+
+```text
+registry/scorer = DeepSeek-V3.2-Exp-FC
+result directory = result/DeepSeek-V3.2-Exp-FC/
+official evaluator = bfcl evaluate --model DeepSeek-V3.2-Exp-FC
+```
+
+变化的只是生成阶段官方 handler 发出的 API `model=deepseek-flash`。
+
+### 28.3 默认对照参数与报告
+
+`python3 -m benchmarks bfcl run` 现在默认使用：
+
+```text
+registry model = DeepSeek-V3.2-Exp-FC
+API model      = deepseek-flash
+temperature    = 0
+num_threads    = 1
+```
+
+温度由旧 baseline 的 `0.001` 对齐为 Astrion `ChatLLM` 的 `0`。官方 handler 没有
+显式发送 `tool_choice`，Astrion 显式发送 `auto`；对 DeepSeek 而言两者应表示相同的
+自动工具选择语义，但这仍会作为一个已知请求外形差异留在对比记录中。
+
+新报告显式包含：
+
+```text
+execution_path = official_model_handler_api_override
+registry_model = DeepSeek-V3.2-Exp-FC
+api_model = deepseek-flash
+config.api_model_override = deepseek-flash
+config.temperature = 0
+```
+
+`show_bfcl_score.py` 会在文本和历史列表中分开显示 registry/report model 与实际
+API model，避免再将 scorer 名当成实际请求模型。新的 flash baseline 不冒充
+BFCL 官方默认配置或官方排行榜结果。
+
+对旧运行做 `resume` 时，如果原报告没有 `api_model` 覆盖，仍续用旧的官方映射，
+不会在中途从 `deepseek-chat` 静默切到 `deepseek-flash`；新的 flash 运行续跑时则保留
+原报告中的覆盖。
+
+### 28.4 下一次 200 条 baseline 命令
+
+先做不读取密钥、不调用模型的 dry-run：
+
+```bash
+python3 -m benchmarks bfcl run --benchmark baseline-200 --dry-run
+```
+
+确认报告中同时出现 `registry_model=DeepSeek-V3.2-Exp-FC` 和
+`api_model=deepseek-flash` 后，再由学习者显式运行：
+
+```bash
+python3 -m benchmarks bfcl run --benchmark baseline-200
+```
+
+本阶段没有执行这 200 次真实模型请求。
+
+### 28.5 验证
+
+使用真实的固定版 BFCL venv 执行了不联网的覆盖检查，得到：
+
+```text
+handler = DeepSeekAPIHandler
+registry_model = DeepSeek-V3.2-Exp-FC
+original_api_model = deepseek-chat
+effective_api_model = deepseek-flash
+```
+
+新增的离线测试覆盖 DeepSeek handler 类型限制、临时 config 覆盖、官方 generate
+命令包装、registry/scorer 保持、默认 CLI 的 flash/temperature 参数和成绩查看器
+的双模型标注。完整离线测试总数由 123 增加到 127；测试不读取真实密钥、
+不访问网络、不产生 API 费用。

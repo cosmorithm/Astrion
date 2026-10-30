@@ -402,6 +402,7 @@ BFCL V4 官方 harness；ToolBench 暂不接入。
 - `FunctionCallCase`：保存 `id`、`category`、`messages`、`tools` 和 `metadata`。
 - `run_cases()`：逐条调用模型，记录原始请求/响应和错误；不判断对错。
 - `benchmarks/bfcl.py`：编排官方模型基线和 Astrion 单轮路径，统一调用官方 scorer。
+- `benchmarks/bfcl_official.py`：不改第三方安装包，在当次子进程内覆盖官方 DeepSeek handler 的实际 API 模型名。
 - `benchmarks/bfcl_astrion.py`：把官方单轮 case 交给 `ChatLLM`，保存 Event v1，并转换为官方结果格式；不执行 case 工具。
 - `benchmarks/manifests/bfcl_v4_single_turn_baseline_200.json`：默认基准，5 类各 40 条，共 200 条。
 - `benchmarks/manifests/bfcl_v4_all_scoring_full.json`：官方 `all_scoring`，22 类、5,217 个生成条目、预计 5,106 个计分目标。
@@ -432,6 +433,20 @@ BFCL 命令会自动查找 `.env`，且不会覆盖 shell 中已经 `export` 的
 ```bash
 python3 -m benchmarks bfcl run
 ```
+
+为了与 Astrion 的现有 200 条运行做同模型对照，这条命令现在保持 BFCL
+registry/scorer 为 `DeepSeek-V3.2-Exp-FC`，但官方 `DeepSeekAPIHandler` 实际发给
+DeepSeek API 的 `model=` 默认覆盖为 `deepseek-flash`。报告会分开记录
+`registry_model` 和 `api_model`；默认温度也与 Astrion 对齐为 `0`。如需复现旧的
+官方映射和原温度，显式使用：
+
+```bash
+python3 -m benchmarks bfcl run \
+  --api-model deepseek-chat \
+  --temperature 0.001
+```
+
+覆盖后的 flash baseline 是项目内严格对照，不冒充 BFCL 官方默认配置或排行榜分数。
 
 运行官方全部正式计分类（高成本，建议先 dry-run）：
 
@@ -546,7 +561,7 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 123 项测试：契约 6 项、BFCL 官方旁路 16 项、Astrion BFCL 适配 7 项、BFCL 成绩查看 10 项、通用基准适配 6 项、事件协议 5 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 10 项、token 计量 5 项。
+它依次运行 127 项测试：契约 6 项、BFCL 官方旁路与 API 模型覆盖 19 项、Astrion BFCL 适配 7 项、BFCL 成绩查看 11 项、通用基准适配 6 项、事件协议 5 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 10 项、token 计量 5 项。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：

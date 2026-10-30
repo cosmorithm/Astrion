@@ -39,6 +39,8 @@ PACKAGE_NAME = "bfcl-eval"
 BENCHMARK_NAME = "BFCL"
 BENCHMARK_VERSION = "V4"
 DEFAULT_MODEL = "DeepSeek-V3.2-Exp-FC"
+DEFAULT_BASELINE_API_MODEL = "deepseek-flash"
+DEFAULT_COMPARISON_TEMPERATURE = 0.0
 MANIFESTS_DIR = Path(__file__).resolve().parent / "manifests"
 BUILTIN_BENCHMARKS = {
     "baseline-200": MANIFESTS_DIR / "bfcl_v4_single_turn_baseline_200.json",
@@ -279,7 +281,7 @@ def build_commands(
     model: str,
     manifest: BFCLManifest,
     *,
-    temperature: float = 0.001,
+    temperature: float = DEFAULT_COMPARISON_TEMPERATURE,
     num_threads: int = 1,
     allow_overwrite: bool = False,
 ) -> tuple[list[str], list[str]]:
@@ -391,6 +393,34 @@ def _bfcl_python(bfcl_bin: str) -> str | None:
         if candidate.is_file():
             return str(candidate)
     return None
+
+
+def build_api_override_command(
+    generate_command: list[str],
+    *,
+    bfcl_bin: str,
+    registry_model: str,
+    api_model: str,
+    bfcl_python: str | None = None,
+) -> list[str]:
+    """用同一 BFCL venv 的 Python 包装官方 generate 命令。"""
+    if not isinstance(generate_command, list) or len(generate_command) < 2:
+        raise ValueError("generate_command 必须是非空命令列表")
+    if generate_command[1] != "generate":
+        raise ValueError("只能包装 BFCL generate 命令")
+    _require_text(registry_model, "registry_model")
+    _require_text(api_model, "api_model")
+    interpreter = bfcl_python or _bfcl_python(bfcl_bin) or "python3"
+    launcher = Path(__file__).resolve().with_name("bfcl_official.py")
+    return [
+        interpreter,
+        str(launcher),
+        "--registry-model",
+        registry_model,
+        "--api-model",
+        api_model,
+        *generate_command[1:],
+    ]
 
 
 def probe_bfcl(
@@ -1101,10 +1131,11 @@ def run_bfcl(
     *,
     model: str,
     bfcl_bin: str,
+    api_model_override: str | None = None,
     manifest_path: Path | str = DEFAULT_MANIFEST,
     runs_dir: Path | str = DEFAULT_RUNS_DIR,
     output_dir: Path | str | None = None,
-    temperature: float = 0.001,
+    temperature: float = DEFAULT_COMPARISON_TEMPERATURE,
     num_threads: int = 1,
     allow_overwrite: bool = False,
     credential_env: str | None = None,
@@ -1112,6 +1143,7 @@ def run_bfcl(
     progress_interval: float = 5.0,
     env: dict[str, str] | None = None,
     command_runner: CommandRunner = _default_command_runner,
+    bfcl_python: str | None = None,
     _resume_context: dict | None = None,
 ) -> dict:
     """运行所选 BFCL 子集或官方 collection，并始终尝试保存编排报告。"""
@@ -1121,6 +1153,8 @@ def run_bfcl(
         or progress_interval <= 0
     ):
         raise ValueError("progress_interval 必须是正数")
+    if api_model_override is not None:
+        api_model_override = _require_text(api_model_override, "api_model_override")
     manifest = load_manifest(manifest_path)
     resuming = _resume_context is not None
     previous_report = None
@@ -1141,7 +1175,14 @@ def run_bfcl(
         root = (
             Path(output_dir).expanduser().resolve()
             if output_dir is not None
-            else _new_run_root(Path(runs_dir).expanduser().resolve(), model)
+            else _new_run_root(
+                Path(runs_dir).expanduser().resolve(),
+                (
+                    f"{model}_api-{api_model_override}"
+                    if api_model_override is not None
+                    else model
+                ),
+            )
         )
         root.mkdir(parents=True, exist_ok=False)
         attempt_number = 1
@@ -1166,6 +1207,14 @@ def run_bfcl(
         bfcl_bin, model, manifest, temperature=temperature,
         num_threads=num_threads, allow_overwrite=allow_overwrite,
     )
+    if api_model_override is not None:
+        generate_command = build_api_override_command(
+            generate_command,
+            bfcl_bin=bfcl_bin,
+            registry_model=model,
+            api_model=api_model_override,
+            bfcl_python=bfcl_python,
+        )
     runtime_env, deepseek_bootstrap_alias = _prepare_runtime_env(
         model, dict(os.environ if env is None else env)
     )
@@ -1218,6 +1267,11 @@ def run_bfcl(
             else attempt["started_at"]
         ),
         "updated_at": attempt["started_at"],
+        "execution_path": (
+            "official_model_handler_api_override"
+            if api_model_override is not None
+            else "official_model_handler"
+        ),
         "benchmark": {
             "name": BENCHMARK_NAME,
             "version": manifest.benchmark_version,
@@ -1238,6 +1292,8 @@ def run_bfcl(
             "bfcl_bin": bfcl_bin,
         },
         "model": model,
+        "registry_model": model,
+        "api_model": api_model_override,
         "config": {
             "temperature": temperature,
             "num_threads": num_threads,
@@ -1245,6 +1301,7 @@ def run_bfcl(
             "credential_env": credential_env,
             "deepseek_openai_bootstrap_alias": deepseek_bootstrap_alias,
             "progress_interval_seconds": progress_interval,
+            "api_model_override": api_model_override,
         },
         "astrion_agent_commit": previous_commit or current_commit,
         "latest_astrion_agent_commit": current_commit,
@@ -1292,6 +1349,17 @@ def run_bfcl(
         return result
 
     try:
+        if (
+            api_model_override is not None
+            and bfcl_python is None
+            and _bfcl_python(bfcl_bin) is None
+        ):
+            report["status"] = "setup_error"
+            report["error"] = {
+                "type": "BFCLPythonError",
+                "message": "无法找到与 bfcl CLI 同环境的 Python，不能应用 API model 覆盖",
+            }
+            return report
         doctor = probe_bfcl(
             bfcl_bin, model, env=runtime_env, cwd=root,
             credential_env=credential_env, command_runner=command_runner,
@@ -1711,6 +1779,9 @@ def resume_bfcl(
             "project_root": str(root),
             "next_attempt": attempt_number,
             "model": model,
+            "api_model": previous.get(
+                "api_model", config.get("api_model_override")
+            ),
             "benchmark": manifest.name,
             "audit": audit,
         }
@@ -1733,9 +1804,13 @@ def resume_bfcl(
         if credential_env is None
         else credential_env
     )
+    selected_api_model_override = previous.get(
+        "api_model", config.get("api_model_override")
+    )
     return run_bfcl(
         model=model,
         bfcl_bin=selected_bfcl_bin,
+        api_model_override=selected_api_model_override,
         manifest_path=manifest.path,
         output_dir=root,
         temperature=config.get("temperature", 0.001),
@@ -1770,6 +1845,14 @@ def main(argv: list[str] | None = None) -> int:
     run_parser = subparsers.add_parser("run", help="运行所选基准并调用官方 scorer")
     run_parser.add_argument("--bfcl-bin", default=_default_bfcl_bin())
     run_parser.add_argument("--model", default=DEFAULT_MODEL)
+    run_parser.add_argument(
+        "--api-model",
+        default=DEFAULT_BASELINE_API_MODEL,
+        help=(
+            "官方 DeepSeek handler 实际请求的 API 模型；"
+            f"默认 {DEFAULT_BASELINE_API_MODEL}"
+        ),
+    )
     selection_group = run_parser.add_mutually_exclusive_group()
     selection_group.add_argument(
         "--benchmark",
@@ -1782,7 +1865,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
     run_parser.add_argument("--output-dir", type=Path, default=None)
-    run_parser.add_argument("--temperature", type=float, default=0.001)
+    run_parser.add_argument(
+        "--temperature", type=float, default=DEFAULT_COMPARISON_TEMPERATURE,
+        help="模型温度；严格对照默认与 Astrion 一致为 0",
+    )
     run_parser.add_argument("--num-threads", type=int, default=1)
     run_parser.add_argument("--allow-overwrite", action="store_true")
     run_parser.add_argument("--credential-env", default="DEEPSEEK_API_KEY")
@@ -1896,6 +1982,7 @@ def main(argv: list[str] | None = None) -> int:
     result = run_bfcl(
         model=args.model,
         bfcl_bin=args.bfcl_bin,
+        api_model_override=args.api_model,
         manifest_path=args.manifest or BUILTIN_BENCHMARKS[args.benchmark],
         runs_dir=args.runs_dir,
         output_dir=args.output_dir,

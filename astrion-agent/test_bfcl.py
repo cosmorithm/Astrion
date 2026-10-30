@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+from contextlib import redirect_stdout
 
 from benchmarks.bfcl import (
     BUILTIN_BENCHMARKS,
+    DEFAULT_BASELINE_API_MODEL,
+    DEFAULT_COMPARISON_TEMPERATURE,
     DEFAULT_BENCHMARK,
     DEFAULT_MANIFEST,
     PINNED_BFCL_VERSION,
@@ -19,10 +24,12 @@ from benchmarks.bfcl import (
     audit_resume_state,
     build_progress_snapshot,
     build_commands,
+    build_api_override_command,
     collect_official_outputs,
     format_progress,
     load_bfcl_env,
     load_manifest,
+    main as bfcl_main,
     official_id_payload,
     probe_bfcl,
     repair_resume_state,
@@ -30,6 +37,7 @@ from benchmarks.bfcl import (
     run_bfcl,
     write_official_id_file,
 )
+from benchmarks.bfcl_official import override_model_config
 
 
 MODEL = "DeepSeek-V3.2-Exp-FC"
@@ -57,7 +65,11 @@ class FakeBFCL:
         self.calls.append(list(command))
         self.seen_roots.append(env.get("BFCL_PROJECT_ROOT"))
         self.seen_openai_keys.append(env.get("OPENAI_API_KEY"))
-        action = command[1]
+        action = (
+            "generate"
+            if command[1].endswith("bfcl_official.py")
+            else command[1]
+        )
         if action == "version":
             return command_result(command, stdout=f"bfcl version: {PINNED_BFCL_VERSION}\n")
         if action == "models":
@@ -286,6 +298,104 @@ class BFCLTests(unittest.TestCase):
             full_evaluate[full_evaluate.index("--test-category") + 1], "all_scoring"
         )
         self.assertNotIn("--partial-eval", full_evaluate)
+
+    def test_deepseek_api_model_override_is_explicit_and_scoped(self):
+        deepseek_handler = type("DeepSeekAPIHandler", (), {})
+        mapping = {
+            MODEL: SimpleNamespace(
+                model_name="deepseek-chat",
+                model_handler=deepseek_handler,
+            )
+        }
+
+        summary = override_model_config(
+            MODEL, DEFAULT_BASELINE_API_MODEL, mapping=mapping
+        )
+
+        self.assertEqual(mapping[MODEL].model_name, "deepseek-flash")
+        self.assertEqual(summary, {
+            "registry_model": MODEL,
+            "original_api_model": "deepseek-chat",
+            "effective_api_model": "deepseek-flash",
+            "handler": "DeepSeekAPIHandler",
+        })
+
+        mapping[MODEL].model_handler = type("OtherHandler", (), {})
+        with self.assertRaisesRegex(ValueError, "DeepSeekAPIHandler"):
+            override_model_config(MODEL, "deepseek-flash", mapping=mapping)
+
+    def test_official_handler_can_request_flash_without_changing_scorer_model(self):
+        fake = FakeBFCL()
+        output = self.root / "flash-baseline"
+
+        report = run_bfcl(
+            model=MODEL,
+            api_model_override="deepseek-flash",
+            bfcl_bin="bfcl",
+            bfcl_python="/venv/bin/python",
+            output_dir=output,
+            credential_env="DEEPSEEK_API_KEY",
+            env={"DEEPSEEK_API_KEY": "do-not-record"},
+            command_runner=fake,
+        )
+
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["registry_model"], MODEL)
+        self.assertEqual(report["api_model"], "deepseek-flash")
+        self.assertEqual(
+            report["execution_path"], "official_model_handler_api_override"
+        )
+        generate = fake.calls[2]
+        self.assertEqual(generate[0], "/venv/bin/python")
+        self.assertTrue(generate[1].endswith("benchmarks/bfcl_official.py"))
+        self.assertEqual(
+            generate[generate.index("--registry-model") + 1], MODEL
+        )
+        self.assertEqual(
+            generate[generate.index("--api-model") + 1], "deepseek-flash"
+        )
+        self.assertIn("generate", generate)
+        self.assertEqual(fake.calls[3][1:4], ["evaluate", "--model", MODEL])
+        self.assertNotIn("do-not-record", json.dumps(report))
+
+        direct_generate, _evaluate = build_commands(
+            "bfcl", MODEL, load_manifest(),
+            temperature=DEFAULT_COMPARISON_TEMPERATURE,
+        )
+        wrapped = build_api_override_command(
+            direct_generate,
+            bfcl_bin="bfcl",
+            registry_model=MODEL,
+            api_model="deepseek-flash",
+            bfcl_python="/venv/bin/python",
+        )
+        self.assertEqual(wrapped, generate)
+
+    def test_run_cli_defaults_the_baseline_api_request_to_flash(self):
+        output = self.root / "cli-flash-dry-run"
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            code = bfcl_main([
+                "run",
+                "--benchmark", "trial-3",
+                "--output-dir", str(output),
+                "--dry-run",
+            ])
+
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(report["status"], "dry_run")
+        self.assertEqual(report["api_model"], DEFAULT_BASELINE_API_MODEL)
+        self.assertEqual(
+            report["config"]["temperature"], DEFAULT_COMPARISON_TEMPERATURE
+        )
+        self.assertEqual(
+            report["commands"]["generate"]["command"][
+                report["commands"]["generate"]["command"].index("--api-model") + 1
+            ],
+            "deepseek-flash",
+        )
 
     def test_doctor_checks_version_model_and_credential_without_model_call(self):
         project = self.root / "project"
