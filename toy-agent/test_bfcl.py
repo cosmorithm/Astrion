@@ -16,6 +16,7 @@ from benchmarks.bfcl import (
     PINNED_BFCL_VERSION,
     _bfcl_python,
     _parse_version,
+    audit_resume_state,
     build_progress_snapshot,
     build_commands,
     collect_official_outputs,
@@ -24,6 +25,8 @@ from benchmarks.bfcl import (
     load_manifest,
     official_id_payload,
     probe_bfcl,
+    repair_resume_state,
+    resume_bfcl,
     run_bfcl,
     write_official_id_file,
 )
@@ -102,6 +105,58 @@ class FakeBFCL:
             )
             return command_result(command, stdout="evaluation complete\n")
         raise AssertionError(f"未预期命令: {command}")
+
+
+class ResumeFakeBFCL:
+    """只补 trial-3 缺失结果，模拟官方 harness 的 existing-id 跳过语义。"""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, command, env, cwd):
+        self.calls.append(list(command))
+        action = command[1]
+        if action == "version":
+            return command_result(command, stdout=f"bfcl version: {PINNED_BFCL_VERSION}\n")
+        if action == "models":
+            return command_result(command, stdout=f"{MODEL}\n")
+        if action == "generate":
+            result_dir = cwd / "result" / MODEL
+            simple_path = result_dir / "BFCL_v4_simple_python_result.json"
+            self.assert_existing_simple(simple_path)
+            for category, case_id in (
+                ("multiple", "multiple_0"),
+                ("irrelevance", "irrelevance_0"),
+            ):
+                path = result_dir / f"BFCL_v4_{category}_result.json"
+                path.write_text(json.dumps({
+                    "id": case_id,
+                    "result": [],
+                    "input_token_count": 5,
+                    "output_token_count": 1,
+                    "latency": 0.05,
+                }) + "\n", encoding="utf-8")
+            return command_result(command, stdout="resumed generation complete\n")
+        if action == "evaluate":
+            score_dir = cwd / "score" / MODEL
+            score_dir.mkdir(parents=True, exist_ok=True)
+            for category in ("simple_python", "multiple", "irrelevance"):
+                (score_dir / f"BFCL_v4_{category}_score.json").write_text(
+                    json.dumps({
+                        "accuracy": 1.0,
+                        "correct_count": 1,
+                        "total_count": 1,
+                    }) + "\n",
+                    encoding="utf-8",
+                )
+            return command_result(command, stdout="resumed evaluation complete\n")
+        raise AssertionError(f"未预期命令: {command}")
+
+    @staticmethod
+    def assert_existing_simple(path):
+        records = [json.loads(line) for line in path.read_text().splitlines() if line]
+        if [item["id"] for item in records] != ["simple_python_0"]:
+            raise AssertionError("续跑不应覆盖已成功的 simple_python 结果")
 
 
 class BFCLTests(unittest.TestCase):
@@ -439,6 +494,154 @@ class BFCLTests(unittest.TestCase):
             22,
         )
         self.assertEqual(calls, [])
+
+    def test_resume_check_repairs_error_record_and_continues_same_run(self):
+        trial_manifest = BUILTIN_BENCHMARKS["trial-3"]
+        output = self.root / "interrupted-trial"
+        original = run_bfcl(
+            model=MODEL,
+            bfcl_bin="bfcl",
+            manifest_path=trial_manifest,
+            output_dir=output,
+            dry_run=True,
+        )
+        original["status"] = "interrupted"
+        original["error"] = {"type": "KeyboardInterrupt", "message": "模拟中断"}
+        (output / "bfcl_run_report.json").write_text(
+            json.dumps(original), encoding="utf-8"
+        )
+        result_dir = output / "result" / MODEL
+        result_dir.mkdir(parents=True)
+        (result_dir / "BFCL_v4_simple_python_result.json").write_text(
+            json.dumps({
+                "id": "simple_python_0",
+                "result": [],
+                "input_token_count": 7,
+                "output_token_count": 2,
+                "latency": 0.1,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        error_path = result_dir / "BFCL_v4_multiple_result.json"
+        error_path.write_text(
+            json.dumps({
+                "id": "multiple_0",
+                "result": "Error during inference: simulated",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        stale_score = output / "score" / MODEL / "BFCL_v4_simple_python_score.json"
+        stale_score.parent.mkdir(parents=True)
+        stale_score.write_text(
+            json.dumps({"accuracy": 0.0, "correct_count": 0, "total_count": 1})
+            + "\n",
+            encoding="utf-8",
+        )
+
+        checked = resume_bfcl(run=output, check_only=True)
+        self.assertEqual(checked["status"], "ready")
+        self.assertEqual(checked["next_attempt"], 2)
+        self.assertEqual(checked["audit"]["existing_result_records"], 2)
+        self.assertEqual(checked["audit"]["reusable_records"], 1)
+        self.assertEqual(checked["audit"]["records_to_retry"], 1)
+        self.assertEqual(checked["audit"]["remaining_generation_entries"], 2)
+        self.assertEqual(checked["audit"]["stale_score_files_to_remove"], 1)
+        self.assertEqual(json.loads(error_path.read_text())["id"], "multiple_0")
+
+        fake = ResumeFakeBFCL()
+        report = resume_bfcl(
+            run=output,
+            env={},
+            command_runner=fake,
+        )
+
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["resume_count"], 1)
+        self.assertEqual(len(report["attempts"]), 2)
+        self.assertEqual(report["attempts"][-1]["number"], 2)
+        self.assertEqual(report["attempts"][-1]["status"], "completed")
+        self.assertEqual(report["official_outputs"]["scored_cases"], 3)
+        self.assertNotIn("--allow-overwrite", fake.calls[-2])
+        self.assertTrue(
+            (output / "logs" / "attempt_002" / "generate.stdout.log").is_file()
+        )
+        backup = (
+            output / "resume_backups" / "attempt_002" / "result" / MODEL
+            / "BFCL_v4_multiple_result.json"
+        )
+        self.assertTrue(backup.is_file())
+        self.assertIn("Error during inference", backup.read_text(encoding="utf-8"))
+        self.assertTrue(
+            (output / "resume_backups" / "attempt_002" / "score" / MODEL
+             / "BFCL_v4_simple_python_score.json").is_file()
+        )
+        self.assertEqual(
+            json.loads((output / "bfcl_progress.json").read_text())["generation"]
+            ["completed_entries"],
+            3,
+        )
+
+    def test_memory_resume_rolls_back_to_contiguous_checkpoint_prefix(self):
+        manifest = load_manifest(BUILTIN_BENCHMARKS["all-scoring"])
+        result_dir = self.root / "result" / MODEL / "memory_rec_sum"
+        checkpoint_dir = result_dir / "memory_snapshot" / "prereq_checkpoints"
+        checkpoint_dir.mkdir(parents=True)
+        result_path = result_dir / "BFCL_v4_memory_rec_sum_prereq_result.json"
+        ids = [
+            "memory_rec_sum_prereq_0-healthcare-0",
+            "memory_rec_sum_prereq_1-healthcare-1",
+            "memory_rec_sum_prereq_2-healthcare-2",
+        ]
+        result_path.write_text("".join(
+            json.dumps({
+                "id": case_id,
+                "result": (
+                    "Error during inference: simulated" if index == 1 else []
+                ),
+            }) + "\n"
+            for index, case_id in enumerate(ids)
+        ), encoding="utf-8")
+        (checkpoint_dir / f"{ids[0]}.json").write_text(
+            json.dumps({"state": "step-0"}), encoding="utf-8"
+        )
+        orphan = checkpoint_dir / f"{ids[2]}.json"
+        orphan.write_text(json.dumps({"state": "step-2"}), encoding="utf-8")
+        final_snapshot = result_dir / "memory_snapshot" / "healthcare_final.json"
+        final_snapshot.write_text(json.dumps({"state": "step-2"}), encoding="utf-8")
+
+        audit = audit_resume_state(self.root, manifest)
+        self.assertEqual(audit["existing_result_records"], 3)
+        self.assertEqual(audit["reusable_records"], 1)
+        self.assertEqual(audit["records_to_retry"], 2)
+        self.assertEqual(audit["valid_memory_checkpoints"], 1)
+        self.assertEqual(audit["memory_scenarios_to_repair"], 1)
+
+        repaired = repair_resume_state(self.root, manifest, attempt_number=2)
+        self.assertEqual(repaired["post_repair_reusable_records"], 1)
+        remaining = [json.loads(line) for line in result_path.read_text().splitlines()]
+        self.assertEqual([item["id"] for item in remaining], [ids[0]])
+        self.assertFalse(orphan.exists())
+        self.assertEqual(
+            json.loads(final_snapshot.read_text(encoding="utf-8")),
+            {"state": "step-0"},
+        )
+        self.assertTrue(
+            (self.root / "resume_backups" / "attempt_002" /
+             result_path.relative_to(self.root)).is_file()
+        )
+        post = audit_resume_state(self.root, manifest)
+        self.assertEqual(post["records_to_retry"], 0)
+        self.assertEqual(post["memory_scenarios_to_repair"], 0)
+
+    def test_resume_audit_rejects_duplicate_result_ids(self):
+        result_dir = self.root / "result" / MODEL
+        result_dir.mkdir(parents=True)
+        path = result_dir / "BFCL_v4_simple_python_result.json"
+        row = json.dumps({"id": "simple_python_0", "result": []}) + "\n"
+        path.write_text(row + row, encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "重复 id"):
+            audit_resume_state(self.root, load_manifest())
 
     def test_collect_official_outputs_rejects_a_score_without_header(self):
         path = self.root / "score" / MODEL / "BFCL_v4_simple_python_score.json"

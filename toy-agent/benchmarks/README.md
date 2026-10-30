@@ -217,6 +217,42 @@ python3 show_bfcl_score.py --progress --run <运行ID>
 对于优化前已经启动、没有 `bfcl_progress.json` 的旧进程，查看脚本会直接扫描现有
 result/score 文件计算当前进度。官方 stdout/stderr 仍完整保存在原有日志中。
 
+### 4.3 中断后的安全续跑
+
+先用只读模式审计指定运行：
+
+```bash
+python3 -m benchmarks bfcl resume --run <运行ID> --check
+```
+
+它不会加载 `.env`、修改文件或调用模型，会报告已有记录、可复用记录、需重试记录、
+剩余生成条目，以及需要修复的 memory 场景和快照。审计拒绝损坏 JSON、重复 ID、
+manifest 不一致和仍可能存活的运行进程。
+
+确认后执行真正续跑：
+
+```bash
+python3 -m benchmarks bfcl resume --run <运行ID>
+```
+
+续跑沿用原报告中的 model、manifest、temperature、线程数和凭据变量名，并在同一个
+运行目录再次执行官方 generate/evaluate。它刻意禁止 `--allow-overwrite`：官方
+harness 会跳过已有成功 ID，本项目只清除 `result` 以
+`Error during inference:` 开头的错误记录。
+
+memory prerequisite 不能只按单条 ID 判断。运行器按每个场景从 step 0 开始核对
+“成功 result + 有效 checkpoint”的连续前缀；断点后的结果/checkpoint 会移出工作
+状态，`<scenario>_final.json` 恢复为最后一个有效 checkpoint。续跑会重新评分，
+因此旧 score 会先移除，避免新旧 attempt 的评分文件混合。所有受影响文件会先复制到：
+
+```text
+resume_backups/attempt_NNN/
+```
+
+续跑日志写到 `logs/attempt_NNN/`；统一报告保留 `attempts`、`resume_count`、每次
+commit、命令、结束状态和本次审计。续跑再次失败时，可以重复执行 `--check`，新的
+尝试会使用下一个编号。`--check` 没有费用，真正的 `resume` 会继续模型调用。
+
 每次创建独立的 `benchmark_runs/bfcl/<run-id>/`。其中包括官方要求的
 `test_case_ids_to_generate.json`、官方 `result/`、官方 `score/`、命令日志和
 `bfcl_run_report.json`。命令不经过 shell 拼接，凭据值不会写入统一报告。
@@ -229,7 +265,7 @@ result/score 文件计算当前进度。官方 stdout/stderr 仍完整保存在�
 **subset**，不能当作 BFCL 官方 full leaderboard overall。
 
 生成失败时不运行评测；评测失败时仍保留已生成的官方结果和日志。报告的状态可为
-`completed`、`dry_run`、`setup_error`、`generation_error`、
+`completed`、`dry_run`、`interrupted`、`setup_error`、`generation_error`、
 `evaluation_error` 或 `orchestration_error`。
 
 ### 5. 查看最近或指定成绩

@@ -496,6 +496,273 @@ def _json_lines(path: Path) -> list[dict]:
     return records
 
 
+def _atomic_write_json_lines(path: Path, records: list[dict]) -> None:
+    payload = "".join(
+        json.dumps(item, ensure_ascii=False, allow_nan=False) + "\n"
+        for item in records
+    )
+    _atomic_write_text(path, payload)
+
+
+def _is_inference_error(record: dict) -> bool:
+    result = record.get("result")
+    return isinstance(result, str) and result.startswith("Error during inference:")
+
+
+_MEMORY_PREREQ_ID = re.compile(
+    r"^(memory_(?:kv|vector|rec_sum))_prereq_(\d+)-(.+)-(\d+)$"
+)
+
+
+def _valid_json_file(path: Path) -> bool:
+    try:
+        json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def _build_resume_audit(
+    project_root: Path | str,
+    manifest: BFCLManifest,
+) -> tuple[dict, dict]:
+    """严格审计已有 result 和 memory 状态，返回公开摘要与内部修复动作。"""
+    root = Path(project_root).expanduser().resolve()
+    result_root = root / "result"
+    known_ids = set(manifest.case_ids)
+    known_categories = set(manifest.category_counts)
+    seen_ids: set[str] = set()
+    result_files: dict[Path, list[dict]] = {}
+    kept_by_file: dict[Path, list[dict]] = {}
+    retry_ids: set[str] = set()
+    inference_error_ids: set[str] = set()
+    memory_rows: dict[tuple[Path, str, str], dict[int, tuple[str, dict, Path]]] = {}
+
+    paths = sorted(result_root.rglob("BFCL_v*_result.json")) if result_root.exists() else []
+    for path in paths:
+        category = _artifact_category(path, "result")
+        if category not in known_categories:
+            raise ValueError(f"结果文件类别不属于本次 manifest: {path}")
+        records = _json_lines(path)
+        result_files[path] = records
+        kept_by_file[path] = []
+        for record in records:
+            case_id = record.get("id")
+            if not isinstance(case_id, str) or not case_id:
+                raise ValueError(f"结果记录缺少有效 id: {path}")
+            if case_id in seen_ids:
+                raise ValueError(f"BFCL 已有结果包含重复 id: {case_id}")
+            seen_ids.add(case_id)
+            if manifest.uses_run_ids and case_id not in known_ids:
+                raise ValueError(f"结果 id 不属于固定子集: {case_id}")
+
+            memory_match = _MEMORY_PREREQ_ID.fullmatch(case_id)
+            if memory_match:
+                memory_category, _global_index, scenario, step_text = memory_match.groups()
+                if memory_category != category:
+                    raise ValueError(f"memory prereq id 与结果文件类别不一致: {case_id}")
+                checkpoint = (
+                    path.parent / "memory_snapshot" / "prereq_checkpoints" / f"{case_id}.json"
+                )
+                key = (path, memory_category, scenario)
+                step = int(step_text)
+                steps = memory_rows.setdefault(key, {})
+                if step in steps:
+                    raise ValueError(f"memory 场景包含重复步骤: {case_id}")
+                steps[step] = (case_id, record, checkpoint)
+                if _is_inference_error(record):
+                    inference_error_ids.add(case_id)
+                continue
+
+            if _is_inference_error(record):
+                inference_error_ids.add(case_id)
+                retry_ids.add(case_id)
+            else:
+                kept_by_file[path].append(record)
+
+    remove_checkpoints: set[Path] = set()
+    restore_finals: dict[Path, Path] = {}
+    remove_finals: set[Path] = set()
+    repaired_memory_scenarios: set[tuple[Path, str, str]] = set()
+    valid_memory_checkpoint_count = 0
+
+    for (path, _category, scenario), steps in memory_rows.items():
+        scenario_key = (path, _category, scenario)
+        expected_step = 0
+        valid_ids: set[str] = set()
+        last_checkpoint = None
+        while expected_step in steps:
+            case_id, record, checkpoint = steps[expected_step]
+            if _is_inference_error(record) or not _valid_json_file(checkpoint):
+                break
+            kept_by_file[path].append(record)
+            valid_ids.add(case_id)
+            last_checkpoint = checkpoint
+            valid_memory_checkpoint_count += 1
+            expected_step += 1
+
+        scenario_needs_repair = False
+        for case_id, _record, checkpoint in steps.values():
+            if case_id not in valid_ids:
+                retry_ids.add(case_id)
+                scenario_needs_repair = True
+                if checkpoint.exists():
+                    remove_checkpoints.add(checkpoint)
+
+        checkpoint_dir = path.parent / "memory_snapshot" / "prereq_checkpoints"
+        if checkpoint_dir.exists():
+            for checkpoint in checkpoint_dir.glob("*.json"):
+                match = _MEMORY_PREREQ_ID.fullmatch(checkpoint.stem)
+                if match is None:
+                    raise ValueError(f"无法识别的 memory checkpoint: {checkpoint}")
+                cp_category, _cp_index, cp_scenario, _cp_step = match.groups()
+                if cp_category == _category and cp_scenario == scenario:
+                    if checkpoint.stem not in valid_ids:
+                        remove_checkpoints.add(checkpoint)
+                        scenario_needs_repair = True
+
+        final_snapshot = path.parent / "memory_snapshot" / f"{scenario}_final.json"
+        if last_checkpoint is None:
+            if final_snapshot.exists():
+                remove_finals.add(final_snapshot)
+                scenario_needs_repair = True
+        elif (
+            not final_snapshot.exists()
+            or not _valid_json_file(final_snapshot)
+            or _sha256(final_snapshot) != _sha256(last_checkpoint)
+        ):
+            restore_finals[final_snapshot] = last_checkpoint
+            scenario_needs_repair = True
+        if scenario_needs_repair:
+            repaired_memory_scenarios.add(scenario_key)
+
+    # 没有 result 行与之对应的 checkpoint 也是孤儿，不能让后续状态误读。
+    for path in paths:
+        category = _artifact_category(path, "result")
+        if not category or not category.startswith("memory_"):
+            continue
+        checkpoint_dir = path.parent / "memory_snapshot" / "prereq_checkpoints"
+        if not checkpoint_dir.exists():
+            continue
+        for checkpoint in checkpoint_dir.glob("*.json"):
+            if checkpoint.stem not in seen_ids:
+                match = _MEMORY_PREREQ_ID.fullmatch(checkpoint.stem)
+                if match is None or match.group(1) != category:
+                    raise ValueError(f"无法识别的 memory checkpoint: {checkpoint}")
+                remove_checkpoints.add(checkpoint)
+                scenario = match.group(3)
+                scenario_key = (path, category, scenario)
+                repaired_memory_scenarios.add(scenario_key)
+                if scenario_key not in memory_rows:
+                    final_snapshot = (
+                        path.parent / "memory_snapshot" / f"{scenario}_final.json"
+                    )
+                    if final_snapshot.exists():
+                        remove_finals.add(final_snapshot)
+
+    rewrite_files = {
+        path: records
+        for path, records in kept_by_file.items()
+        if len(records) != len(result_files[path])
+    }
+    score_files = (
+        sorted(path for path in (root / "score").rglob("*") if path.is_file())
+        if (root / "score").exists()
+        else []
+    )
+    reusable_records = sum(len(records) for records in kept_by_file.values())
+    audit = {
+        "kind": "bfcl_resume_audit",
+        "safe_to_resume": True,
+        "run_id": root.name,
+        "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "existing_result_records": sum(len(records) for records in result_files.values()),
+        "reusable_records": reusable_records,
+        "records_to_retry": len(retry_ids),
+        "remaining_generation_entries": max(
+            0, manifest.expected_generation_entries - reusable_records
+        ),
+        "inference_error_records": len(inference_error_ids),
+        "valid_memory_checkpoints": valid_memory_checkpoint_count,
+        "memory_scenarios_to_repair": len(repaired_memory_scenarios),
+        "result_files_to_rewrite": len(rewrite_files),
+        "checkpoints_to_remove": len(remove_checkpoints),
+        "final_snapshots_to_restore": len(restore_finals),
+        "final_snapshots_to_remove": len(remove_finals),
+        "stale_score_files_to_remove": len(score_files),
+        "retry_ids": sorted(retry_ids),
+    }
+    actions = {
+        "rewrite_files": rewrite_files,
+        "remove_checkpoints": remove_checkpoints,
+        "restore_finals": restore_finals,
+        "remove_finals": remove_finals,
+        "score_files": score_files,
+    }
+    return audit, actions
+
+
+def audit_resume_state(
+    project_root: Path | str,
+    manifest: BFCLManifest,
+) -> dict:
+    """只读检查一个 BFCL 运行能否安全续跑。"""
+    audit, _actions = _build_resume_audit(project_root, manifest)
+    return audit
+
+
+def repair_resume_state(
+    project_root: Path | str,
+    manifest: BFCLManifest,
+    *,
+    attempt_number: int,
+) -> dict:
+    """备份并修复错误结果与 memory 状态链，为官方 harness 续跑做准备。"""
+    if type(attempt_number) is not int or attempt_number < 2:
+        raise ValueError("续跑 attempt_number 必须至少为 2")
+    root = Path(project_root).expanduser().resolve()
+    audit, actions = _build_resume_audit(root, manifest)
+    backup_dir = root / "resume_backups" / f"attempt_{attempt_number:03d}"
+    backup_dir.mkdir(parents=True, exist_ok=False)
+
+    affected = set(actions["rewrite_files"])
+    affected.update(actions["remove_checkpoints"])
+    affected.update(actions["restore_finals"])
+    affected.update(actions["remove_finals"])
+    affected.update(actions["score_files"])
+    affected.update(
+        path for path in (root / "bfcl_run_report.json", root / "bfcl_progress.json")
+        if path.exists()
+    )
+    for path in sorted(affected):
+        if not path.exists():
+            continue
+        relative = path.resolve().relative_to(root)
+        destination = backup_dir / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, destination)
+
+    for path, records in actions["rewrite_files"].items():
+        _atomic_write_json_lines(path, records)
+    for path in actions["remove_checkpoints"] | actions["remove_finals"]:
+        if path.exists():
+            path.unlink()
+    for path, checkpoint in actions["restore_finals"].items():
+        _atomic_write_text(path, checkpoint.read_text(encoding="utf-8"))
+    for path in actions["score_files"]:
+        if path.exists():
+            path.unlink()
+
+    audit["backup_dir"] = _relative(backup_dir, root)
+    audit["repaired_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    post_audit, _post_actions = _build_resume_audit(root, manifest)
+    if post_audit["records_to_retry"] or post_audit["memory_scenarios_to_repair"]:
+        raise RuntimeError("BFCL 续跑修复后复检未通过，请查看备份并停止运行")
+    audit["post_repair_reusable_records"] = post_audit["reusable_records"]
+    _atomic_write_json(backup_dir / "resume_audit.json", audit)
+    return audit
+
+
 def _count_nonempty_lines(path: Path) -> int:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
@@ -840,6 +1107,7 @@ def run_bfcl(
     progress_interval: float = 5.0,
     env: dict[str, str] | None = None,
     command_runner: CommandRunner = _default_command_runner,
+    _resume_context: dict | None = None,
 ) -> dict:
     """运行所选 BFCL 子集或官方 collection，并始终尝试保存编排报告。"""
     if (
@@ -849,14 +1117,46 @@ def run_bfcl(
     ):
         raise ValueError("progress_interval 必须是正数")
     manifest = load_manifest(manifest_path)
-    root = (
-        Path(output_dir).expanduser().resolve()
-        if output_dir is not None
-        else _new_run_root(Path(runs_dir).expanduser().resolve(), model)
-    )
-    root.mkdir(parents=True, exist_ok=False)
-    log_dir = root / "logs"
-    id_file = write_official_id_file(manifest, root) if manifest.uses_run_ids else None
+    resuming = _resume_context is not None
+    previous_report = None
+    if resuming:
+        if dry_run:
+            raise ValueError("续跑不能使用 dry_run")
+        if allow_overwrite:
+            raise ValueError("续跑禁止 allow_overwrite，以免覆盖可复用结果")
+        root = Path(_resume_context["root"]).expanduser().resolve()
+        if not root.is_dir():
+            raise ValueError(f"BFCL 续跑目录不存在: {root}")
+        previous_report = json.loads(
+            (root / "bfcl_run_report.json").read_text(encoding="utf-8")
+        )
+        attempt_number = int(_resume_context["attempt_number"])
+        log_dir = root / "logs" / f"attempt_{attempt_number:03d}"
+    else:
+        root = (
+            Path(output_dir).expanduser().resolve()
+            if output_dir is not None
+            else _new_run_root(Path(runs_dir).expanduser().resolve(), model)
+        )
+        root.mkdir(parents=True, exist_ok=False)
+        attempt_number = 1
+        log_dir = root / "logs"
+
+    if manifest.uses_run_ids:
+        id_file = root / "test_case_ids_to_generate.json"
+        if resuming:
+            if not id_file.is_file():
+                raise ValueError("续跑目录缺少 test_case_ids_to_generate.json")
+            try:
+                saved_ids = json.loads(id_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"续跑 ID 文件不是有效 JSON: {exc}") from exc
+            if saved_ids != official_id_payload(manifest):
+                raise ValueError("续跑 ID 文件与原 manifest 不一致")
+        else:
+            id_file = write_official_id_file(manifest, root)
+    else:
+        id_file = None
     generate_command, evaluate_command = build_commands(
         bfcl_bin, model, manifest, temperature=temperature,
         num_threads=num_threads, allow_overwrite=allow_overwrite,
@@ -867,10 +1167,42 @@ def run_bfcl(
     runtime_env["BFCL_PROJECT_ROOT"] = str(root)
     repo_root = Path(__file__).resolve().parents[2]
 
+    current_commit = _git_commit(repo_root)
+    if previous_report is not None:
+        attempts = list(previous_report.get("attempts") or [])
+        if not attempts:
+            attempts.append({
+                "number": 1,
+                "started_at": previous_report.get("created_at"),
+                "ended_at": previous_report.get("updated_at"),
+                "status": previous_report.get("status"),
+                "toy_agent_commit": previous_report.get("toy_agent_commit"),
+                "commands": previous_report.get("commands"),
+                "error": previous_report.get("error"),
+            })
+    else:
+        attempts = []
+    attempt = {
+        "number": attempt_number,
+        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ended_at": None,
+        "status": "preparing",
+        "toy_agent_commit": current_commit,
+        "resume_audit": None if not resuming else _resume_context.get("audit"),
+        "commands": None,
+        "error": None,
+    }
+    attempts.append(attempt)
+
     report = {
         "kind": "bfcl_official_run",
         "status": "preparing",
-        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "created_at": (
+            previous_report.get("created_at")
+            if previous_report is not None
+            else attempt["started_at"]
+        ),
+        "updated_at": attempt["started_at"],
         "benchmark": {
             "name": BENCHMARK_NAME,
             "version": manifest.benchmark_version,
@@ -899,7 +1231,14 @@ def run_bfcl(
             "deepseek_openai_bootstrap_alias": deepseek_bootstrap_alias,
             "progress_interval_seconds": progress_interval,
         },
-        "toy_agent_commit": _git_commit(repo_root),
+        "toy_agent_commit": (
+            previous_report.get("toy_agent_commit")
+            if previous_report is not None
+            else current_commit
+        ),
+        "latest_toy_agent_commit": current_commit,
+        "resume_count": attempt_number - 1,
+        "attempts": attempts,
         "project_root": str(root),
         "official_id_file": _relative(id_file, root) if id_file is not None else None,
         "commands": {
@@ -918,6 +1257,10 @@ def run_bfcl(
 
     if dry_run:
         report["status"] = "dry_run"
+        report["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        attempt["ended_at"] = report["updated_at"]
+        attempt["status"] = "dry_run"
+        attempt["commands"] = report["commands"]
         _atomic_write_json(report_path, report)
         _write_progress(root, manifest, "dry_run")
         return report
@@ -998,11 +1341,150 @@ def run_bfcl(
             pass
         return report
     finally:
+        report["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        attempt["ended_at"] = report["updated_at"]
+        attempt["status"] = report["status"]
+        attempt["commands"] = report["commands"]
+        attempt["error"] = report["error"]
         _atomic_write_json(report_path, report)
         try:
             _write_progress(root, manifest, report["status"])
         except OSError:
             pass
+
+
+def _resolve_run_root(run: Path | str, runs_dir: Path | str) -> Path:
+    selector = Path(run).expanduser()
+    if selector.is_absolute() or len(selector.parts) > 1:
+        root = selector.resolve()
+    else:
+        root = (Path(runs_dir).expanduser().resolve() / selector).resolve()
+    if not root.is_dir():
+        raise ValueError(f"找不到 BFCL 运行目录: {root}")
+    if not (root / "bfcl_run_report.json").is_file():
+        raise ValueError(f"目录中缺少 bfcl_run_report.json: {root}")
+    return root
+
+
+def _pid_is_alive(pid) -> bool:
+    if type(pid) is not int or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def resume_bfcl(
+    *,
+    run: Path | str,
+    runs_dir: Path | str = DEFAULT_RUNS_DIR,
+    bfcl_bin: str | None = None,
+    credential_env: str | None = None,
+    progress_interval: float | None = None,
+    check_only: bool = False,
+    env: dict[str, str] | None = None,
+    command_runner: CommandRunner = _default_command_runner,
+) -> dict:
+    """审计并从同一目录安全续跑一次未完成的 BFCL 运行。"""
+    root = _resolve_run_root(run, runs_dir)
+    try:
+        previous = json.loads(
+            (root / "bfcl_run_report.json").read_text(encoding="utf-8")
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"BFCL 运行报告不是有效 JSON: {exc}") from exc
+    if not isinstance(previous, dict) or previous.get("kind") != "bfcl_official_run":
+        raise ValueError("不是可识别的 BFCL 官方运行报告")
+    if previous.get("status") == "completed":
+        raise ValueError("该 BFCL 运行已经 completed，不需要续跑")
+    if previous.get("status") == "dry_run":
+        raise ValueError("dry_run 没有开始正式运行，请重新使用 bfcl run")
+
+    progress_path = root / "bfcl_progress.json"
+    if progress_path.is_file():
+        try:
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"BFCL 进度文件不是有效 JSON: {exc}") from exc
+        if (
+            progress.get("phase") in {"preparing", "generation", "evaluation"}
+            and _pid_is_alive(progress.get("pid"))
+            and progress.get("pid") != os.getpid()
+        ):
+            raise ValueError(
+                f"运行进程仍可能存活（PID {progress['pid']}），拒绝同时续跑"
+            )
+
+    benchmark = previous.get("benchmark") or {}
+    manifest_path = benchmark.get("manifest_path")
+    if not isinstance(manifest_path, str) or not manifest_path:
+        raise ValueError("运行报告缺少 benchmark.manifest_path")
+    manifest = load_manifest(manifest_path)
+    if (
+        benchmark.get("manifest_name") != manifest.name
+        or benchmark.get("case_count") != manifest.case_count
+        or benchmark.get("selection_mode") != manifest.selection_mode
+    ):
+        raise ValueError("运行报告与 manifest 元数据不一致")
+    model = _require_text(previous.get("model"), "运行报告 model")
+    config = previous.get("config") or {}
+    attempt_number = len(previous.get("attempts") or []) + 1
+    if attempt_number == 1:
+        attempt_number = int(previous.get("resume_count") or 0) + 2
+
+    audit = audit_resume_state(root, manifest)
+    if check_only:
+        return {
+            "kind": "bfcl_resume_check",
+            "status": "ready",
+            "run_id": root.name,
+            "project_root": str(root),
+            "next_attempt": attempt_number,
+            "model": model,
+            "benchmark": manifest.name,
+            "audit": audit,
+        }
+
+    repaired = repair_resume_state(
+        root, manifest, attempt_number=attempt_number
+    )
+    interval = (
+        config.get("progress_interval_seconds", 5.0)
+        if progress_interval is None
+        else progress_interval
+    )
+    selected_bfcl_bin = (
+        bfcl_bin
+        or (previous.get("official_harness") or {}).get("bfcl_bin")
+        or _default_bfcl_bin()
+    )
+    selected_credential = (
+        config.get("credential_env")
+        if credential_env is None
+        else credential_env
+    )
+    return run_bfcl(
+        model=model,
+        bfcl_bin=selected_bfcl_bin,
+        manifest_path=manifest.path,
+        output_dir=root,
+        temperature=config.get("temperature", 0.001),
+        num_threads=config.get("num_threads", 1),
+        allow_overwrite=False,
+        credential_env=selected_credential,
+        progress_interval=interval,
+        env=env,
+        command_runner=command_runner,
+        _resume_context={
+            "root": str(root),
+            "attempt_number": attempt_number,
+            "audit": repaired,
+        },
+    )
 
 
 def _default_bfcl_bin() -> str:
@@ -1046,9 +1528,33 @@ def main(argv: list[str] | None = None) -> int:
         help="实时进度刷新秒数；默认 5",
     )
 
+    resume_parser = subparsers.add_parser(
+        "resume", help="审计并从同一目录续跑一次未完成的 BFCL 运行"
+    )
+    resume_parser.add_argument("--run", required=True, help="运行 ID 或运行目录路径")
+    resume_parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
+    resume_parser.add_argument(
+        "--bfcl-bin", default=None, help="覆盖原报告中的 BFCL 可执行文件"
+    )
+    resume_parser.add_argument(
+        "--credential-env", default=None, help="覆盖原报告中的凭据环境变量名"
+    )
+    resume_parser.add_argument(
+        "--progress-interval", type=float, default=None,
+        help="覆盖原运行的实时进度刷新秒数",
+    )
+    resume_parser.add_argument(
+        "--check", action="store_true",
+        help="只读审计并打印续跑计划，不改文件、不调用模型",
+    )
+
     args = parser.parse_args(argv)
-    # doctor 和真实 run 需要凭据时才读取 .env；dry-run 不接触密钥文件。
-    if args.command == "doctor" or not args.dry_run:
+    # doctor、真实 run 和真实 resume 才读取 .env；只读检查不接触密钥文件。
+    if (
+        args.command == "doctor"
+        or (args.command == "run" and not args.dry_run)
+        or (args.command == "resume" and not args.check)
+    ):
         load_bfcl_env()
     if args.command == "doctor":
         result = probe_bfcl(
@@ -1056,6 +1562,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         return 0 if result["ok"] else 1
+    if args.command == "resume":
+        result = resume_bfcl(
+            run=args.run,
+            runs_dir=args.runs_dir,
+            bfcl_bin=args.bfcl_bin,
+            credential_env=args.credential_env,
+            progress_interval=args.progress_interval,
+            check_only=args.check,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+        return 0 if result["status"] in {"completed", "ready"} else 1
 
     result = run_bfcl(
         model=args.model,

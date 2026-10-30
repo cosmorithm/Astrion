@@ -2,7 +2,7 @@
 
 记录日期：2026-10-30（Asia/Shanghai）  
 项目根目录：`/Users/apple/Desktop/科研/Multi Agent`  
-记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层、BFCL 官方集成和测试自动化的实现及验证。
+记录范围：项目初始版本、记忆模块、学习问答、token 计量、赛后评测层、会话持久化、基准适配层、BFCL 官方集成、断点续跑和测试自动化的实现及验证。
 
 ## 1. 记录依据与项目目标
 
@@ -38,6 +38,7 @@
 | BFCL 200 条默认基准 | 本次对话，见第 20 节 | 五个核心单轮类别各 40 条，确定性等间隔抽样；保留 3 条和 20 条旧 manifest |
 | BFCL 全部正式计分类基准 | 本次对话，见第 21 节 | 新增官方 `all_scoring` 入口；22 类、5,217 个生成条目、预计 5,106 个计分目标；不自动运行 |
 | BFCL 实时分组进度 | 本次对话，见第 22 节 | 显示当前类别组、本组/总体进度和评分组数；保存 `bfcl_progress.json`，并可跨终端查看 |
+| BFCL 安全断点续跑 | 本次对话，见第 23 节 | 只读审计已有结果，备份并重试错误记录；memory 状态回退到连续有效 checkpoint 前缀；保留多次 attempt 历史 |
 
 报告初稿编写时，token 计量相关改动尚未提交；之后与报告一起提交为 `5d4df3d`。第 12 节记录这之后的修改。
 
@@ -1579,3 +1580,87 @@ all-scoring 22 组初始状态、终端格式化和跨终端旧运行扫描。�
 进度查看新增 1 项旧运行扫描测试后，完整测试为 105 项，全部通过。新运行若被
 Ctrl+C 中断，会终止官方子进程并把报告/进度状态写成 `interrupted`，避免留下含义
 不清楚的永久 `preparing` 状态。
+
+## 23. 第十五阶段：BFCL 安全断点续跑
+
+### 23.1 为什么不能直接重跑原命令
+
+用户选择后续方向一：让长时间 BFCL 任务支持断点续跑。实现前先阅读固定版本
+`bfcl-eval==2026.3.23` 的生成与 memory snapshot 代码，确认官方 generate 会加载
+已有 result ID 并跳过它们。这本来可以复用成功结果，但官方也会把模型异常写成
+`"Error during inference: ..."` 的 result；直接重跑时，这些错误 ID 同样会被当成
+“已完成”而跳过。
+
+memory 类别更不能只删除单条错误记录。每个场景的第 N 步依赖第 N-1 步保存的状态，
+官方同时维护 prerequisite result、逐步 checkpoint 和 `<scenario>_final.json`。
+三者若不在同一个断点上，后续请求会从错误上下文继续，得到形式完整但语义无效的
+结果。因此本阶段采用“先审计、后备份修复、再调用官方 harness”的方案。
+
+### 23.2 两阶段命令
+
+只读检查：
+
+```bash
+python3 -m benchmarks bfcl resume --run <运行ID> --check
+```
+
+该命令不加载 `.env`、不写文件、不调用模型。它验证报告和 manifest 一致性、JSONL
+结构、ID 唯一性及可能仍存活的 PID，并汇总已有、可复用、需重试和剩余记录。
+
+真正续跑：
+
+```bash
+python3 -m benchmarks bfcl resume --run <运行ID>
+```
+
+这一步才加载凭据并产生模型调用。它沿用原运行的模型、manifest、temperature、
+线程数和进度刷新配置，在同一目录执行官方 generate/evaluate，且强制关闭
+`--allow-overwrite`，让官方 harness 保留已有成功 ID。
+
+### 23.3 修复与可追溯性
+
+普通类别中，成功 result 原样保留，推理错误记录移出当前结果，供官方 generate
+重新生成。memory prerequisite 按场景从 step 0 开始，只认可同时满足以下条件的
+最长连续前缀：
+
+1. result 不是官方推理错误；
+2. 对应 checkpoint 存在且是有效 JSON；
+3. 中间没有缺步。
+
+前缀之后的 result/checkpoint 会移出工作状态；final snapshot 恢复为最后一个有效
+checkpoint，没有有效前缀时删除 final。续跑会重新评分，因此已有 score 也会清除，
+避免新旧 attempt 的评分混合。任何修改前，受影响文件连同原报告和进度都会复制到：
+
+```text
+resume_backups/attempt_NNN/
+```
+
+新日志写入 `logs/attempt_NNN/`。统一报告新增 `attempts`、`resume_count`、
+`latest_toy_agent_commit` 和每次 `resume_audit`，所以一次运行多次中断后仍能区分每次
+尝试的 commit、命令、错误和结束时间。损坏 JSON、重复 ID、manifest 不一致或仍在
+运行的 PID 会直接拒绝修复，不静默猜测。
+
+### 23.4 对现有 all-scoring 中断运行的只读审计
+
+对运行
+`20261030T101213_792865Z_DeepSeek-V3.2-Exp-FC_e69e1494` 执行 `--check`，未修改
+其文件，也未产生模型调用。结果为：
+
+- 已有 75 条 result；
+- 51 条 result 与 checkpoint 可安全复用；
+- 24 条是官方推理错误，需要移出并重试；
+- 仍需生成 5,166/5,217 条；
+- 涉及 5 个需回退检查的 memory 场景、2 个需重写的 result 文件；
+- 当前没有 score，也没有需要删除的 checkpoint 或 final snapshot；
+- 下一次为 attempt 2，审计状态是 `ready`。
+
+24 条错误由 `memory_rec_sum` 的 23 条（从 healthcare 第 4 步起）和
+`memory_vector` 的首条 prerequisite 组成。这里仅完成只读审计；本阶段实现和测试
+没有擅自启动真实续跑，因此没有新增 API 费用。
+
+### 23.5 验证
+
+BFCL 离线测试从 13 项增加到 16 项。新增覆盖：普通错误记录的审计、备份、重试和
+同目录完成；memory 在错误和断链后回退到连续 checkpoint 前缀并恢复 final；重复
+result ID 被拒绝。完整 `run_tests.sh` 当前共 108 项，均使用模拟模型或本地文件，
+不访问网络。真实中断运行另以 `--check` 完成只读兼容性验证。

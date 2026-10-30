@@ -377,6 +377,21 @@ python3 -m benchmarks bfcl run --benchmark all-scoring
 `bfcl_progress.json`。默认每 5 秒检查一次，可用 `--progress-interval 10` 调整，
 不会增加模型调用。
 
+中断后先做只读审计，再确认是否从原目录续跑：
+
+```bash
+# 不改文件、不读密钥、不调用模型
+python3 -m benchmarks bfcl resume --run <运行ID> --check
+
+# 备份并修复中断状态，然后调用官方 generate/evaluate 继续
+python3 -m benchmarks bfcl resume --run <运行ID>
+```
+
+续跑不会使用 `--allow-overwrite`。成功结果原样保留；官方写入的推理错误会被移出
+工作结果并重试。memory 前置会话按“结果 + checkpoint”的连续有效前缀恢复，修复前
+文件保存在本次运行目录的 `resume_backups/attempt_NNN/`，每次尝试的日志和状态写入
+`attempts` 历史。`--check` 只是计划，只有第二条命令才可能产生 API 费用。
+
 若要重跑原来的 20 条 smoke：
 
 ```bash
@@ -445,7 +460,7 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 105 项测试：契约 6 项、BFCL 旁路 13 项、BFCL 成绩查看 9 项、通用基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
+它依次运行 108 项测试：契约 6 项、BFCL 旁路 16 项、BFCL 成绩查看 9 项、通用基准适配 6 项、会话持久化 18 项、评测层 31 项、总报告 9 项、主循环 8 项、token 计量 5 项。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：
@@ -463,7 +478,7 @@ python3 -B -m unittest -v test_session
 5. **会话和报告包含数据。** 模型消息、工具输出和文件快照可能含敏感内容；分享前要检查，默认目录虽被 git 忽略，不代表内容可以公开。
 6. **沙箱不是操作系统隔离。** `safe_path()` 限制应用层文件工具；这不是容器级安全边界。
 7. **没有任务时间上限。** 只记录耗时；单次 HTTP 超时 120 秒，`--steps` 限制决策轮数。
-8. **BFCL 默认基准是固定 200 条单轮子集。** 五个核心类别各 40 条、等间隔确定性抽样；另有显式 `all-scoring` 正式计分类入口，但尚未运行，绝不会由默认命令触发。
+8. **BFCL 默认基准是固定 200 条单轮子集。** 五个核心类别各 40 条、等间隔确定性抽样；另有显式 `all-scoring` 正式计分类入口，目前有一次中断且尚未完成的运行，绝不会由默认命令触发。
 9. **ToolBench 尚未接入。** 本阶段没有安装或调用 ToolBench/StableToolBench，也不把它们的分数与 BFCL 混合。
 
 ## 想继续加什么（按难度）
