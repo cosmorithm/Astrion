@@ -1949,3 +1949,58 @@ dry-run、完整 worker-to-scorer 编排和成绩查看器双路径识别。
 本阶段没有执行真实 `astrion-run`，因此没有发起模型 API 请求、没有产生新的
 BFCL 真实分数，也没有产生 API 费用。下一步应先显式运行 3 条，检查函数名、参数、
 Event 和官方分数，再决定是否扩展到 20 或 200 条。
+
+### 27.7 官方基线与 Astrion 测试的并行流水图
+
+下图把两个测试放在并行泳道中。它们共用同一版 BFCL 数据、manifest 和评分规则，
+但各自使用独立的运行目录、模型生成链路、result、score 和报告，不会把两次运行
+的产物混在一起。
+
+```mermaid
+flowchart TB
+    I["共同实验输入<br/>BFCL V4 + 固定 manifest + 同一 case IDs"]
+    F{"并行分流<br/>两条路径独立运行"}
+    I --> F
+
+    subgraph OFFICIAL["流水线 A：BFCL 官方 handler 基线"]
+        direction TB
+        O1["bfcl run"]
+        O2["doctor<br/>校验 bfcl-eval 版本、模型注册与凭据"]
+        O3["bfcl generate --run-ids"]
+        O4["官方 model handler<br/>组装 messages + tools"]
+        O5["官方 handler 请求模型"]
+        O6["官方 result JSONL"]
+        O7["bfcl evaluate --partial-eval<br/>固定版官方 scorer"]
+        O8["官方基线报告<br/>kind = bfcl_official_run"]
+        O1 --> O2 --> O3 --> O4 --> O5 --> O6 --> O7 --> O8
+    end
+
+    subgraph ASTRION["流水线 B：Astrion 单轮工具决策测试"]
+        direction TB
+        A1["bfcl astrion-run"]
+        A2["doctor<br/>校验 bfcl-eval 版本、scorer model 与凭据"]
+        A3["官方 dataset loader + convert_to_tool"]
+        A4["Astrion ChatLLM.chat<br/>注入 case messages + tools"]
+        A5["模型只提议函数名和参数<br/>不执行 benchmark 工具"]
+        A6["响应规范化<br/>写入 BFCL result JSONL"]
+        A7["每 case 一份 Event v1<br/>+ astrion_generation_report.json"]
+        A8["bfcl evaluate --partial-eval<br/>同版官方 scorer"]
+        A9["Astrion 评测报告<br/>kind = bfcl_astrion_run"]
+        A1 --> A2 --> A3 --> A4 --> A5 --> A6 --> A8 --> A9
+        A4 --> A7
+        A7 --> A9
+    end
+
+    F --> O1
+    F --> A1
+
+    O8 --> V["show_bfcl_score.py<br/>按 execution_path 区分并对比成绩、token 和耗时"]
+    A9 --> V
+```
+
+两条流水线的变量控制关系是：
+
+- **共同不变项：**BFCL 版本、manifest、case ID、官方函数 schema 和 scorer。
+- **主要差异项：**模型请求是经过 BFCL 官方 handler，还是经过 Astrion `ChatLLM`。
+- **Astrion 额外观测：**每条 case 的 Event v1、Astrion token 计量和 generation report。
+- **比较前提：**两条路径必须使用同一组 case；否则分数差异不能归因于生成链路。
