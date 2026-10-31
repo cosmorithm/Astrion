@@ -32,6 +32,7 @@ from benchmarks.bfcl import load_manifest
 from benchmarks.common import FunctionCallCase
 from events import EVENT_SCHEMA_VERSION, EventEmitter, EventRecorder
 from decision import enhanced_decision
+from decision_prompts import prompt_policy
 
 
 SUPPORTED_CATEGORIES = frozenset({
@@ -332,10 +333,13 @@ def run_enhanced_case(case: FunctionCallCase, llm, event_dir: Path) -> tuple[dic
     try:
         decision = enhanced_decision(case.messages, case.tools, call_model)
         emitter.emit("decision.finished", payload={
+            "prompt_policy": decision["prompt_policy"],
             "plan": decision["plan"], "plan_error": decision["plan_error"],
             "plan_evidence_audit": decision["plan_evidence_audit"],
             "missing_information_audit": decision["missing_information_audit"],
+            "capability_gaps_audit": decision["capability_gaps_audit"],
             "review": decision["review"], "review_error": decision["review_error"],
+            "review_evidence_audit": decision["review_evidence_audit"],
             "initial_validation": decision["initial_validation"],
             "final_validation": decision["final_validation"],
             "repair_attempted": decision["repair_attempted"],
@@ -449,6 +453,7 @@ def generate(
         "status": "completed",
         "execution_path": "astrion_enhanced_decision" if mode == "enhanced" else "astrion_single_turn_adapter",
         "decision_mode": mode,
+        "decision_prompt_policy": prompt_policy() if mode == "enhanced" else None,
         "api_model": getattr(llm, "model", None),
         "scorer_model": scorer_model,
         "case_count": total,

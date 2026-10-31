@@ -228,6 +228,13 @@ python3 -m benchmarks bfcl astrion-run --benchmark baseline-200 --api-model deep
 内容可能包含题目和模型响应。参数来源由模型声明；引文与用户消息匹配只能证明文本出现，
 不能证明语义正确。默认值核对只针对 schema 中显式的 `default` 字段。
 
+当前增强提示词为 `astrion-decision-v2.0`，使用独立 `quote` / `explanation`、
+`missing_information` / `capability_gaps` 和带证据引用的结构化 review。原文逐字匹配和
+仅剥去一对外围引号的匹配分别记录 `match_method`，不会从解释中提取任意片段或模糊猜测。
+报告与 Event 保存版本及各静态模板 SHA-256，父进程会核对 worker 使用的版本与哈希；
+若规划或复核无法按 schema version 2 解析，记录错误并使用空规划或空复核，不触发语义改写。
+旧版报告仍保留其原始字段与分数，不追写新版版本号。
+
 参数验证只检查明确支持的 JSON Schema 子集，不支持的约束记录在 `unchecked`，不会报告为
 完全验证。规划和复核是模型决策，并非独立验收；如果规划或复核无法解析，会记录错误并继续，
 若最终候选仍不合法，按原样交给 scorer，不伪造修复或分数。该路径不等于完整 ReAct 或多轮 BFCL。

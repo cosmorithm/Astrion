@@ -16,6 +16,7 @@ astrion-agent/
 ├── agent.py        循环、工具、模型客户端、会话接入
 ├── tooling.py      ToolSpec / ToolCall / ToolResult 与调用验证
 ├── decision.py     共享的任务分解、调用复核与有界修正
+├── decision_prompts.py  增强决策的版本化提示词与哈希
 ├── events.py       Run/Step/Event v1：结构化运行事实与 JSON 导出
 ├── memory.py       会话记忆：消息窗口 + 超额压缩 + 序列化
 ├── session.py      会话 JSON：原子保存、加载与恢复判断
@@ -268,6 +269,14 @@ python3 agent.py "你的任务" --decision-mode enhanced
 验证并执行。参数来源标签与必填/可选判断由模型提出；程序可检查引文是否出现在用户消息，
 以及工具 schema 是否声明必填和匹配的默认值，但引文存在不证明语义或参数值正确。增强决策的规划
 与复核可能遗漏或误判，不等于独立裁判。
+
+增强提示词位于 `decision_prompts.py`，当前版本 `astrion-decision-v2.0`，规划和复核输出
+使用 schema version 2：`quote` 只放用户原文，`explanation` 单独放模型解释；schema 中
+确有的缺失参数与 `capability_gaps` 分开。复核意见采用类型、描述、引用、工具与调用索引；
+引用、名称和索引的核对只说明引用是否存在，不验证语义。模型输出不符合协议时会记录
+`plan_error` / `review_error` 并使用空规划或空复核，不因此触发语义修正。
+提示词版本和各静态模板的 SHA-256 写入 `decision.finished` 和 BFCL 报告；模板哈希不代表
+完整请求或用户上下文的哈希。历史报告仍按原格式读取，不将旧版分数冒充新版结果。
 
 离线验证主循环与 token 计量（模拟模型和 HTTP 响应，不访问网络）：
 
@@ -663,7 +672,7 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 155 项测试，覆盖增强决策、工具契约、暂停与恢复、BFCL、事件、会话、赛后评测、主循环和 token 计量。
+它依次运行 162 项测试，覆盖增强决策、工具契约、暂停与恢复、BFCL、事件、会话、赛后评测、主循环和 token 计量。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：

@@ -1485,6 +1485,7 @@ def run_astrion_bfcl(
         GENERATION_REPORT,
         validate_single_turn_manifest,
     )
+    from decision_prompts import prompt_policy
 
     manifest = load_manifest(manifest_path)
     validate_single_turn_manifest(manifest)
@@ -1548,6 +1549,7 @@ def run_astrion_bfcl(
         "created_at": created_at,
         "updated_at": created_at,
         "execution_path": "astrion_enhanced_decision" if mode == "enhanced" else ASTRION_EXECUTION_PATH,
+        "decision_prompt_policy": prompt_policy() if mode == "enhanced" else None,
         "benchmark": {
             "name": BENCHMARK_NAME,
             "version": manifest.benchmark_version,
@@ -1671,6 +1673,7 @@ def run_astrion_bfcl(
             or generation_report.get("status") != "completed"
             or generation_report.get("case_count") != manifest.case_count
             or generation_report.get("execution_path") != report["execution_path"]
+            or (mode == "enhanced" and generation_report.get("decision_prompt_policy") != report["decision_prompt_policy"])
         ):
             raise ValueError("Astrion generation report 与本次 manifest 不一致")
         report["generation_report"] = generation_report

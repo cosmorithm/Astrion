@@ -111,6 +111,7 @@ class BFCLScoreViewerTests(unittest.TestCase):
         report = json.loads(path.read_text(encoding="utf-8"))
         report.update({
             "execution_path": "astrion_enhanced_decision",
+            "decision_prompt_policy": {"version": "astrion-decision-v2.0"},
             "initial_official_outputs": {"derived_subset_micro_accuracy": 0.5, "correct_cases": 2, "scored_cases": 4},
             "paired_comparison": {"improved": 1, "regressed": 0, "both_correct": 2, "both_incorrect": 1},
             "generation_report": {"model_call_count": 13, "repair_count": 1, "effective_base_url": "https://example.test",
@@ -120,6 +121,7 @@ class BFCLScoreViewerTests(unittest.TestCase):
         summary = score_viewer.summarize_report(report, path)
         text = score_viewer.format_summary(summary)
         self.assertIn("初始候选：50.00%（2/4）", text)
+        self.assertIn("决策提示词版本：astrion-decision-v2.0", text)
         self.assertIn("改善 1 题，退步 0 题", text)
         self.assertIn("模型调用：13 次", text)
         self.assertIn("total 200", text)

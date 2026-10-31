@@ -653,10 +653,13 @@ def run(
                 )
             decision = enhanced_decision(messages, TOOLS, enhanced_call)
             emit("decision.finished", step=event_step, payload={
+                "prompt_policy": decision["prompt_policy"],
                 "plan": decision["plan"], "plan_error": decision["plan_error"],
                 "plan_evidence_audit": decision["plan_evidence_audit"],
                 "missing_information_audit": decision["missing_information_audit"],
+                "capability_gaps_audit": decision["capability_gaps_audit"],
                 "review": decision["review"], "review_error": decision["review_error"],
+                "review_evidence_audit": decision["review_evidence_audit"],
                 "initial_validation": decision["initial_validation"],
                 "final_validation": decision["final_validation"],
                 "repair_attempted": decision["repair_attempted"],

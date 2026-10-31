@@ -98,6 +98,7 @@ def summarize_report(report: dict, report_path: Path | str) -> dict:
         "registry_model": report.get("registry_model"),
         "scorer_model": report.get("scorer_model"),
         "execution_path": report.get("execution_path") or "official_model_handler",
+        "decision_prompt_policy": report.get("decision_prompt_policy"),
         "profile": benchmark.get("profile"),
         "case_count": benchmark.get("case_count"),
         "expected_scored_cases": benchmark.get("expected_scored_cases"),
@@ -277,6 +278,9 @@ def format_summary(summary: dict) -> str:
         and summary.get("api_model") != summary.get("model")
     ):
         lines.append(f"实际 API 模型：{summary['api_model']}")
+    policy = summary.get("decision_prompt_policy")
+    if isinstance(policy, dict) and policy.get("version"):
+        lines.append(f"决策提示词版本：{policy['version']}")
     lines.extend([
         f"范围：{range_text}",
         f"总分：{_percent(summary.get('score'))}（{count_text}）",
