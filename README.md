@@ -15,7 +15,7 @@ Its current focus is research assistance: building agents that work with project
 - **Research workspace:** Vue 3 and Bootstrap frontend, FastAPI backend, SSE streaming, and Markdown report rendering.
 - **Evaluation:** independent post-run judges, duration and token accounting, aggregate reports, and BFCL integration for comparing the official baseline with Astrion.
 
-Document import currently supports UTF-8 `.txt` and `.md` files up to 1 MB each. Retrieval uses keyword matching. Citation checks verify that referenced lines were read, but do not assess whether those lines support a claim. Child agents run sequentially. Automatically writing and running research experiments is a future direction.
+Document import supports UTF-8 `.txt` / `.md` (1 MB) and PDF (20 MB / 300 pages), with page locations, extraction warnings and optional OCR. Retrieval combines exact keywords with an optional local multilingual encoder. Citation checks verify that referenced lines were read, but do not assess whether those lines support a claim. Child agents run sequentially. Automatically writing and running research experiments is a future direction.
 
 User requests remain verbatim. Selected evidence quotes and task-plan state stay in context; other observations remain accessible in the archive. These mechanisms preserve recorded information, not the truth of a summary or answer. Child reports remain unverified observations.
 
@@ -60,6 +60,10 @@ python3 -m context_service --port 8766
 Then set `ASTRION_CONTEXT_SERVICE_URL=http://127.0.0.1:8766/context-edits` in the root `.env`. If using a key, start the service with the same `ASTRION_CONTEXT_SERVICE_KEY` environment variable. The reference service does not load `.env` itself. Other implementations can supply the same contract without changing the model client.
 
 `memory.compaction.finished` includes five layer reports with before/after character counts, decisions, affected units or IDs, and adapter fallback information. Validate with `python3 -B -m unittest test_memory test_context_pipeline test_session test_research` from `astrion-agent/`; the HTTP integration tests also exercise the real optional service protocol.
+
+## Research workflow
+
+See [the staged research workflow](astrion-agent/docs/RESEARCH_WORKFLOW.md) for PDF/OCR import, page and section reading, multilingual retrieval, architecture and reproducible acceptance commands.
 
 ## Quick start
 

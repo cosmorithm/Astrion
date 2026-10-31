@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { request, streamResearch } from './api.js'
+import SourceLibrary from './components/SourceLibrary.vue'
 import { renderMarkdown } from './markdown.js'
 
 const projects = ref([])
@@ -69,21 +70,6 @@ async function createProject() {
     projectName.value = ''
     notice.value = '项目已创建。'
   })
-}
-async function uploadFile(event) {
-  const file = event.target.files?.[0]
-  if (!file || !projectId.value) return
-  await action(async () => {
-    if (!/\.(md|txt)$/i.test(file.name)) throw new Error('请选择 .md 或 .txt 文件')
-    if (file.size > 1_000_000) throw new Error('文件不能超过 1 MB')
-    let content
-    try { content = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()) }
-    catch { throw new Error('文件不是有效的 UTF-8 文本') }
-    await request(`/api/projects/${projectId.value}/documents`, { method: 'POST', body: JSON.stringify({ name: file.name, content }) })
-    await loadProjectData()
-    notice.value = '资料已导入。'
-  })
-  if (fileInput.value) fileInput.value.value = ''
 }
 async function addMemory() {
   if (!memoryText.value.trim()) return
@@ -222,13 +208,7 @@ onMounted(() => action(loadProjects))
         </section>
 
         <section v-else-if="activeTab === 'sources'">
-          <h2>研究资料</h2><p class="section-copy">管理当前项目的资料。</p>
-          <div class="panel collection-panel">
-            <div class="panel-header"><div><strong>项目资料</strong></div><span class="panel-meta">{{ documents.length }} 份资料</span></div>
-            <label class="upload-area" :class="{ disabled: !projectId || busy }"><span class="upload-icon">↑</span><strong>选择资料文件</strong><small>支持 UTF-8 编码的 .md、.txt，单份不超过 1 MB</small><input ref="fileInput" type="file" accept=".md,.txt,text/plain,text/markdown" :disabled="!projectId || busy" @change="uploadFile"></label>
-            <div v-if="!documents.length" class="list-empty">当前项目还没有资料。</div>
-            <div v-for="doc in documents" :key="doc.id" class="list-row"><span class="file-icon">▤</span><div><strong>{{ doc.name }}</strong><small>文档 D{{ doc.id }} · {{ doc.created_at }}</small></div><span class="row-tag">已导入</span></div>
-          </div>
+          <SourceLibrary :project-id="projectId" :busy="busy" @changed="loadProjectData" />
         </section>
 
         <section v-else>

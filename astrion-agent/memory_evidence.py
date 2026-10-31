@@ -17,7 +17,7 @@ def extract_tool_evidence(name: str, content: str) -> list[dict]:
     if not isinstance(data, dict):
         return []
 
-    if name in {"search_knowledge", "read_knowledge"}:
+    if name in {"search_knowledge", "read_knowledge", "read_document"}:
         results = data.get("results")
         if not isinstance(results, list):
             return []
@@ -35,7 +35,7 @@ def extract_tool_evidence(name: str, content: str) -> list[dict]:
             # 检索分数不是证据的一部分；同一片段跨搜索/按行阅读时可去重。
             evidence.append({"kind": "document", **{k: item[k] for k in (
                 "document_id", "name", "source", "sha256", "start_line", "end_line",
-                "excerpt", "truncated")}})
+                "excerpt", "truncated")}, **{k: item[k] for k in ("pages", "sections", "warnings", "content_kind", "source_url", "accessed_at", "offset", "next_offset") if k in item}})
         return evidence
 
     if name == "calculator" and isinstance(data.get("expression"), str):

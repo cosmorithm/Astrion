@@ -28,16 +28,8 @@ CREATE TABLE IF NOT EXISTS memories (
 """
 
 
-def terms(text: str) -> set[str]:
-    """英文按词、中文按单字及双字切分；仅是可解释的关键词检索。"""
-    result = set()
-    for token in re.findall(r"[a-z0-9_]+|[\u3400-\u9fff]+", text.lower()):
-        if '\u3400' <= token[0] <= '\u9fff':
-            result.update(token)
-            result.update(token[i:i + 2] for i in range(len(token) - 1))
-        else:
-            result.add(token)
-    return result
+from .retrieval.search import terms, search
+from .storage.documents import Documents, migrate
 
 
 class Store:
@@ -47,6 +39,8 @@ class Store:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        migrate(self.db)
+        self.document_store = Documents(self.db)
 
     def close(self):
         self.db.close()
@@ -67,78 +61,35 @@ class Store:
     def projects(self):
         return [dict(row) for row in self.db.execute('SELECT id,name,created_at FROM projects ORDER BY id')]
 
-    def add_document(self, project_id: int, path: Path | str) -> int:
+    def add_document(self, project_id, path, *, ocr=False):
         self.project(project_id)
         path = Path(path).expanduser().resolve(strict=True)
-        if path.suffix.lower() not in {'.txt', '.md'}:
-            raise ValueError('第一版只支持 UTF-8 的 .txt 和 .md 文件')
-        if not path.is_file() or path.stat().st_size > 1_000_000:
-            raise ValueError('资料必须是小于等于 1 MB 的普通文件')
-        data = path.read_bytes()
-        if len(data) > 1_000_000:
-            raise ValueError('资料超过 1 MB')
-        return self.add_document_text(project_id, path.name, data.decode('utf-8'), str(path))
+        if not path.is_file() or path.stat().st_size > 20_000_000:
+            raise ValueError('资料必须是小于等于 20 MB 的普通文件')
+        return self.import_document(project_id, path.name, path.read_bytes(), str(path), ocr=ocr)
 
-    def add_document_text(self, project_id: int, name: str, content: str, source: str = '上传') -> int:
+    def import_document(self, project_id, name, data, source='上传', *, ocr=False, extra=None):
         self.project(project_id)
-        if not isinstance(name, str) or not name or Path(name).name != name or Path(name).suffix.lower() not in {'.txt', '.md'}:
-            raise ValueError('资料名称必须是 .txt 或 .md 文件名')
-        if not isinstance(content, str):
-            raise ValueError('资料内容必须是文本')
-        data = content.encode('utf-8')
-        if len(data) > 1_000_000:
-            raise ValueError('资料超过 1 MB')
-        if not content.strip():
-            raise ValueError('资料不能为空')
-        with self.db:
-            cur = self.db.execute('INSERT INTO documents(project_id,name,source,sha256,content) VALUES (?,?,?,?,?)',
-                (project_id, name, source, hashlib.sha256(data).hexdigest(), content))
-        return cur.lastrowid
+        return self.document_store.add(project_id, name, data, source, ocr=ocr, extra=extra)
 
-    def documents(self, project_id: int) -> list[dict]:
-        self.project(project_id)
-        return [dict(row) for row in self.db.execute(
-            'SELECT id,name,source,sha256,created_at FROM documents WHERE project_id=? ORDER BY id', (project_id,))]
+    def add_document_text(self, project_id, name, content, source='上传'):
+        if not isinstance(content, str): raise ValueError('资料内容必须是文本')
+        if Path(name).suffix.lower() not in {'.txt', '.md'}: raise ValueError('资料名称必须是 .txt 或 .md 文件名')
+        return self.import_document(project_id,name,content.encode('utf-8'),source)
 
-    def search_documents(self, project_id: int, query: str, limit: int = 5) -> list[dict]:
+    def documents(self, project_id):
         self.project(project_id)
-        wanted = terms(query)
-        if not wanted:
-            raise ValueError('检索词不能为空')
-        results = []
-        for doc in self.db.execute('SELECT id,name,source,sha256,content FROM documents WHERE project_id=? ORDER BY id', (project_id,)):
-            lines = doc['content'].splitlines()
-            for start in range(0, len(lines), 10):
-                excerpt = '\n'.join(lines[start:start + 10])
-                score = len(wanted & terms(excerpt))
-                if score:
-                    # 超长行仅展示前 3000 字符，范围仍指向原始行。
-                    results.append({'document_id': doc['id'], 'name': doc['name'], 'source': doc['source'],
-                        'sha256': doc['sha256'], 'start_line': start + 1, 'end_line': min(start + 10, len(lines)),
-                        'excerpt': excerpt[:3000], 'truncated': len(excerpt) > 3000, 'score': score})
-        results.sort(key=lambda r: (-r['score'], r['document_id'], r['start_line']))
-        return results[:limit]
+        return self.document_store.listing(project_id, limit=10000)
 
-    def read_document(self, project_id: int, document_id: int, start_line: int, end_line: int) -> dict:
-        """按原始行号读取相邻证据；所有读取都绑定当前项目。"""
-        self.project(project_id)
-        if any(type(n) is not int for n in (document_id, start_line, end_line)):
-            raise ValueError('文档 ID 和行号必须是整数')
-        if start_line < 1 or end_line < start_line or end_line - start_line + 1 > 80:
-            raise ValueError('行号从 1 开始，结束行不能小于起始行，每次最多读取 80 行')
-        doc = self.db.execute(
-            'SELECT id,name,source,sha256,content FROM documents WHERE project_id=? AND id=?',
-            (project_id, document_id)).fetchone()
-        if doc is None:
-            raise ValueError('当前项目中不存在此文档')
-        lines = doc['content'].splitlines()
-        if start_line > len(lines):
-            raise ValueError(f'起始行超过文档总行数 {len(lines)}')
-        end_line = min(end_line, len(lines))
-        excerpt = '\n'.join(lines[start_line - 1:end_line])
-        return {'document_id': doc['id'], 'name': doc['name'], 'source': doc['source'],
-                'sha256': doc['sha256'], 'start_line': start_line, 'end_line': end_line,
-                'total_lines': len(lines), 'excerpt': excerpt[:6000], 'truncated': len(excerpt) > 6000}
+    def search_documents(self, project_id, query, limit=5):
+        # Legacy list-returning API remains lexical and deterministic.
+        return search(self, project_id, query, limit=limit, mode='keyword')['results']
+
+    def search(self, project_id, query, **options):
+        return search(self, project_id, query, **options)
+
+    def read_document(self, project_id, document_id, start_line, end_line):
+        return self.document_store.read_lines(project_id,document_id,start_line,end_line)
 
     def add_memory(self, scope: str, content: str, project_id: int | None = None) -> int:
         if scope not in ('conversation', 'project') or not content.strip():

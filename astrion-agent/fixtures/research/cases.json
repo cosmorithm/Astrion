@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "stage1": {"task": "比较中英文资料中的检索增强生成与多智能体协作，分别给出可定位的原文依据，并说明扫描页的限制。", "checks": ["cross_language_retrieval", "multiple_documents", "page_section_line_locations", "long_read_continuation", "scan_warning", "project_isolation"], "semantic_support": "manual claim-to-source review; location validity alone is insufficient"},
+  "stage2": {"task": "寻找检索增强生成的相关文献，取得 DOI 元数据，阅读可访问正文，对比方法并注明只能获取摘要的资料。", "checks": ["literature_search", "doi_metadata", "pagination", "deduplication", "snapshot", "fulltext_vs_abstract", "access_failure"], "semantic_support": "manual source review"},
+  "stage3": {"task": "读取 measurements.csv，按组计算均值，生成 result.json、chart.png、analysis.py 和包含数据来源的 report.md。", "checks": ["mean_A_3", "mean_B_6", "script", "chart", "report", "artifact_download", "project_isolation", "timeout", "network_denied", "host_secret_denied"], "semantic_support": "recompute statistics independently; review report against execution result"}
+}

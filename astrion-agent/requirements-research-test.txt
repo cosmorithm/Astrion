@@ -1,0 +1,3 @@
+-r requirements-research.txt
+-r requirements-ui-test.txt
+reportlab>=4,<6

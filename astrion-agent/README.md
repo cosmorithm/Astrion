@@ -37,6 +37,10 @@ astrion-agent/
 源码、BFCL 虚拟环境启动脚本和本地报告路径均已统一到 `astrion-agent/`，
 仓库根目录不再保留旧目录名的兼容符号链接。历史运行仍可按运行 ID 查看或检查续跑。
 
+## 科研能力扩展
+
+PDF/OCR、目录与接续阅读、多语言检索、模块关系及复现命令见 [科研工作流](docs/RESEARCH_WORKFLOW.md)。
+
 ## 跑起来
 
 需要一个 OpenAI 兼容的 API key，写在项目根目录的 `Astrion/.env` 里（见下）。
@@ -806,7 +810,7 @@ npm run dev
 
 打开前端命令显示的本地地址。开发服务器把 `/api` 代理到本机 8000 端口；API key 沿用项目已有 `.env`，由后端读取，不发送给浏览器。后端数据库固定默认为 `astrion-agent/research_data/astrion.sqlite3`，可通过 `ASTRION_RESEARCH_DB` 指定。后端默认仅按上面的命令监听本机，不提供用户认证，不适合公开部署。
 
-暂时不支持 PDF、联网搜索、流中途取消和前端一键恢复运行；浏览器断开后，后台任务可能仍继续并产生模型费用。上下文原始日志与完整批次检查点现已写入 `context.sqlite3`，但完整事件轨迹及页面状态尚未自动持久化。资料与记忆管理仍沿用本地项目隔离和软失效语义。未使用真实模型验证时，离线测试不代表任意模型供应商都兼容流式格式。
+PDF 已支持；联网检索见分阶段科研工作流。暂不支持流中途取消和前端一键恢复运行；浏览器断开后，后台任务可能仍继续并产生模型费用。上下文原始日志与完整批次检查点现已写入 `context.sqlite3`，但完整事件轨迹及页面状态尚未自动持久化。资料与记忆管理仍沿用本地项目隔离和软失效语义。未使用真实模型验证时，离线测试不代表任意模型供应商都兼容流式格式。
 
 仅运行流式拼接离线测试：`python3 -m unittest test_streaming`。接口和本机 HTTP 联调测试还需安装 `requirements-ui-test.txt`，运行 `.venv-ui/bin/python -m unittest test_research_api test_research_http`。
 

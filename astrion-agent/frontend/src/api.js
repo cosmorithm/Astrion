@@ -1,7 +1,7 @@
 export async function request(path, options = {}) {
   const response = await fetch(path, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: { ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...(options.headers || {}) },
   })
   if (!response.ok) {
     let detail = `请求失败 (${response.status})`
