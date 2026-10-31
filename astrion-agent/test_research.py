@@ -169,6 +169,63 @@ class ResearchTests(unittest.TestCase):
         self.assertIsNone(result['workers'][0]['answer'])
         self.assertEqual(result['citation_audit']['status'], 'no_citations')
 
+    def test_parent_and_child_keep_source_evidence_across_compactions(self):
+        excerpt = '样本量 n=128；准确率 81%；结论支持方法 A。'
+        doc = self.store.add_document_text(self.a, 'study.txt', excerpt + '\n还需要更多实验。')
+        self.store.add_document_text(self.b, 'private.txt', '禁止跨项目读取的内容')
+        task = '仅用本项目资料，委派子 Agent 核对样本量和结论，保留引用。'
+
+        def verbose_call(name, args, call_id):
+            message = call(name, args, call_id)
+            message['content'] = '准备检查资料，结果尚未确定。' * 80
+            return message
+
+        def read(line, call_id):
+            return verbose_call('read_knowledge', {'document_id': doc, 'start_line': line, 'end_line': line}, call_id)
+
+        answer = f'样本量 n=128，准确率 81%；结论支持方法 A [D{doc}:L1-L1]。'
+        class CompactingLLM(ScriptedLLM):
+            def chat(self, messages, tools=None):
+                response = super().chat(messages, tools)
+                if response == 'PIN':
+                    source = next(json.loads(m['content']) for m in reversed(messages)
+                                  if m['role'] == 'tool' and '"_context"' in m['content'])
+                    return call('pin_evidence', {'ref': source['_context']['evidence_refs'][0], 'quote': excerpt},
+                                'pin-' + str(len(self.inputs)))
+                return response
+            def summarize(self, transcript):
+                return json.dumps({'progress': '已查阅原文，见工具证据。', 'pending': '整理答案与引用。',
+                                   'evidence_ids': json.loads(transcript)['required_evidence_ids']}, ensure_ascii=False)
+        llm = CompactingLLM([
+            verbose_call('run_worker', {'task': '核对样本量', 'context': '只用项目资料'}, 'r1'),
+            read(1, 'w1'), 'PIN', read(2, 'w3'), {'role': 'assistant', 'content': answer},
+            read(1, 'r2'), 'PIN', {'role': 'assistant', 'content': answer},
+        ])
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = run_research(self.store, self.a, task, llm, max_steps=4, worker_steps=4, budget_chars=900)
+        self.assertEqual(result['result']['status'], 'no_tool_call')
+        self.assertEqual(result['workers'][0]['status'], 'no_tool_call')
+        self.assertEqual(result['citation_audit']['status'], 'locations_found')
+        compacted_roles = {item['role'] for item in result['trace']
+                           if item['event']['type'] == 'memory.compaction.finished'
+                           and item['event']['payload']['compacted']}
+        self.assertEqual(compacted_roles, {'root', 'worker'})
+        for index, removed_id in [(4, 'w1'), (7, 'r2')]:
+            messages = llm.inputs[index][0]
+            self.assertNotIn(removed_id, [m.get('tool_call_id') for m in messages])
+            text = json.dumps(messages, ensure_ascii=False)
+            self.assertIn(excerpt, text)
+            self.assertIn('start_line', text)
+            self.assertIn('sha256', text)
+            self.assertNotIn('禁止跨项目读取的内容', text)
+        from memory import Memory
+        restored = Memory.from_archive(result['context_archive']['path'], result['context_archive']['scope'])
+        self.assertTrue(any(r['kind'] == 'worker_report' for r in restored.archive.records.values()))
+        self.assertEqual(restored.runtime['status'], 'no_tool_call')
+        pinned_ref = next(iter(restored._pins))
+        self.assertEqual(json.loads(restored.read_evidence(pinned_ref))['text'], excerpt)
+        self.assertIn({'role': 'user', 'content': task}, llm.inputs[7][0])
+
     def test_citation_audit_rejects_unseen_and_truncated_text(self):
         event = {'role': 'root', 'event': {'type': 'tool.call.finished', 'payload': {
             'name': 'search_knowledge', 'outcome': 'success',

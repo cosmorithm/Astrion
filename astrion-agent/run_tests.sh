@@ -13,6 +13,8 @@ exec python3 -B -m unittest \
   test_bfcl_score \
   test_benchmarks \
   test_events \
+  test_memory \
+  test_context_pipeline \
   test_session \
   test_research \
   test_streaming \

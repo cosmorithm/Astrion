@@ -75,7 +75,7 @@ class SessionTests(unittest.TestCase):
     def invoke_main(self, argv):
         with patch.object(agent, "load_env", return_value=[]), \
                 patch.object(agent, "find_env_files", return_value=[]), \
-                patch.dict(os.environ, {"AGENT_API_KEY": "test-key"}, clear=False), \
+                patch.dict(os.environ, {"AGENT_API_KEY": "test-key", "ASTRION_CONTEXT_DB": str(self.root / 'context.sqlite3')}, clear=False), \
                 patch.object(agent, "ChatLLM", return_value=FakeLLM()), \
                 patch.object(agent, "run", return_value={
                     "status": "completed", "answer": "", "steps": 0,
@@ -292,22 +292,24 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(second["status"], "completed")
         self.assertEqual(second["steps"], 2)
 
-    def test_resume_after_compaction_does_not_need_a_user_message(self):
+    def test_resume_after_compaction_preserves_original_user_message_once(self):
         memory = Memory("系统规则", budget_chars=4000, keep_recent=1)
         memory.add_user("测试任务")
+        memory.add_assistant({"content": "正在准备计算。" * 100})
         memory.add_assistant(
             tool_message(tool_call("calc-1", "calculator", '{"expression":"1+1"}'))
         )
         memory.add_tool("calc-1", '{"expression":"1+1","result":2}')
 
-        self.assertTrue(memory.compact(lambda transcript: "之前执行过计算"))
-        self.assertIsNone(memory.last_user())
+        self.assertTrue(memory.compact(lambda transcript: json.dumps({
+            "progress": "已准备计算", "pending": "检查结果", "evidence_ids": []})))
+        self.assertEqual(memory.last_user(), "测试任务")
         self.assertEqual(memory.compactions, 1)
         save_session(self.path, memory=memory, task="测试任务",
                      status="running", steps=1)
 
         loaded = load_session(self.path)
-        self.assertIsNone(loaded.memory.last_user())
+        self.assertEqual(loaded.memory.last_user(), "测试任务")
         resumed_llm = ScriptedLLM([
             tool_message(tool_call("finish-1", "finish", '{"answer":"压缩后恢复"}')),
         ])
@@ -317,11 +319,26 @@ class SessionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["steps"], 2)
-        # 原任务已进入摘要，恢复时不能再补一条重复的用户消息。
+        # 原任务仍按原话保留；恢复不能再加入重复的任务。
         self.assertEqual(
             sum(message["role"] == "user" for message in resumed_llm.inputs[0]),
-            0,
+            1,
         )
+
+    def test_legacy_compacted_session_recovers_task_from_session_metadata(self):
+        data = self.make_memory().to_dict()
+        data["history"] = data["history"][1:]
+        data["summary"] = "旧版压缩备忘"
+        data["compactions"] = 1
+        for key in ('context_version', 'archive_snapshot', 'archive_scope', 'archive_path'):
+            data.pop(key, None)
+        memory = Memory.from_dict(data)
+        save_session(self.path, memory=memory, task="测试任务", status="running", steps=1)
+        session = load_session(self.path)
+        llm = ScriptedLLM([tool_message(tool_call("finish-1", "finish", '{"answer":"恢复"}'))])
+        result = agent.run(session.task, llm, session.memory, resume=True)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual([m["content"] for m in llm.inputs[0] if m["role"] == "user"], ["测试任务"])
 
     def test_no_tool_call_is_not_marked_resumable(self):
         llm = ScriptedLLM([{"role": "assistant", "content": "直接回答"}])

@@ -29,7 +29,7 @@ def tool_message(name, arguments, call_id):
 class ScriptedLLM:
     model = "scripted-test-model"
 
-    def __init__(self, replies, summary="记录摘要"):
+    def __init__(self, replies, summary=None):
         self.replies = iter(replies)
         self.inputs = []
         self.summary = summary
@@ -42,7 +42,10 @@ class ScriptedLLM:
         return copy.deepcopy(reply)
 
     def summarize(self, transcript):
-        return self.summary
+        if self.summary is not None:
+            return self.summary
+        return json.dumps({"progress": "已读取数据", "pending": "继续任务",
+                           "evidence_ids": json.loads(transcript)["required_evidence_ids"]}, ensure_ascii=False)
 
 
 def case_data():
@@ -226,10 +229,15 @@ class EvaluationTests(unittest.TestCase):
         case = case_data()
         case["task"] = "原始任务" * 200
         llm = agent.ChatLLM(key="test-key", base_url="https://example.invalid", model="test")
+        read = tool_message("read_file", {"path": "data.txt"}, "read")
+        read["content"] = "准备读取数据。" * 100
         replies = [
-            http_response(tool_message("read_file", {"path": "data.txt"}, "read"),
+            http_response(read,
                           {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}),
-            http_response({"role": "assistant", "content": "已读取数据"},
+            http_response(tool_message("calculator", {"expression": "2+3+4"}, "calc"),
+                          {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}),
+            http_response({"role": "assistant", "content": json.dumps({
+                "progress": "已读取数据", "pending": "整理", "evidence_ids": []})},
                           {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}),
             http_response(tool_message("finish", {"answer": "结束"}, "finish"),
                           {"prompt_tokens": 20, "completion_tokens": 4, "total_tokens": 24}),
@@ -238,15 +246,17 @@ class EvaluationTests(unittest.TestCase):
             report = evaluate_case(case, lambda: llm, budget_chars=400)
 
         self.assertEqual(report["run"]["token_usage"], {
-            "known_totals": {"prompt_tokens": 33, "completion_tokens": 7, "total_tokens": 40},
-            "reported_calls": 3, "unknown_calls": 0, "complete": True,
+            "known_totals": {"prompt_tokens": 38, "completion_tokens": 9, "total_tokens": 47},
+            "reported_calls": 4, "unknown_calls": 0, "complete": True,
         })
         self.assertTrue(any(
             event["type"] == "model.call.started"
             and event["payload"]["purpose"] == "compaction"
             for event in report["run"]["trace"]
         ))
-        self.assertEqual(report["run"]["result"]["steps"], 2)
+        self.assertTrue(any(event["type"] == "memory.compaction.finished" and event["payload"]["compacted"]
+                            for event in report["run"]["trace"]))
+        self.assertEqual(report["run"]["result"]["steps"], 3)
 
     def test_time_measurement_does_not_impose_a_time_limit(self):
         with patch("evaluation.runner.perf_counter", side_effect=[10.0, 1210.0]):
@@ -260,8 +270,11 @@ class EvaluationTests(unittest.TestCase):
     def test_trace_survives_memory_compaction(self):
         case = case_data()
         case["task"] = "原始任务" * 200
+        read = tool_message("read_file", {"path": "data.txt"}, "read-1")
+        read["content"] = "准备读取数据。" * 100
         llm = ScriptedLLM([
-            tool_message("read_file", {"path": "data.txt"}, "read-1"),
+            read,
+            tool_message("calculator", {"expression": "2+3+4"}, "calc-1"),
             tool_message("finish", {"answer": "结束"}, "finish-1"),
         ])
 
@@ -275,6 +288,8 @@ class EvaluationTests(unittest.TestCase):
                             if event["type"] == "model.call.started"
                             and event["payload"]["purpose"] == "compaction"]
         self.assertEqual(len(compaction_calls), 1)
+        self.assertTrue(any(event["type"] == "memory.compaction.finished" and event["payload"]["compacted"]
+                            for event in trace))
         first_decision = next(event for event in trace
                               if event["type"] == "model.call.started"
                               and event["payload"]["purpose"] == "decision")

@@ -38,6 +38,28 @@ class ModelHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'data: [DONE]\n\n'); self.wfile.flush()
 
 class HttpStreamTests(unittest.TestCase):
+    def test_optional_context_service_runs_through_real_http(self):
+        from context_service import ContextHandler
+        from context_adapter import HttpContextAdapter
+        from memory import Memory
+        server = ThreadingHTTPServer(('127.0.0.1', 0), ContextHandler)
+        server.context_key = 'test-context-only'
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        adapter = HttpContextAdapter(f'http://127.0.0.1:{server.server_port}/context-edits', key=server.context_key)
+        memory = Memory('规则', budget_chars=500, keep_recent=1, context_adapter=adapter)
+        memory.enabled_layers = {3}
+        memory.add_user('保留样本量')
+        memory.add_assistant({'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'r', 'type': 'function', 'function': {'name': 'read_file', 'arguments': '{}'}}]})
+        memory.add_tool('r', 'n=128 ' * 300)
+        memory.add_assistant({'content': '最近一步'})
+        self.assertTrue(memory.compact())
+        self.assertEqual(memory.layer_reports[2]['adapter'], 'http-context-edits-v1')
+        self.assertEqual(memory.check(), [])
+        self.assertIn('n=128', memory.read_evidence(memory._history[2]['_ref']))
+
     def test_live_sse_propagates_incremental_model_output(self):
         upstream = ThreadingHTTPServer(('127.0.0.1', 0), ModelHandler)
         thread = threading.Thread(target=upstream.serve_forever, daemon=True); thread.start()

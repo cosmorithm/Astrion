@@ -9,7 +9,7 @@
 [根目录 README](../README.md)，工具契约与状态设计见
 [架构决策记录](../docs/adr/0001-tool-contract-and-task-state.md)。
 
-当前版本保持“从零读懂 Agent”的原则：**ReAct 循环 + 四个业务工具 + 任务控制工具 + 沙箱 + 独立记忆 + 可恢复会话**。
+当前版本保持“从零读懂 Agent”的原则：**ReAct 循环 + 四个业务工具 + 任务控制与证据工具 + 沙箱 + 五层上下文管理 + 可恢复会话**。
 基础 Agent 使用 Python 标准库；研究工作台与 BFCL 的可选依赖分别安装。
 
 ```
@@ -20,6 +20,10 @@ astrion-agent/
 ├── decision_prompts.py  增强决策的版本化提示词与哈希
 ├── events.py       Run/Step/Event v1：结构化运行事实与 JSON 导出
 ├── memory.py       会话记忆：消息窗口 + 超额压缩 + 序列化
+├── memory_evidence.py  工具观察转结构化证据的适配层
+├── context_store.py    原始档案、scope 隔离与检查点
+├── context_tools.py    证据搜索、重读与固定
+├── context_adapter.py / context_service.py  可选服务端契约与参考服务
 ├── session.py      会话 JSON：原子保存、加载与恢复判断
 ├── benchmarks/     基准层：BFCL 官方基线 + Astrion 单轮决策适配
 ├── evaluation/     赛后评测：任务、运行器、可注册裁判
@@ -389,30 +393,92 @@ python3 -B -m unittest -v test_token_usage
 | 基准层 | `benchmarks/` | 通用原始响应适配 + BFCL 官方旁路；默认 agent 不依赖 |
 | 终止 | `finish` 工具 + `max_steps` | 显式终止 + 预算硬停 |
 
-## 记忆系统（memory.py）
+## 五层上下文管理
 
-它只回答一个问题：**上下文快满了，该丢什么、怎么丢。**
+上下文现在分为三部分：**原始档案、常驻任务与证据、当前模型视图**。五层修改的是模型视图；原始消息和工具观察保存在独立档案，不随压缩删除。这里是 Astrion 的工程实现，借鉴分层范式，不声称复刻特定版本 Claude Code 的内部实现。
 
-```python
-memory = Memory(SYSTEM_PROMPT, budget_chars=12000, keep_recent=4)
-memory.add_user(task)
-msg = llm.chat(memory.for_model())       # 组装成 API 的 messages
-memory.add_assistant(msg)
-memory.add_tool(call_id, observation)
+| 层 | 触发与实现 | 是否调用摘要模型 |
+|---|---|---|
+| 1. Tool Result Budget | 单个工具结果超过 3,000 字符时外置，保留前 240 字符预览及内容引用。受限分页的 `read_evidence` 返回不立即再次外置，保证重读可用。 | 否 |
+| 2. History Snip | 只裁相邻、参数与结果相同、无助手说明的成功只读批次；写操作、失败结果和用户要求不按此规则裁剪。 | 否 |
+| 3. Microcompact | 仍超预算时，将最近 4 个非用户单元之前、超过 500 字符的成功结果正文替换成可重读凭据，保留调用与结果配对。 | 默认否；可选 HTTP 服务只选择候选 ID |
+| 4. Context Collapse | 仍超预算时，最多折叠 4 个旧非用户单元，生成局部进度/待办摘要并记录原始片段引用；近期单元保留。这里的记录批次结束不等于科研任务完成。 | 有合适旧单元时调用 |
+| 5. Auto-compact | 压力仍在时重建工作摘要，保留所有用户原话、固定证据、任务清单和至少最近 1 个完整单元。 | 有可压缩旧内容时调用 |
 
-if memory.needs_compaction():            # 超预算了
-    memory.compact(llm.summarize)        # 把最旧的几轮压成摘要
+管线按顺序执行，未满足触发条件的层记录为跳过。前三层可避免后续摘要调用；一次管线最多调用两次摘要模型。第 4 层返回空白、结构错误或证据编号不匹配时，本次不立即在第 5 层重复请求摘要。
+
+### 信息保留与校验
+
+- 用户原始任务及后续补充保持 `user` 原话。任务清单来自运行状态，压缩后仍注入。
+- 原始消息及所有工具观察写入档案；文档、文件、计算、子 Agent 报告还有结构化证据适配，保留实际观察到的文本和来源。未知工具也保留原始返回，但不会自动推断其事实结构。
+- 关键内容由调用方或模型通过 `pin_evidence` 显式选择。程序要求固定内容是来源中的连续原文，单项最多 1,000 字符，固定项序列化总量最多 2,000 字符。选择不全面仍可能影响回答，程序不假定模型会选对所有重点。
+- 摘要必须包含非空 `progress`、`pending`，及与固定项一致、无重复的 `evidence_ids`。生成文本不替代固定原文。系统校验结构、编号与消息配对，不判断摘要的全部语义是否正确。
+- 每层先构造候选，再确认比当前视图更短后提交。后续层拒绝摘要，不撤销前面已验证的缩减；原始档案始终保留。摘要服务异常沿现有错误路径上报。
+- 摘要、引用和来源是历史数据，以 `assistant` 消息提供；不会升级成系统规则。子 Agent 返回仍是未经独立验真的报告。
+
+默认 `budget_chars=12000` 统计序列化消息字符数，**不含工具 schema，不是 token 硬上限**。固定要求或近期内容过大时，`over_budget=true` 如实报告；不会静默删除用户要求来声称达标。摘要模型调用照常计入实际 token 统计。
+
+### 物理存储与恢复
+
+项目资料、全局对话记忆和项目记忆仍在 `research_data/astrion.sqlite3`。新增的 `research_data/context.sqlite3` 保存原始消息、工具观察和上下文检查点；研究模式跟随所配置资料数据库的目录，基础 CLI 可通过 `ASTRION_CONTEXT_DB` 指定路径。
+
+同一文件中每个主/子 Agent 有独立随机 `scope`，读取引用只能访问当前 scope。引用按内容及元数据的 SHA-256 生成，内容变化形成新观察；恢复时校验哈希。原始日志只追加，工具批次完整结束后保存工作视图检查点。进程中途失败时恢复上个完整检查点，未完成尾部仍留在原始日志中；这不提供工具执行的 exactly-once 保证。
+
+研究运行结果及子 Agent 条目包含 `context_archive.path` 与 `scope`。代码中可用 `Memory.from_archive(path, scope)` 恢复记忆，`memory.runtime` 提供 task/status/steps/task_plan 等元数据；这不是前端的一键续跑入口。基础 CLI 的 `--session` 仍保存可搬运的 JSON 快照，包含档案内容。旧会话仍可加载，旧版本已经丢失的原文不能凭空恢复。
+
+直接构造 `Memory(...)` 默认使用内存档案，适合库调用和离线测试；CLI 与研究入口明确接入持久化存储。档案目录被 Git 忽略，当前没有自动清理策略。保存的是工具实际返回的观察，不能恢复工具自身截断前、从未返回过的内容。
+
+### 搜索、重读与固定证据
+
+所有运行中的 Agent 都获得三个受限工具，引用不是任意文件路径：
+
+```text
+search_evidence(query, offset=0)        # 每页 5 条；查找旧引用与片段
+read_evidence(ref, offset=0, limit=2000) # 字符分页，最大 4000；返回来源与 next_offset
+pin_evidence(ref, quote)               # 固定原文；quote="" 显式取消固定
 ```
 
-三个关键点：
+原始工具结果在发送给模型时附带 `_context.result_ref` 与 `_context.evidence_refs`。大结果的凭据同样携带引用。取消固定不删除原文，重读的是当时观察到的快照；需要最新外部状态时应重新调用原工具。
 
-1. **压缩以「轮」为单位。** 一轮 = 一条 assistant + 它触发的所有 tool 结果。拆开就是非法消息，API 直接 400。`check()` 每次压缩后自动校验配对。
-2. **保留轮数按预算动态收缩。** 固定保留 4 轮遇到大文件照样爆，所以会一路减到「压得进预算」为止，最少留 1 轮。
-3. **它不知道模型的存在。** 摘要靠调用方传函数进来（`llm.summarize`），所以这个模块可以脱离网络单独测。
+### 可选服务端适配
 
-摘要放在 system 里（`## 你之前做过的事`），不新增 role——兼容性最好。
+默认五层均在客户端组织，不绑定模型供应商。第 3 层支持 `HttpContextAdapter`：在根 `.env` 配置 `ASTRION_CONTEXT_SERVICE_URL`，以及可选的独立 `ASTRION_CONTEXT_SERVICE_KEY`、`ASTRION_CONTEXT_SERVICE_TIMEOUT`（默认 5 秒，最大 30 秒）。密钥不会复用模型 API key 或保存进会话。
 
-`Memory` 还提供 `to_dict()` / `from_dict()`，把系统提示、摘要、压缩次数和历史导出/恢复成普通字典；文件读写和任务元数据交给 `session.py`。
+服务端收到以下 HTTP v1 契约，**不接收原始证据或用户消息**：
+
+```json
+{"version":1,"operation":"select_tool_results","budget_chars":12000,"candidates":[{"id":3,"tool":"read_file","chars":2000}]}
+```
+
+返回格式：
+
+```json
+{"version":1,"clear_ids":[3]}
+```
+
+返回 ID 必须属于客户端预先允许的候选，不能重复。超时、连接失败、错误响应、越界 ID 都回退客户端规则，并记录原因。此接口是独立的上下文编辑服务，**不是原生 Claude 缓存编辑，也不会把供应商私有字段塞进 Chat Completions 请求**。原生供应商能力仍需对应协议适配。
+
+提供可直接运行的确定性参考服务，选择全部已允许候选，不调用模型：
+
+```bash
+python3 -m context_service --port 8766
+# 随后在项目根 .env 中设置：
+# ASTRION_CONTEXT_SERVICE_URL=http://127.0.0.1:8766/context-edits
+```
+
+参考服务自身不读取 `.env`；如果配置服务密钥，应以相同的环境变量启动服务。服务默认只监听本机回环地址。可以替换远端实现或在 Python 中注入具有 `select(candidates, budget_chars)` 方法的适配器，客户端校验继续生效。
+
+### 观测与验证
+
+`memory.compaction.finished` 包含五层 `layers`，逐项记录名称、是否改变视图、前后字符数、原因、相关 ID 或归档引用，以及服务端回退信息。还有 `archive_scope`、固定证据数量和 `over_budget`。`memory.compaction.failed` 保留已执行层的报告。摘要调用在既有 `model.call.*` 事件中计量。
+
+```bash
+python3 -B -m unittest test_memory test_context_pipeline test_session test_research
+bash run_tests.sh
+.venv-ui/bin/python -B -m unittest test_research_api test_research_http
+```
+
+回归覆盖逐层行为、重读不会立即再次外置、原文分页与固定、跨 Agent 隔离、原始日志不变、数据库损坏、重启恢复、服务端越界与回退，以及真实本机 HTTP 协议。它验证的是工程行为，不等同于真实模型研究质量或 BFCL 得分提升。
 
 ## 会话持久化（session.py）
 
@@ -740,7 +806,7 @@ npm run dev
 
 打开前端命令显示的本地地址。开发服务器把 `/api` 代理到本机 8000 端口；API key 沿用项目已有 `.env`，由后端读取，不发送给浏览器。后端数据库固定默认为 `astrion-agent/research_data/astrion.sqlite3`，可通过 `ASTRION_RESEARCH_DB` 指定。后端默认仅按上面的命令监听本机，不提供用户认证，不适合公开部署。
 
-暂时不支持 PDF、联网搜索、流中途取消和运行恢复；浏览器断开后，后台任务可能仍继续并产生模型费用。页面关闭后运行轨迹不会自动保存。资料与记忆管理仍沿用本地项目隔离和软失效语义。未使用真实模型验证时，离线测试不代表任意模型供应商都兼容流式格式。
+暂时不支持 PDF、联网搜索、流中途取消和前端一键恢复运行；浏览器断开后，后台任务可能仍继续并产生模型费用。上下文原始日志与完整批次检查点现已写入 `context.sqlite3`，但完整事件轨迹及页面状态尚未自动持久化。资料与记忆管理仍沿用本地项目隔离和软失效语义。未使用真实模型验证时，离线测试不代表任意模型供应商都兼容流式格式。
 
 仅运行流式拼接离线测试：`python3 -m unittest test_streaming`。接口和本机 HTTP 联调测试还需安装 `requirements-ui-test.txt`，运行 `.venv-ui/bin/python -m unittest test_research_api test_research_http`。
 
