@@ -109,7 +109,8 @@ def summarize_report(report: dict, report_path: Path | str) -> dict:
         "paired_comparison": report.get("paired_comparison"),
         "generation_metrics": {
             key: generation.get(key)
-            for key in ("model_call_count", "repair_count", "token_usage", "effective_base_url")
+            for key in ("model_call_count", "repair_count", "repair_accepted_count",
+                        "repair_rejected_count", "semantic_advisory_count", "token_usage", "effective_base_url")
         },
         "token_usage": token_usage,
         "model_latency_seconds": outputs.get("model_latency_seconds"),
@@ -291,6 +292,10 @@ def format_summary(summary: dict) -> str:
     metrics = summary.get("generation_metrics") or {}
     if metrics.get("model_call_count") is not None:
         lines.append(f"模型调用：{metrics['model_call_count']} 次；尝试修正：{metrics.get('repair_count')} 题")
+    if metrics.get("semantic_advisory_count") is not None:
+        lines.append(f"语义复核提示：{metrics['semantic_advisory_count']} 题（仅记录，不自动改写）")
+    if metrics.get("repair_accepted_count") is not None:
+        lines.append(f"结构修正：接受 {metrics['repair_accepted_count']} 题，拒绝 {metrics.get('repair_rejected_count')} 题")
     if metrics.get("effective_base_url"):
         lines.append(f"实际服务地址：{metrics['effective_base_url']}")
 

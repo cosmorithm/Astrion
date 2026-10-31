@@ -255,15 +255,19 @@ python3 -B -m unittest -v test_session test_evaluation_summary test_evaluation t
 工具输出能力写入工具描述，系统提示要求只选能提供当前子目标所需结果的工具；这是一项模型引导，
 不是已被证明的语义判断器，也不能保证模型不会错选工具。
 
-`decision.py` 的增强模式把任务分解、工具适用性、候选生成、参数检查和覆盖复核组合起来；
-复核或结构验证发现问题时最多再修正一次。真实 Agent 可通过以下命令使用同一决策模块：
+`decision.py` 的增强模式把任务分解、参数来源、工具适用性、候选生成、参数检查和覆盖复核组合起来；
+语义复核只记录疑问，不自动改写；只有确定性的工具调用结构错误才最多触发一次修正。
+修正后若仍不合法、删光工具调用，或改动其他原本结构合法的调用，则保留初始候选。
+真实 Agent 可通过以下命令使用同一决策模块：
 
 ```bash
 python3 agent.py "你的任务" --decision-mode enhanced
 ```
 
 默认仍是 `single` 模式。增强决策只产生候选行动；真实工具仍由 Agent 运行时的 registry
-验证并执行。增强决策的规划与复核是模型判断，可能遗漏或误判，不等于独立裁判。
+验证并执行。参数来源标签与必填/可选判断由模型提出；程序可检查引文是否出现在用户消息，
+以及工具 schema 是否声明必填和匹配的默认值，但引文存在不证明语义或参数值正确。增强决策的规划
+与复核可能遗漏或误判，不等于独立裁判。
 
 离线验证主循环与 token 计量（模拟模型和 HTTP 响应，不访问网络）：
 
@@ -295,6 +299,7 @@ python3 -B -m unittest -v test_run_lifecycle test_token_usage
 
 - `run.started` / `run.finished`；
 - `model.call.started` / `finished` / `failed`；
+- `decision.finished`（增强模式的计划、来源核对、复核与修正记录）；
 - `tool.call.started` / `finished`；
 - `memory.compaction.started` / `finished` / `failed`。
 
@@ -658,7 +663,7 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 146 项测试，覆盖增强决策、工具契约、暂停与恢复、BFCL、事件、会话、赛后评测、主循环和 token 计量。
+它依次运行 155 项测试，覆盖增强决策、工具契约、暂停与恢复、BFCL、事件、会话、赛后评测、主循环和 token 计量。
 本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
 
 只看会话部分：

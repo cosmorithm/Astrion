@@ -11,7 +11,7 @@ import agent
 from benchmarks.bfcl import BUILTIN_BENCHMARKS, DEFAULT_MODEL, PINNED_BFCL_VERSION, load_manifest, run_astrion_bfcl
 from benchmarks.bfcl_astrion import GENERATION_REPORT, generate, run_enhanced_case
 from benchmarks.common import FunctionCallCase
-from decision import enhanced_decision, validate_candidate
+from decision import audit_missing_information, audit_plan_evidence, enhanced_decision, validate_candidate
 from events import EventRecorder
 from memory import Memory
 
@@ -27,7 +27,9 @@ def response(text=None, calls=None):
 TOOLS = [{"type": "function", "function": {"name": "get_time", "description": "get local time",
     "parameters": {"type": "object", "properties": {"city": {"type": "string"}},
                    "required": ["city"], "additionalProperties": False}}}]
-PLAN = response('{"subtasks":["Tokyo", "New York"],"missing_information":[],"tool_assessment":"get_time"}')
+PLAN = response(json.dumps({"subtasks": ["Tokyo", "New York"], "parameter_evidence": [
+    {"tool": "get_time", "parameter": "city", "value": "Tokyo", "source": "user_explicit", "evidence": "Tokyo"},
+], "missing_information": [], "tool_assessment": "get_time"}))
 REVIEW_OK = response('{"needs_revision":false,"issues":[]}')
 
 
@@ -58,6 +60,8 @@ class DecisionTests(unittest.TestCase):
         self.assertTrue(result["initial_validation"]["issues"])
         self.assertFalse(result["final_validation"]["issues"])
         self.assertEqual(result["message"], final)
+        self.assertTrue(result["repair_accepted"])
+        self.assertEqual(result["plan"]["parameter_evidence"][0]["source"], "user_explicit")
         self.assertEqual(llm.requests[0][1], [])
         self.assertEqual(llm.requests[1][1], TOOLS)
         self.assertFalse(any(m.get("role") == "tool" for messages, _ in llm.requests for m in messages))
@@ -69,6 +73,118 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(result["message"]["content"], "No suitable tool")
         self.assertFalse(result["repair_attempted"])
         self.assertEqual(len(llm.requests), 3)
+
+    def test_semantic_review_alone_does_not_overturn_valid_optional_default(self):
+        tools = [{"type": "function", "function": {"name": "concert", "parameters": {
+            "type": "object", "properties": {"artist": {"type": "string"},
+            "month": {"type": "string"}, "year": {"type": "integer", "default": 2022}},
+            "required": ["artist", "month"]}}}]
+        candidate = response(calls=[("concert", '{"artist":"The Weeknd","month":"December"}')])
+        review = response('{"needs_revision":true,"issues":["Ask for year"]}')
+        llm = ScriptedLLM([PLAN, candidate, review])
+        result = enhanced_decision([{"role": "user", "content": "December concert"}], tools,
+                                   lambda messages, definitions, _purpose: llm.chat(messages, definitions))
+        self.assertEqual(result["message"], candidate)
+        self.assertTrue(result["review"]["needs_revision"])
+        self.assertTrue(result["semantic_review_advisory_only"])
+        self.assertFalse(result["repair_attempted"])
+        self.assertEqual(len(llm.requests), 3)
+
+    def test_repair_cannot_change_unrelated_valid_tool_call(self):
+        initial = response(calls=[("get_time", '{"city":"Tokyo"}'), ("get_time", '{"city":12}')])
+        changed = response(calls=[("get_time", '{"city":"London"}'), ("get_time", '{"city":"New York"}')])
+        llm = ScriptedLLM([PLAN, initial, REVIEW_OK, changed])
+        result = enhanced_decision([{"role": "user", "content": "Tokyo and New York"}], TOOLS,
+                                   lambda messages, definitions, _purpose: llm.chat(messages, definitions))
+        self.assertTrue(result["repair_attempted"])
+        self.assertFalse(result["repair_accepted"])
+        self.assertIn("改变或丢失", result["repair_rejection"])
+        self.assertEqual(result["message"], initial)
+        self.assertTrue(result["final_validation"]["issues"])
+
+    def test_repair_preserves_valid_calls_and_does_not_receive_semantic_suspicions(self):
+        initial = response(calls=[("get_time", '{"city":"Tokyo"}'), ("get_time", '{"city":12}')])
+        repaired = response(calls=[("get_time", '{"city":"Tokyo"}'), ("get_time", '{"city":"New York"}')])
+        review = response('{"needs_revision":true,"issues":["SPECULATIVE: remove Tokyo"]}')
+        llm = ScriptedLLM([PLAN, initial, review, repaired])
+        result = enhanced_decision([{"role": "user", "content": "Tokyo and New York"}], TOOLS,
+                                   lambda messages, definitions, _purpose: llm.chat(messages, definitions))
+        self.assertTrue(result["repair_accepted"])
+        self.assertEqual(result["message"], repaired)
+        self.assertNotIn("SPECULATIVE", json.dumps(llm.requests[-1][0]))
+        self.assertEqual(result["review"]["issues"], ["SPECULATIVE: remove Tokyo"])
+
+    def test_repair_that_still_violates_schema_is_rejected(self):
+        initial = response(calls=[("get_time", '{"city":12}')])
+        invalid_repair = response(calls=[("get_time", '{"city":false}')])
+        llm = ScriptedLLM([PLAN, initial, REVIEW_OK, invalid_repair])
+        result = enhanced_decision([{"role": "user", "content": "time"}], TOOLS,
+                                   lambda messages, definitions, _purpose: llm.chat(messages, definitions))
+        self.assertFalse(result["repair_accepted"])
+        self.assertIn("仍有结构错误", result["repair_rejection"])
+        self.assertEqual(result["message"], initial)
+
+    def test_repair_cannot_replace_all_tool_calls_with_clarification(self):
+        initial = response(calls=[("get_time", '{"city":12}')])
+        llm = ScriptedLLM([PLAN, initial, REVIEW_OK, response("Please clarify")])
+        result = enhanced_decision([{"role": "user", "content": "time"}], TOOLS,
+                                   lambda messages, definitions, _purpose: llm.chat(messages, definitions))
+        self.assertFalse(result["repair_accepted"])
+        self.assertIn("删除了全部", result["repair_rejection"])
+        self.assertEqual(result["message"], initial)
+
+    def test_structured_missing_information_is_recorded_without_automatic_gating(self):
+        plan = response(json.dumps({"subtasks": ["query"], "parameter_evidence": [
+            {"tool": "get_time", "parameter": "city", "value": None, "source": "unknown", "evidence": "not specified"}
+        ], "missing_information": [{"tool": "get_time", "parameter": "city", "required": True, "default_available": False,
+                                      "blocks_action": True, "reason": "city is required"}],
+            "tool_assessment": "ask user"}))
+        llm = ScriptedLLM([plan, response("Which city?"), REVIEW_OK])
+        result = enhanced_decision([{"role": "user", "content": "time"}], TOOLS,
+                                   lambda messages, definitions, _purpose: llm.chat(messages, definitions))
+        self.assertIsNone(result["plan_error"])
+        self.assertEqual(result["plan"]["missing_information"][0]["blocks_action"], True)
+        self.assertEqual(result["plan"]["parameter_evidence"][0]["source"], "unknown")
+        self.assertTrue(result["missing_information_audit"][0]["schema_required"])
+        self.assertTrue(result["missing_information_audit"][0]["required_claim_matches"])
+        self.assertTrue(result["missing_information_audit"][0]["default_claim_matches"])
+        self.assertFalse(result["repair_attempted"])
+
+    def test_invalid_plan_provenance_is_discarded_and_reported(self):
+        llm = ScriptedLLM([response('{"subtasks":["test"],"parameter_evidence":"fabricated"}'),
+                           response("No tool"), REVIEW_OK])
+        result = enhanced_decision([{"role": "user", "content": "question"}], TOOLS,
+                                   lambda messages, definitions, _purpose: llm.chat(messages, definitions))
+        self.assertIsNotNone(result["plan_error"])
+        self.assertEqual(result["plan"]["parameter_evidence"], [])
+
+    def test_evidence_audit_checks_user_quotes_and_explicit_defaults(self):
+        tools = [{"type": "function", "function": {"name": "search", "parameters": {
+            "type": "object", "properties": {"city": {"type": "string"},
+            "year": {"type": "integer", "default": 2022}}}}}]
+        plan = {"parameter_evidence": [
+            {"tool": "search", "parameter": "city", "value": "Tokyo", "source": "user_explicit", "evidence": "Tokyo"},
+            {"tool": "search", "parameter": "city", "value": "Paris", "source": "user_explicit", "evidence": "Paris"},
+            {"tool": "search", "parameter": "year", "value": 2022, "source": "tool_default", "evidence": "default"},
+            {"tool": "search", "parameter": "year", "value": 2023, "source": "tool_default", "evidence": "default"},
+            {"tool": "search", "parameter": "city", "value": "Tokyo", "source": "inferred", "evidence": "assumption"},
+        ]}
+        audit = audit_plan_evidence(plan, [{"role": "user", "content": "Tokyo"},
+                                           {"role": "assistant", "content": "Paris"}], tools)
+        self.assertEqual([item["status"] for item in audit], ["quote_found", "quote_not_found", "default_matches",
+                                                               "default_mismatch", "not_verifiable"])
+
+    def test_missing_audit_detects_false_required_or_default_claims(self):
+        tools = [{"type": "function", "function": {"name": "concert", "parameters": {
+            "type": "object", "properties": {"artist": {"type": "string"},
+            "year": {"type": "integer", "default": 2022}}, "required": ["artist"]}}}]
+        plan = {"missing_information": [{"tool": "concert", "parameter": "year", "required": True,
+                 "default_available": False, "blocks_action": True, "reason": "year missing"}]}
+        audit = audit_missing_information(plan, tools)[0]
+        self.assertFalse(audit["schema_required"])
+        self.assertTrue(audit["schema_default_declared"])
+        self.assertFalse(audit["required_claim_matches"])
+        self.assertFalse(audit["default_claim_matches"])
 
     def test_unsupported_schema_is_reported_without_claiming_full_validation(self):
         tools = copy.deepcopy(TOOLS)
@@ -89,6 +205,9 @@ class DecisionTests(unittest.TestCase):
             self.assertTrue(record["decision"]["repair_attempted"])
             events = json.loads(Path(record["event_path"]).read_text())["events"]
             self.assertEqual(len([event for event in events if event["type"] == "model.call.finished"]), 4)
+            decision_event = next(event for event in events if event["type"] == "decision.finished")
+            self.assertEqual(decision_event["payload"]["plan_evidence_audit"][0]["status"], "quote_found")
+            self.assertTrue(decision_event["payload"]["repair_accepted"])
             self.assertFalse(any(event["type"].startswith("tool.call.") for event in events))
 
     def test_real_agent_uses_same_enhanced_decision_before_executing_tool(self):
@@ -99,6 +218,8 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         purposes = [e["payload"]["purpose"] for e in recorder.events if e["type"] == "model.call.started"]
         self.assertEqual(purposes, ["decision.plan", "decision.candidate", "decision.review"])
+        decision_event = next(e for e in recorder.events if e["type"] == "decision.finished")
+        self.assertTrue(decision_event["payload"]["semantic_review_advisory_only"])
         self.assertTrue(any(e["type"] == "tool.call.finished" for e in recorder.events))
 
     def test_generate_saves_initial_and_final_separately(self):

@@ -331,6 +331,18 @@ def run_enhanced_case(case: FunctionCallCase, llm, event_dir: Path) -> tuple[dic
     error = None
     try:
         decision = enhanced_decision(case.messages, case.tools, call_model)
+        emitter.emit("decision.finished", payload={
+            "plan": decision["plan"], "plan_error": decision["plan_error"],
+            "plan_evidence_audit": decision["plan_evidence_audit"],
+            "missing_information_audit": decision["missing_information_audit"],
+            "review": decision["review"], "review_error": decision["review_error"],
+            "initial_validation": decision["initial_validation"],
+            "final_validation": decision["final_validation"],
+            "repair_attempted": decision["repair_attempted"],
+            "repair_accepted": decision["repair_accepted"],
+            "repair_rejection": decision["repair_rejection"],
+            "semantic_review_advisory_only": True,
+        })
         result = normalize_bfcl_result(decision["message"])
     except (Exception, SystemExit) as exc:
         error = {"type": type(exc).__name__, "message": str(exc)}
@@ -452,6 +464,9 @@ def generate(
         },
         "model_call_count": sum(item.get("model_call_count", 1) for item in case_records),
         "repair_count": sum(bool((item.get("decision") or {}).get("repair_attempted")) for item in case_records),
+        "repair_accepted_count": sum(bool((item.get("decision") or {}).get("repair_accepted")) for item in case_records),
+        "repair_rejected_count": sum(bool((item.get("decision") or {}).get("repair_rejection")) for item in case_records),
+        "semantic_advisory_count": sum(bool((item.get("decision") or {}).get("review", {}).get("needs_revision")) for item in case_records),
         "plan_parse_error_count": sum(bool((item.get("decision") or {}).get("plan_error")) for item in case_records),
         "review_parse_error_count": sum(bool((item.get("decision") or {}).get("review_error")) for item in case_records),
         "unchecked_schema_case_count": sum(bool((item.get("decision") or {}).get("final_validation", {}).get("unchecked")) for item in case_records),

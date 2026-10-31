@@ -206,8 +206,9 @@ Astrion v1 刻意不接受 `all-scoring`：其中含 live、多轮、memory 和 
 
 #### Astrion 增强决策模式
 
-`--mode enhanced` 复用 Astrion 的 `decision.py`，依次进行任务分解、候选调用、
-动态 schema 验证、模型覆盖复核；发现问题时最多修正一次。它只提出 BFCL 工具调用，
+`--mode enhanced` 复用 Astrion 的 `decision.py`，依次进行任务分解、参数来源记录、
+候选调用、动态 schema 验证和模型语义复核。语义复核只记录疑问；只有确定性的结构错误才
+最多触发一次修正，并拒绝改动其他结构合法调用的修正。它只提出 BFCL 工具调用，
 不执行或伪造工具结果。真实 Agent 也可用 `--decision-mode enhanced` 运行同一模块。
 
 ```bash
@@ -223,7 +224,9 @@ python3 -m benchmarks bfcl astrion-run --benchmark baseline-200 --api-model deep
 `astrion_enhanced_decision`，与单次路径、官方 baseline 分开。原始候选放在 `initial/result/`，
 最终候选放在 `result/`，两者都由同一官方 scorer 分别评分；`paired_comparison` 记录
 改善和退步题目。`astrion_generation_report.json` 和 Event 保存各次调用、已知 token、耗时、
-初次候选、计划、复核、最终候选及未覆盖的 schema 约束；内容可能包含题目和模型响应。
+初次候选、计划、来源核对、复核、修正接受或拒绝原因、最终候选及未覆盖的 schema 约束；
+内容可能包含题目和模型响应。参数来源由模型声明；引文与用户消息匹配只能证明文本出现，
+不能证明语义正确。默认值核对只针对 schema 中显式的 `default` 字段。
 
 参数验证只检查明确支持的 JSON Schema 子集，不支持的约束记录在 `unchecked`，不会报告为
 完全验证。规划和复核是模型决策，并非独立验收；如果规划或复核无法解析，会记录错误并继续，

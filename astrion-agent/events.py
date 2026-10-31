@@ -24,6 +24,7 @@ EVENT_TYPES = frozenset({
     "model.call.started",
     "model.call.finished",
     "model.call.failed",
+    "decision.finished",
     "tool.call.started",
     "tool.call.finished",
     "memory.compaction.started",

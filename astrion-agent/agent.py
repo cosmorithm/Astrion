@@ -652,6 +652,18 @@ def run(
                                     "tool_count": len(request_tools)},
                 )
             decision = enhanced_decision(messages, TOOLS, enhanced_call)
+            emit("decision.finished", step=event_step, payload={
+                "plan": decision["plan"], "plan_error": decision["plan_error"],
+                "plan_evidence_audit": decision["plan_evidence_audit"],
+                "missing_information_audit": decision["missing_information_audit"],
+                "review": decision["review"], "review_error": decision["review_error"],
+                "initial_validation": decision["initial_validation"],
+                "final_validation": decision["final_validation"],
+                "repair_attempted": decision["repair_attempted"],
+                "repair_accepted": decision["repair_accepted"],
+                "repair_rejection": decision["repair_rejection"],
+                "semantic_review_advisory_only": True,
+            })
             msg = decision["message"]
         else:
             msg = call_model(
