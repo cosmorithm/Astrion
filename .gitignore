@@ -1,6 +1,7 @@
 # 密钥：绝对不能进版本库
 .env
 .env.*
+!/.env.example
 
 # Python
 __pycache__/
@@ -19,3 +20,17 @@ astrion-agent/eval_reports/
 benchmark_data/
 benchmark_runs/
 .venv-bfcl/
+
+# 本地研究资料和记忆（可能包含隐私）
+research_data/
+
+# 研究工作台前端和本地虚拟环境
+node_modules/
+dist/
+.venv-ui/
+.npm-cache/
+
+# 本地研究资料
+/TECHNICAL_VISION.md
+/LLM Multi-agents a survey.txt
+/report.md

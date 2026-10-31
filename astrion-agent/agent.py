@@ -471,6 +471,9 @@ def run(
     user_reply: str | None = None,
     task_plan: list[dict] | None = None,
     decision_mode: str = "single",
+    tool_specs: list[ToolSpec] | None = None,
+    tool_implementations: dict[str, Callable] | None = None,
+    final_step_prompt: str | None = None,
 ) -> dict:
     """运行任务；可选独立目录、事件记录和会话持久化。
 
@@ -479,9 +482,14 @@ def run(
     session_path 不为空时，在开始、每轮工具结果全部写回以及结束状态确定后保存，
     保证文件里的历史始终自洽。resume=True 表示 task 已在 memory 中，不会重复
     写入用户消息；initial_steps 是本次之前已经完成的决策轮数，用于累计步数。
+    final_step_prompt 可选：预算内最后一轮关闭工具，直接整理答案，模型与执行器
+    同时收窄权限。直接回答保持 no_tool_call 状态；空回答或非法调用仍为 step_limit。
+    未开启时保持原循环行为。
     """
     if decision_mode not in {"single", "enhanced"}:
         raise ValueError("decision_mode 必须是 single 或 enhanced")
+    if final_step_prompt is not None and (not isinstance(final_step_prompt, str) or not final_step_prompt.strip()):
+        raise ValueError("final_step_prompt 必须是非空字符串或 None")
     if type(initial_steps) is not int or initial_steps < 0:
         raise ValueError("initial_steps 必须是非负整数")
     if user_reply is not None and (not resume or not isinstance(user_reply, str) or not user_reply.strip()):
@@ -503,7 +511,13 @@ def run(
         memory.add_user(user_reply)
     steps_taken = initial_steps
     plan = validate_task_plan(task_plan or [])
-    tool_impl = tools_for_sandbox(sandbox) if sandbox is not None else TOOL_IMPL
+    if (tool_specs is None) != (tool_implementations is None):
+        raise ValueError("tool_specs 和 tool_implementations 必须同时提供")
+    selected_specs = TOOL_SPECS if tool_specs is None else tool_specs
+    selected_tools = TOOLS if tool_specs is None else [spec.as_api_tool() for spec in selected_specs]
+    tool_impl = (tools_for_sandbox(sandbox) if sandbox is not None else TOOL_IMPL) if tool_implementations is None else tool_implementations
+    if "finish" not in {spec.name for spec in selected_specs} or "finish" not in tool_impl:
+        raise ValueError("工具集必须包含 finish")
 
     def update_task_plan(items: list) -> str:
         nonlocal plan
@@ -522,7 +536,7 @@ def run(
             raise ValueError("仍有未完成子任务: " + "、".join(pending))
         return tool_impl["finish"](answer=answer)
 
-    registry = ToolRegistry(TOOL_SPECS, {
+    registry = ToolRegistry(selected_specs, {
         **tool_impl, "update_task_plan": update_task_plan, "finish": checked_finish,
     })
     event_emitter = EventEmitter(event_sink)
@@ -642,7 +656,14 @@ def run(
         print(bold(f"[{step}]"))
 
         messages = memory.for_model()
-        if decision_mode == "enhanced":
+        finalizing = final_step_prompt is not None and step == max_steps
+        active_tools = selected_tools
+        active_registry = registry
+        if finalizing:
+            active_tools = []
+            active_registry = ToolRegistry([], {})
+            messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + final_step_prompt}
+        if decision_mode == "enhanced" and not finalizing:
             def enhanced_call(request_messages, request_tools, purpose):
                 return call_model(
                     lambda: llm.chat(request_messages, tools=request_tools),
@@ -651,7 +672,7 @@ def run(
                                     "message_chars": len(json.dumps(request_messages, ensure_ascii=False)),
                                     "tool_count": len(request_tools)},
                 )
-            decision = enhanced_decision(messages, TOOLS, enhanced_call)
+            decision = enhanced_decision(messages, active_tools, enhanced_call)
             emit("decision.finished", step=event_step, payload={
                 "prompt_policy": decision["prompt_policy"],
                 "plan": decision["plan"], "plan_error": decision["plan_error"],
@@ -670,13 +691,14 @@ def run(
             msg = decision["message"]
         else:
             msg = call_model(
-                lambda: llm.chat(messages),
+                lambda: llm.chat(messages) if tool_specs is None and not finalizing else llm.chat(messages, tools=active_tools),
                 purpose="decision",
                 step=event_step,
                 input_metadata={
                     "message_count": len(messages),
                     "message_chars": len(json.dumps(messages, ensure_ascii=False)),
-                    "tool_count": len(TOOLS),
+                    "tool_count": len(active_tools),
+                    "finalizing": finalizing,
                 },
             )
         steps_taken = event_step
@@ -689,6 +711,8 @@ def run(
             print(f"  {dim('think:')} {thought}")
 
         if not calls:
+            if finalizing and not thought:
+                break
             if any(item["status"] == "pending" for item in plan):
                 print(red("\n  ! 子任务清单仍有未完成项，不能认定任务结束"))
                 report("incomplete_plan")
@@ -739,7 +763,7 @@ def run(
                 "tool_call_id": tool_call_id,
                 "name": name,
             }
-            result = registry.execute(
+            result = active_registry.execute(
                 ToolCall(tool_call_id, name, raw_args),
                 on_start=lambda args: emit("tool.call.started", step=event_step,
                                            payload={**common, "arguments": args}),

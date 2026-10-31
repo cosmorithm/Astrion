@@ -28,9 +28,11 @@ class ScriptedLLM:
     def __init__(self, replies):
         self.replies = iter(replies)
         self.inputs = []
+        self.tools = []
 
-    def chat(self, messages):
+    def chat(self, messages, tools=None):
         self.inputs.append(copy.deepcopy(messages))
+        self.tools.append(copy.deepcopy(tools))
         return next(self.replies)
 
 
@@ -111,6 +113,39 @@ class RunLifecycleTests(unittest.TestCase):
         self.assertEqual(result, {"status": "step_limit", "answer": None, "steps": 0})
         self.assertEqual(llm.inputs, [])
         self.assertEqual(self.memory.check(), [])
+
+    def test_reserved_last_step_closes_with_existing_evidence_within_budget(self):
+        llm = ScriptedLLM([
+            tool_message(tool_call('calc', 'calculator', '{"expression":"2+3"}')),
+            {'role': 'assistant', 'content': '结果是 5'},
+        ])
+        result = agent.run('计算', llm, self.memory, max_steps=2, final_step_prompt='请根据已有结果收尾')
+        self.assertEqual(result, {'status': 'no_tool_call', 'answer': '结果是 5', 'steps': 2})
+        self.assertEqual(llm.tools[1], [])
+        self.assertIn('5', llm.inputs[1][-1]['content'])
+        self.assertNotIn('请根据已有结果收尾', self.memory.system_prompt)
+        self.assertEqual(self.memory.check(), [])
+
+    def test_last_step_rejects_more_actions_and_keeps_incomplete_status(self):
+        llm = ScriptedLLM([tool_message(tool_call('extra', 'calculator', '{"expression":"2+3"}'))])
+        recorder = EventRecorder()
+        result = agent.run('计算', llm, self.memory, max_steps=1, event_sink=recorder,
+                           final_step_prompt='请收尾')
+        self.assertEqual(result['status'], 'step_limit')
+        self.assertIsNone(result['answer'])
+        self.assertFalse(any(e['type'] == 'tool.call.started' for e in recorder.events))
+        self.assertEqual(self.memory.check(), [])
+
+    def test_failed_final_answer_does_not_extend_budget_or_mark_complete(self):
+        llm = ScriptedLLM([tool_message(tool_call('empty', 'finish', '{"answer":" "}'))])
+        result = agent.run('研究', llm, self.memory, max_steps=1, final_step_prompt='请收尾')
+        self.assertEqual(result, {'status': 'step_limit', 'answer': None, 'steps': 1})
+        self.assertEqual(len(llm.inputs), 1)
+
+    def test_empty_final_response_keeps_step_limit(self):
+        llm = ScriptedLLM([{'role': 'assistant', 'content': ' '}])
+        result = agent.run('研究', llm, self.memory, max_steps=1, final_step_prompt='请收尾')
+        self.assertEqual(result, {'status': 'step_limit', 'answer': None, 'steps': 1})
 
     def test_invalid_finish_arguments_are_returned_to_the_model_for_correction(self):
         bad_arguments = [

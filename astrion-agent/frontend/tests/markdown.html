@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="UTF-8">
+<title>报告 Markdown 回归检查</title>
+<link rel="stylesheet" href="/src/style.css">
+<main style="max-width:800px;margin:32px auto;padding:24px;background:white">
+  <h1>报告 Markdown 回归检查</h1>
+  <p id="status">检查中</p>
+  <div id="preview" class="report-text"></div>
+</main>
+<script type="module">
+import { renderMarkdown } from '../src/markdown.js'
+
+const source = [
+  '# 研究结论', '', '**协作**与*分工*，保留引用 [D1:L1-L3]。', '',
+  '## 主要作用', '', '- 专业化分工', '- 交叉检查', '',
+  '1. 检索', '2. 阅读', '', '> 证据不足时说明限制。', '',
+  '| 场景 | 作用 |', '| --- | --- |', '| 科研 | 分析资料 |', '',
+  '```python', 'print("Astrion")', '```', '',
+  '行内代码 `finish` 和 [参考资料](https://example.com/paper)。',
+].join('\n')
+const parse = html => new DOMParser().parseFromString(html, 'text/html')
+const assert = (condition, label) => { if (!condition) throw new Error(label) }
+const results = []
+function check(label, test) { test(); results.push(label) }
+
+try {
+  const doc = parse(renderMarkdown(source))
+  check('标题、强调和引用编号', () => {
+    assert(doc.querySelector('h1')?.textContent === '研究结论', '标题')
+    assert(doc.querySelector('strong')?.textContent === '协作', '强调')
+    assert(doc.body.textContent.includes('[D1:L1-L3]'), '来源编号')
+  })
+  check('列表、表格和引用块', () => {
+    assert(doc.querySelectorAll('ul li').length === 2 && doc.querySelectorAll('ol li').length === 2, '列表')
+    assert(doc.querySelector('table tbody td')?.textContent === '科研', '表格')
+    assert(doc.querySelector('blockquote'), '引用块')
+  })
+  check('代码块与行内代码', () => {
+    assert(doc.querySelector('pre code.language-python')?.textContent === 'print("Astrion")\n', '代码块')
+    assert([...doc.querySelectorAll('code')].some(e => e.textContent === 'finish'), '行内代码')
+  })
+  check('外部链接隔离', () => {
+    const link = doc.querySelector('a')
+    assert(link?.getAttribute('href') === 'https://example.com/paper', '链接地址')
+    assert(link.getAttribute('target') === '_blank' && link.rel.includes('noopener') && link.rel.includes('noreferrer'), '链接隔离')
+  })
+  check('危险 HTML 和链接不执行，图片不自动加载', () => {
+    const dirty = '<img src=x onerror=alert(1)>\n<svg onload=alert(1)>\n<iframe src="https://example.com"></iframe>\n[x](javascript:alert(1))\n![追踪图](https://example.com/pixel)'
+    const clean = parse(renderMarkdown(dirty))
+    assert(!clean.querySelector('script,img,svg,iframe,style,[onerror],[onload]'), '危险标签/属性')
+    assert(![...clean.querySelectorAll('a')].some(a => /^javascript:/i.test(a.getAttribute('href'))), '危险链接')
+  })
+  check('逐字流式内容可渲染，未闭合代码块安全', () => {
+    for (let end = 1; end <= source.length; end++) {
+      const partial = parse(renderMarkdown(source.slice(0, end)))
+      assert(!partial.querySelector('script,img,iframe'), '部分流')
+    }
+    const partialCode = parse(renderMarkdown('```html\n<img src=x onerror=alert(1)>'))
+    assert(partialCode.querySelector('pre code') && !partialCode.querySelector('img'), '未闭合代码块')
+    assert(renderMarkdown('') === '', '空输入')
+  })
+  document.querySelector('#preview').innerHTML = renderMarkdown(source)
+  document.querySelector('#status').textContent = `${results.length}/6 通过：${results.join('；')}`
+} catch (error) {
+  document.querySelector('#status').textContent = `失败：${error.message}`
+  throw error
+}
+</script>
+</html>

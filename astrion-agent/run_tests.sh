@@ -14,6 +14,8 @@ exec python3 -B -m unittest \
   test_benchmarks \
   test_events \
   test_session \
+  test_research \
+  test_streaming \
   test_evaluation_summary \
   test_evaluation \
   test_run_lifecycle \

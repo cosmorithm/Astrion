@@ -5,11 +5,12 @@
 
 一个以科学为底色、以浪漫为想象、以乐观为行动力的 Agent 产品。
 
-项目的长期架构、五层技术路线和安全原则见根目录的
-[`TECHNICAL_VISION.md`](../TECHNICAL_VISION.md)。本 README 只说明当前已经实现且可以运行的能力。
+本 README 说明当前已经实现且可以运行的能力。项目总览与工作台启动方式见
+[根目录 README](../README.md)，工具契约与状态设计见
+[架构决策记录](../docs/adr/0001-tool-contract-and-task-state.md)。
 
 当前版本保持“从零读懂 Agent”的原则：**ReAct 循环 + 四个业务工具 + 任务控制工具 + 沙箱 + 独立记忆 + 可恢复会话**。
-全部标准库，没有第三方依赖。
+基础 Agent 使用 Python 标准库；研究工作台与 BFCL 的可选依赖分别安装。
 
 ```
 astrion-agent/
@@ -29,12 +30,12 @@ astrion-agent/
     └── result.txt  运行产物
 ```
 
-源码主目录现为 `astrion-agent/`。仓库根目录暂时保留旧目录名的兼容符号链接，专门用于
-解析改名前保存的 BFCL 运行和虚拟环境绝对路径；新命令和文档统一使用新目录。
+源码、BFCL 虚拟环境启动脚本和本地报告路径均已统一到 `astrion-agent/`，
+仓库根目录不再保留旧目录名的兼容符号链接。历史运行仍可按运行 ID 查看或检查续跑。
 
 ## 跑起来
 
-需要一个 OpenAI 兼容的 API key，写在上一级的 `Multi Agent/.env` 里（见下）。
+需要一个 OpenAI 兼容的 API key，写在项目根目录的 `Astrion/.env` 里（见下）。
 
 ```bash
 python3 agent.py "读取 data.txt，算出所有数字的和，写入 result.txt"
@@ -62,7 +63,7 @@ python3 agent.py "任务" --session session.json   # 可恢复会话
 密钥放在上一级的 `.env`，不用每次 export：
 
 ```
-Multi Agent/
+Astrion/
 ├── .env              ← AGENT_API_KEY 写这里
 └── astrion-agent/
 ```
@@ -467,7 +468,7 @@ python3 -m benchmarks bfcl run --dry-run
 
 ```bash
 ./setup_bfcl.sh
-# /Users/apple/Desktop/科研/Multi Agent/.env
+# Astrion/.env
 DEEPSEEK_API_KEY=你的_DeepSeek_官方_key
 python3 -m benchmarks bfcl doctor
 ```
@@ -672,8 +673,8 @@ python3 show_bfcl_score.py --run <运行ID> --json
 ./run_tests.sh
 ```
 
-它依次运行 162 项测试，覆盖增强决策、工具契约、暂停与恢复、BFCL、事件、会话、赛后评测、主循环和 token 计量。
-本地已在 Python 3.9 和 3.12 上验证通过；GitHub Actions 在 `.github/workflows/tests.yml` 中对 Python 3.9–3.12 执行同一脚本。
+它依次运行 174 项测试，覆盖增强决策、工具契约、暂停与恢复、BFCL、事件、会话、赛后评测、主循环和 token 计量。
+原有测试曾在 Python 3.9 和 3.12 上验证；本次加入研究模块后使用 Python 3.13.2 完成离线测试。GitHub Actions 配置为对 Python 3.9–3.12 执行同一脚本，本次尚未验证 CI 结果。
 
 只看会话部分：
 
@@ -681,9 +682,71 @@ python3 show_bfcl_score.py --run <运行ID> --json
 python3 -B -m unittest -v test_session
 ```
 
+## Research Agent：本地资料与长期记忆（第一版）
+
+研究模式复用 Astrion 的 Agent Loop、工具契约和事件。主 Agent 可以同步委派子 Agent；子 Agent 没有委派或写文件工具。资料和项目记忆按项目区分，对话记忆在所有项目可检索。Agent 和子 Agent 只有只读检索工具，长期记忆由用户通过命令显式写入。
+
+在 `astrion-agent/` 目录执行：
+
+```bash
+# 创建项目（返回 project_id，以下示例假设是 1）
+python3 -m research project-add "Agent 研究"
+python3 -m research projects
+
+# 导入现有 UTF-8 .md 或 .txt 资料（替换为自己的路径）
+python3 -m research document-add --project 1 /path/to/paper-notes.md
+python3 -m research search --project 1 "Agent 工具调用"
+
+# 显式写入长期记忆，分别属于全局对话和某个项目
+python3 -m research memory-add --scope conversation "请先讨论再修改代码"
+python3 -m research memory-add --scope project --project 1 "比较单 Agent 与多 Agent"
+python3 -m research memories --project 1
+# 将一条记忆标为失效，保留其原文；不是彻底擦除
+python3 -m research memory-forget 1
+
+# 真实模型请求，使用已有 .env；运行事件会包含资料和模型输出
+python3 -m research run --project 1 --trace research_data/run-001.json "比较资料中的观点并标注来源"
+```
+
+默认 SQLite 文件为当前目录下 `research_data/astrion.sqlite3`；可在子命令前用 `--db 路径` 指定其他数据库。默认目录在 Git 中被忽略。资料以文本快照、来源路径和 SHA-256 保存；同一项目内同名资料不会自动覆盖。记忆失效是软删除，数据库仍保留原文；没有实现彻底删除、编辑、加密、访问用户身份或备份恢复。
+
+检索是标准库实现的关键词匹配，按 10 行分段；不是向量检索，也没有 PDF 导入或联网搜索。`read_knowledge` 可以按文档 ID 和行号接着读取原文，限定当前项目、每次最多 80 行和 6000 字符；检索和阅读返回 `new_ranges` 帮助识别重复证据。运行结束后 `citation_audit` 仅检查 `[D文档ID:L起始-L结束]` 是否落在本次检索或阅读实际返回且未截断的资料范围内；它不判断引用是否支持结论，也不保证每个结论都有引用。父子 Agent 串行执行，共享模型用量统计；没有并发、子任务恢复或时间预算。事件和数据库可能包含私有资料，请自行管理存储和分享范围。可以通过 `--workers 0` 运行单 Agent 对照。
+
+研究模式在原步数预算内保留最后一轮用于直接整理答案：此轮请求不携带工具，执行器也关闭全部工具，避免继续检索。默认主 Agent 最多 10 轮、子 Agent 最多 4 轮，仍可提前调用 `finish` 结束；不会额外追加决策轮或因耗尽预算自动认定完成。收尾的直接回答保持 `no_tool_call` 状态，空回答或非法工具调用仍为 `step_limit`。上下文压缩调用另行计量。普通 Agent 与 BFCL 的默认循环不启用此策略。
+
+## Research 工作台（Vue 3）
+
+本地工作台使用 Vue 3、Bootstrap 和 FastAPI，提供项目、资料、长期记忆与研究界面。研究过程通过 SSE 传递主 Agent 和子 Agent 运行事件；OpenAI 兼容的模型接口以流式方式返回内容和 `finish` 答案片段。生成中的内容是暂定的，最终以任务结束事件的结果为准。支持情况取决于实际模型服务的 Chat Completions 流式协议。
+
+研究轨迹显示当前步数、检索与阅读片段数和收尾阶段；报告区区分完成、需要补充信息、步数耗尽与请求失败。`step_limit` 的空答案不会再显示为成功，也不会用最后一段过程输出冒充最终报告。
+
+研究报告支持 Markdown 标题、强调、列表、表格、引用、代码块与链接；模型增量到达时同步渲染，最终答案使用同一渲染器。采用 markdown-it 解析，再经 DOMPurify 标签/属性白名单过滤；原始 HTML 不执行，外部链接使用隔离的新窗口，图片只显示说明。排版保持紧凑。开发服务器启动后，可打开 `/tests/markdown.html` 运行格式、增量内容与危险输入的浏览器回归检查。
+
+首次启动后端（在 `astrion-agent/`）：
+
+```bash
+python3 -m venv .venv-ui
+.venv-ui/bin/python -m pip install -r requirements-ui.txt
+.venv-ui/bin/python -m uvicorn research.api:app --host 127.0.0.1 --port 8000
+```
+
+另开终端启动前端（需要 Node.js 18 或更高版本；若安装了 nvm，可先执行 `nvm use 18`）：
+
+```bash
+cd frontend
+npm ci --cache ../.npm-cache
+npm run dev
+```
+
+打开前端命令显示的本地地址。开发服务器把 `/api` 代理到本机 8000 端口；API key 沿用项目已有 `.env`，由后端读取，不发送给浏览器。后端数据库固定默认为 `astrion-agent/research_data/astrion.sqlite3`，可通过 `ASTRION_RESEARCH_DB` 指定。后端默认仅按上面的命令监听本机，不提供用户认证，不适合公开部署。
+
+暂时不支持 PDF、联网搜索、流中途取消和运行恢复；浏览器断开后，后台任务可能仍继续并产生模型费用。页面关闭后运行轨迹不会自动保存。资料与记忆管理仍沿用本地项目隔离和软失效语义。未使用真实模型验证时，离线测试不代表任意模型供应商都兼容流式格式。
+
+仅运行流式拼接离线测试：`python3 -m unittest test_streaming`。接口和本机 HTTP 联调测试还需安装 `requirements-ui-test.txt`，运行 `.venv-ui/bin/python -m unittest test_research_api test_research_http`。
+
 ## 当前已知边界
 
-1. **单 agent。** 尚未实现子 agent、任务分配、并发协作；`run_worker` 仍只是后续设想。
+1. **研究模式的两层 Agent Tree。** `research` 支持主 Agent 同步委派子 Agent；子 Agent 不能继续委派。并发、取消、树级恢复和通用多 Agent 编排尚未实现。
 2. **`completed` 不是验收。** 它只表示模型调用了有效 `finish`，不保证文件内容正确；结果正确性要靠 `evaluation/` 的裁判。
 3. **字符预算不是 token 硬上限。** `--budget` 按序列化字符数触发压缩；压缩后仍可能超预算，也没有请求前 token 估算。
 4. **会话恢复不是事务。** 保存点在每轮结束；若在模型请求或一批工具执行中途终止，最近一轮会重做，工具可能被重复执行。
@@ -703,4 +766,4 @@ python3 -B -m unittest -v test_session
 4. 提炼 `ToolSpec` / `ToolCall` / `ToolResult` 契约，为 MCP 适配做准备
 5. 以 README 中固化的 BFCL 200 baseline 为对照，重复测量并优化 Astrion 的工具决策质量与输出效率
 6. 会话文件的轮转、加密或按项目分目录管理
-7. MCP、长期记忆、CodeAct、Computer Use 与多 Agent 按技术愿景和评测证据逐步接入
+7. 扩展研究模式：评估知识检索和引用质量、完善长期记忆，再按技术愿景探索 MCP、CodeAct 和 Computer Use
