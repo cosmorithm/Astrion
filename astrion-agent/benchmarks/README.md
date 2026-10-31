@@ -232,6 +232,25 @@ python3 -m benchmarks bfcl astrion-run --benchmark baseline-200 --api-model deep
 完全验证。规划和复核是模型决策，并非独立验收；如果规划或复核无法解析，会记录错误并继续，
 若最终候选仍不合法，按原样交给 scorer，不伪造修复或分数。该路径不等于完整 ReAct 或多轮 BFCL。
 
+#### 历史错题诊断集（2026-10-31 快照）
+
+`manifests/bfcl_v4_historical_errors_20261031.json` 固定收录历史已完成单轮测试中
+曾被官方 scorer 判错的去重 case，包含增强模式的初始候选。快照共 52 题：
+`simple_python` 11、`multiple` 5、`parallel` 7、`parallel_multiple` 14、`irrelevance` 15。
+`sampling.source_runs` 和 `sampling.case_history` 保存历史运行、阶段与各题对错来源；
+旧运行没有记录实际 API 模型时保留 `null`，不按 registry 名猜测。
+
+```bash
+# 先检查命令，不读取密钥、不调用模型
+python3 -m benchmarks bfcl astrion-run --manifest benchmarks/manifests/bfcl_v4_historical_errors_20261031.json --api-model deepseek-flash --base-url https://api.deepseek.com --mode enhanced --dry-run
+
+# 真实运行历史错题集
+python3 -m benchmarks bfcl astrion-run --manifest benchmarks/manifests/bfcl_v4_historical_errors_20261031.json --api-model deepseek-flash --base-url https://api.deepseek.com --mode enhanced
+```
+
+52 题增强模式通常约 156–208 次模型请求；这是针对历史失败所选的诊断集，分数不能
+当作完整 BFCL 或原 200 题基准的通过率。历史记录与错误类型不会作为模型提示词的一部分。
+
 ### 4. 运行默认 200 条基准子集
 
 ```bash

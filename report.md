@@ -2206,3 +2206,21 @@ scorer 后生成配对改善/退步统计。实际模型和服务地址在运行
 离线回归覆盖可选默认值的过度追问不触发修正、明确类型错误可修正、修正不能改变其他
 合法调用、不能以追问替换全部调用、缺失信息和来源标签记录，以及引文和默认值核对。
 未发起真实模型请求；真实效果需要使用独立样本或另行运行 BFCL 测试确认。
+
+## 32. 汇总历史 BFCL 错题诊断集
+
+用户要求收集历史错题，并自行执行模型测试。本阶段读取 BFCL 历史已完成单轮运行的
+官方逐题失败记录，包含增强路径的初始候选和最终结果；中断、dry-run 和未完成运行不计入。
+按 BFCL case ID 去重后得到 52 题，其中 `simple_python` 11、`multiple` 5、`parallel` 7、
+`parallel_multiple` 14、`irrelevance` 15。
+
+固定快照保存于 `astrion-agent/benchmarks/manifests/bfcl_v4_historical_errors_20261031.json`。
+manifest 的 `sampling.source_runs` 记录 12 份历史评分结果的运行、阶段、模型记录和覆盖数；
+`sampling.case_history` 记录各题在哪些来源失败或通过。历史记录、错误类型与参考答案
+不进入模型消息，模型仍只收到 BFCL 原始问题与工具定义。旧报告未记录的实际 API model
+保留为未知，不将 registry 名作为真实模型。
+
+该集合是按历史失败筛选的诊断集，不能把它的分数当成 BFCL 全集或原 200 题的通过率。
+离线检查确认全部 52 个 ID 唯一、manifest 合法，且固定版本 BFCL 的官方数据均可加载；
+测试命令与预计模型调用次数写入 `astrion-agent/benchmarks/README.md`。遵照用户要求，
+本阶段只收集错题并提供命令，没有运行真实模型。

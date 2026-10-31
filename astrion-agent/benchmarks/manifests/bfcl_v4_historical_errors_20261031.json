@@ -1,0 +1,1271 @@
+{
+  "name": "bfcl_v4_historical_errors_20261031",
+  "benchmark": "BFCL",
+  "benchmark_version": "V4",
+  "profile": "historical_error_diagnostic",
+  "harness": {
+    "package": "bfcl-eval",
+    "version": "2026.3.23"
+  },
+  "sampling": {
+    "strategy": "historical_failure_union",
+    "description": "Distinct cases scored incorrect in completed historical supported single-turn runs, including enhanced initial candidates. Diagnostic set, not an unbiased test set.",
+    "source_runs": [
+      {
+        "run_id": "20261030T092428_543691Z_DeepSeek-V3.2-Exp-FC_f6708011",
+        "phase": "final",
+        "kind": "bfcl_official_run",
+        "execution_path": "official_model_handler",
+        "api_model": null,
+        "model_label": "DeepSeek-V3.2-Exp-FC",
+        "cases": 3,
+        "wrong": 0
+      },
+      {
+        "run_id": "20261030T093310_208385Z_DeepSeek-V3.2-Exp-FC_57919ee9",
+        "phase": "final",
+        "kind": "bfcl_official_run",
+        "execution_path": "official_model_handler",
+        "api_model": null,
+        "model_label": "DeepSeek-V3.2-Exp-FC",
+        "cases": 20,
+        "wrong": 2
+      },
+      {
+        "run_id": "20261030T094940_086420Z_DeepSeek-V3.2-Exp-FC_5a4c336d",
+        "phase": "final",
+        "kind": "bfcl_official_run",
+        "execution_path": "official_model_handler",
+        "api_model": null,
+        "model_label": "DeepSeek-V3.2-Exp-FC",
+        "cases": 200,
+        "wrong": 21
+      },
+      {
+        "run_id": "20261030T160027_589730Z_Astrion-deepseek-flash_a1d75ed6",
+        "phase": "final",
+        "kind": "bfcl_astrion_run",
+        "execution_path": "astrion_single_turn_adapter",
+        "api_model": "deepseek-flash",
+        "model_label": "deepseek-flash",
+        "cases": 3,
+        "wrong": 0
+      },
+      {
+        "run_id": "20261030T161028_545803Z_Astrion-deepseek-flash_2b9198a3",
+        "phase": "final",
+        "kind": "bfcl_astrion_run",
+        "execution_path": "astrion_single_turn_adapter",
+        "api_model": "deepseek-flash",
+        "model_label": "deepseek-flash",
+        "cases": 3,
+        "wrong": 0
+      },
+      {
+        "run_id": "20261030T161221_406989Z_Astrion-deepseek-flash_2a70f301",
+        "phase": "final",
+        "kind": "bfcl_astrion_run",
+        "execution_path": "astrion_single_turn_adapter",
+        "api_model": "deepseek-flash",
+        "model_label": "deepseek-flash",
+        "cases": 200,
+        "wrong": 25
+      },
+      {
+        "run_id": "20261030T164520_712818Z_DeepSeek-V3.2-Exp-FC_api-deepseek-flash_b022dfbb",
+        "phase": "final",
+        "kind": "bfcl_official_run",
+        "execution_path": "official_model_handler_api_override",
+        "api_model": "deepseek-flash",
+        "model_label": "DeepSeek-V3.2-Exp-FC",
+        "cases": 200,
+        "wrong": 24
+      },
+      {
+        "run_id": "20261030T173650_603558Z_Astrion-deepseek-flash_7235a0f3",
+        "phase": "final",
+        "kind": "bfcl_astrion_run",
+        "execution_path": "astrion_single_turn_adapter",
+        "api_model": "deepseek-flash",
+        "model_label": "deepseek-flash",
+        "cases": 200,
+        "wrong": 28
+      },
+      {
+        "run_id": "20261030T180701_202339Z_Astrion-enhanced-deepseek-flash_fa742219",
+        "phase": "final",
+        "kind": "bfcl_astrion_run",
+        "execution_path": "astrion_enhanced_decision",
+        "api_model": "deepseek-flash",
+        "model_label": "deepseek-flash",
+        "cases": 200,
+        "wrong": 29
+      },
+      {
+        "run_id": "20261030T180701_202339Z_Astrion-enhanced-deepseek-flash_fa742219",
+        "phase": "initial",
+        "kind": "bfcl_astrion_run",
+        "execution_path": "astrion_enhanced_decision",
+        "api_model": "deepseek-flash",
+        "model_label": "deepseek-flash",
+        "cases": 200,
+        "wrong": 26
+      },
+      {
+        "run_id": "20261031T033446_721766Z_Astrion-enhanced-deepseek-flash_7e65866f",
+        "phase": "final",
+        "kind": "bfcl_astrion_run",
+        "execution_path": "astrion_enhanced_decision",
+        "api_model": "deepseek-flash",
+        "model_label": "deepseek-flash",
+        "cases": 3,
+        "wrong": 0
+      },
+      {
+        "run_id": "20261031T033446_721766Z_Astrion-enhanced-deepseek-flash_7e65866f",
+        "phase": "initial",
+        "kind": "bfcl_astrion_run",
+        "execution_path": "astrion_enhanced_decision",
+        "api_model": "deepseek-flash",
+        "model_label": "deepseek-flash",
+        "cases": 3,
+        "wrong": 0
+      }
+    ],
+    "case_history": {
+      "simple_python_40": {
+        "failed_in": [
+          {
+            "source_index": 5,
+            "error_type": "value_error:others"
+          },
+          {
+            "source_index": 6,
+            "error_type": "value_error:others"
+          },
+          {
+            "source_index": 8,
+            "error_type": "value_error:others"
+          },
+          {
+            "source_index": 9,
+            "error_type": "value_error:others"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          7
+        ]
+      },
+      "simple_python_50": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "value_error:string"
+          },
+          {
+            "source_index": 5,
+            "error_type": "value_error:string"
+          },
+          {
+            "source_index": 7,
+            "error_type": "value_error:string"
+          },
+          {
+            "source_index": 8,
+            "error_type": "simple_function_checker:wrong_count"
+          },
+          {
+            "source_index": 9,
+            "error_type": "value_error:string"
+          }
+        ],
+        "passed_in_source_indices": [
+          6
+        ]
+      },
+      "simple_python_130": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 5,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 6,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 7,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 8,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 9,
+            "error_type": "value_error:list/tuple"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "simple_python_150": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "value_error:others"
+          }
+        ],
+        "passed_in_source_indices": [
+          5,
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      "simple_python_170": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "value_error:others"
+          },
+          {
+            "source_index": 9,
+            "error_type": "value_error:others"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7
+        ]
+      },
+      "simple_python_200": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "value_error:string"
+          },
+          {
+            "source_index": 9,
+            "error_type": "value_error:string"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7
+        ]
+      },
+      "simple_python_280": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 9,
+            "error_type": "ast_decoder:decoder_failed"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7
+        ]
+      },
+      "simple_python_290": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "ast_decoder:decoder_failed"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7,
+          9
+        ]
+      },
+      "simple_python_360": {
+        "failed_in": [
+          {
+            "source_index": 6,
+            "error_type": "value_error:others"
+          },
+          {
+            "source_index": 8,
+            "error_type": "value_error:others"
+          },
+          {
+            "source_index": 9,
+            "error_type": "value_error:others"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          7
+        ]
+      },
+      "simple_python_370": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 5,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 6,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 7,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 8,
+            "error_type": "value_error:list/tuple"
+          },
+          {
+            "source_index": 9,
+            "error_type": "value_error:list/tuple"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "simple_python_380": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "ast_decoder:decoder_failed"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7,
+          9
+        ]
+      },
+      "multiple_10": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 5,
+            "error_type": "simple_function_checker:wrong_func_name"
+          },
+          {
+            "source_index": 6,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 7,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 8,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 9,
+            "error_type": "ast_decoder:decoder_failed"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "multiple_25": {
+        "failed_in": [
+          {
+            "source_index": 5,
+            "error_type": "multiple_function_checker:wrong_count"
+          },
+          {
+            "source_index": 6,
+            "error_type": "multiple_function_checker:wrong_count"
+          },
+          {
+            "source_index": 7,
+            "error_type": "multiple_function_checker:wrong_count"
+          },
+          {
+            "source_index": 8,
+            "error_type": "multiple_function_checker:wrong_count"
+          },
+          {
+            "source_index": 9,
+            "error_type": "multiple_function_checker:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          2
+        ]
+      },
+      "multiple_105": {
+        "failed_in": [
+          {
+            "source_index": 7,
+            "error_type": "value_error:others"
+          },
+          {
+            "source_index": 8,
+            "error_type": "value_error:others"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          9
+        ]
+      },
+      "multiple_135": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "ast_decoder:decoder_failed"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7,
+          9
+        ]
+      },
+      "multiple_160": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "multiple_function_checker:wrong_count"
+          },
+          {
+            "source_index": 9,
+            "error_type": "value_error:string"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7
+        ]
+      },
+      "parallel_0": {
+        "failed_in": [
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          1,
+          2,
+          5,
+          6,
+          8,
+          9
+        ]
+      },
+      "parallel_3": {
+        "failed_in": [
+          {
+            "source_index": 1,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "parallel_45": {
+        "failed_in": [
+          {
+            "source_index": 5,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          6,
+          7
+        ]
+      },
+      "parallel_100": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 5,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 6,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "parallel_105": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7
+        ]
+      },
+      "parallel_110": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7
+        ]
+      },
+      "parallel_185": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 5,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 6,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "parallel_multiple_15": {
+        "failed_in": [
+          {
+            "source_index": 6,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          7,
+          8,
+          9
+        ]
+      },
+      "parallel_multiple_35": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 5,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 6,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 7,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 8,
+            "error_type": "ast_decoder:decoder_failed"
+          },
+          {
+            "source_index": 9,
+            "error_type": "ast_decoder:decoder_failed"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "parallel_multiple_55": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 5,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 6,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "parallel_multiple_75": {
+        "failed_in": [
+          {
+            "source_index": 5,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 6,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          }
+        ],
+        "passed_in_source_indices": [
+          2
+        ]
+      },
+      "parallel_multiple_105": {
+        "failed_in": [
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          7,
+          9
+        ]
+      },
+      "parallel_multiple_140": {
+        "failed_in": [
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          8,
+          9
+        ]
+      },
+      "parallel_multiple_145": {
+        "failed_in": [
+          {
+            "source_index": 6,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          8
+        ]
+      },
+      "parallel_multiple_160": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 5,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 6,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "parallel_multiple_165": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 5,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          }
+        ],
+        "passed_in_source_indices": [
+          6
+        ]
+      },
+      "parallel_multiple_175": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          },
+          {
+            "source_index": 5,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      "parallel_multiple_180": {
+        "failed_in": [
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6
+        ]
+      },
+      "parallel_multiple_185": {
+        "failed_in": [
+          {
+            "source_index": 6,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          7,
+          8,
+          9
+        ]
+      },
+      "parallel_multiple_190": {
+        "failed_in": [
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 8,
+            "error_type": "parallel_function_checker_no_order:wrong_count"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          6,
+          9
+        ]
+      },
+      "parallel_multiple_195": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 5,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 6,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 7,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          },
+          {
+            "source_index": 9,
+            "error_type": "parallel_function_checker_no_order:cannot_find_match"
+          }
+        ],
+        "passed_in_source_indices": [
+          8
+        ]
+      },
+      "irrelevance_1": {
+        "failed_in": [
+          {
+            "source_index": 1,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "irrelevance_18": {
+        "failed_in": [
+          {
+            "source_index": 5,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 7,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          6,
+          8,
+          9
+        ]
+      },
+      "irrelevance_30": {
+        "failed_in": [
+          {
+            "source_index": 6,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 7,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          5,
+          8,
+          9
+        ]
+      },
+      "irrelevance_54": {
+        "failed_in": [
+          {
+            "source_index": 5,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 6,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          7,
+          8,
+          9
+        ]
+      },
+      "irrelevance_60": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          5,
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      "irrelevance_66": {
+        "failed_in": [
+          {
+            "source_index": 5,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      "irrelevance_72": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 6,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 7,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          5,
+          8,
+          9
+        ]
+      },
+      "irrelevance_108": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 7,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          5,
+          6,
+          8,
+          9
+        ]
+      },
+      "irrelevance_114": {
+        "failed_in": [
+          {
+            "source_index": 5,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 6,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 7,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 9,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          8
+        ]
+      },
+      "irrelevance_126": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 5,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 6,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 7,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          8,
+          9
+        ]
+      },
+      "irrelevance_174": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 5,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 6,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 7,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          8,
+          9
+        ]
+      },
+      "irrelevance_180": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 5,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 6,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 7,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          8,
+          9
+        ]
+      },
+      "irrelevance_222": {
+        "failed_in": [
+          {
+            "source_index": 5,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          2,
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      "irrelevance_228": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 5,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 6,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 7,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 8,
+            "error_type": "irrelevance_error:decoder_success"
+          },
+          {
+            "source_index": 9,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": []
+      },
+      "irrelevance_234": {
+        "failed_in": [
+          {
+            "source_index": 2,
+            "error_type": "irrelevance_error:decoder_success"
+          }
+        ],
+        "passed_in_source_indices": [
+          5,
+          6,
+          7,
+          8,
+          9
+        ]
+      }
+    }
+  },
+  "categories": {
+    "simple_python": [
+      "simple_python_40",
+      "simple_python_50",
+      "simple_python_130",
+      "simple_python_150",
+      "simple_python_170",
+      "simple_python_200",
+      "simple_python_280",
+      "simple_python_290",
+      "simple_python_360",
+      "simple_python_370",
+      "simple_python_380"
+    ],
+    "multiple": [
+      "multiple_10",
+      "multiple_25",
+      "multiple_105",
+      "multiple_135",
+      "multiple_160"
+    ],
+    "parallel": [
+      "parallel_0",
+      "parallel_3",
+      "parallel_45",
+      "parallel_100",
+      "parallel_105",
+      "parallel_110",
+      "parallel_185"
+    ],
+    "parallel_multiple": [
+      "parallel_multiple_15",
+      "parallel_multiple_35",
+      "parallel_multiple_55",
+      "parallel_multiple_75",
+      "parallel_multiple_105",
+      "parallel_multiple_140",
+      "parallel_multiple_145",
+      "parallel_multiple_160",
+      "parallel_multiple_165",
+      "parallel_multiple_175",
+      "parallel_multiple_180",
+      "parallel_multiple_185",
+      "parallel_multiple_190",
+      "parallel_multiple_195"
+    ],
+    "irrelevance": [
+      "irrelevance_1",
+      "irrelevance_18",
+      "irrelevance_30",
+      "irrelevance_54",
+      "irrelevance_60",
+      "irrelevance_66",
+      "irrelevance_72",
+      "irrelevance_108",
+      "irrelevance_114",
+      "irrelevance_126",
+      "irrelevance_174",
+      "irrelevance_180",
+      "irrelevance_222",
+      "irrelevance_228",
+      "irrelevance_234"
+    ]
+  }
+}
