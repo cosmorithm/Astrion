@@ -11,11 +11,12 @@ Its current focus is research assistance: building agents that work with project
 - **Two-level agent tree:** a parent agent delegates tasks to children with separate contexts. Child agents cannot delegate further.
 - **Documents and memory:** SQLite stores project documents and explicitly saved long-term memories. Conversation memories are shared across projects; project documents and memories remain scoped to their project.
 - **Five-layer context management:** tool output budgets, duplicate-history trimming, microcompaction, local folding, and global summarization. Durable evidence can be searched, reread, and pinned independently of the active context.
-- **Research answers:** keyword retrieval, reading source text by line range, source citations, and citation location checks.
+- **Research evidence:** PDF/OCR ingestion, page/section/line reading, multilingual semantic and keyword retrieval, Crossref/DataCite metadata, public webpage snapshots, and citation location checks.
+- **Computation and delivery:** project-scoped data and immutable artifacts, a Docker execution adapter, downloadable scripts/results/charts/reports, and persistent run journals. Execution fails closed without a usable container runtime.
 - **Research workspace:** Vue 3 and Bootstrap frontend, FastAPI backend, SSE streaming, and Markdown report rendering.
 - **Evaluation:** independent post-run judges, duration and token accounting, aggregate reports, and BFCL integration for comparing the official baseline with Astrion.
 
-Document import supports UTF-8 `.txt` / `.md` (1 MB) and PDF (20 MB / 300 pages), with page locations, extraction warnings and optional OCR. Retrieval combines exact keywords with an optional local multilingual encoder. Citation checks verify that referenced lines were read, but do not assess whether those lines support a claim. Child agents run sequentially. Automatically writing and running research experiments is a future direction.
+Document import supports UTF-8 `.txt` / `.md` (1 MB) and PDF (20 MB / 300 pages), with page locations, extraction warnings and optional OCR. Retrieval combines exact keywords with an optional local multilingual encoder. Citation checks verify that referenced lines were read, but do not assess whether those lines support a claim. Child agents run sequentially. Python analysis is wired into research agents and the workspace. The current development machine has no Docker runtime, so real container execution and isolation checks remain unverified; mocked adapter tests do not establish sandbox security or scientific validity.
 
 User requests remain verbatim. Selected evidence quotes and task-plan state stay in context; other observations remain accessible in the archive. These mechanisms preserve recorded information, not the truth of a summary or answer. Child reports remain unverified observations.
 
@@ -63,7 +64,7 @@ Then set `ASTRION_CONTEXT_SERVICE_URL=http://127.0.0.1:8766/context-edits` in th
 
 ## Research workflow
 
-See [the staged research workflow](astrion-agent/docs/RESEARCH_WORKFLOW.md) for PDF/OCR import, page and section reading, multilingual retrieval, architecture and reproducible acceptance commands.
+See [the staged research workflow](astrion-agent/docs/RESEARCH_WORKFLOW.md) for PDF/OCR import, page and section reading, multilingual retrieval, external literature evidence, isolated computation, architecture, actual validation results and reproducible acceptance commands.
 
 ## Quick start
 
@@ -82,7 +83,7 @@ Start the backend:
 ```bash
 cd astrion-agent
 python3 -m venv .venv-ui
-.venv-ui/bin/python -m pip install -r requirements-ui.txt
+.venv-ui/bin/python -m pip install -r requirements-research.txt
 .venv-ui/bin/python -m uvicorn research.api:app --host 127.0.0.1 --port 8000
 ```
 
@@ -96,7 +97,21 @@ npm run dev
 
 Open the local URL printed by Vite, usually `http://127.0.0.1:5173/`. Create a project in the sidebar, import documents into its library, and submit a question in the research workspace. The current UI is in Chinese.
 
-The backend reads the model API key. Documents and memories are stored in `astrion-agent/research_data/astrion.sqlite3` by default. The workspace is intended for local, single-user use and does not provide authentication. Disconnecting the page does not cancel an ongoing backend task.
+The backend reads the model API key. Use the “外部证据” tab to search/import sources and “数据与产物” to upload data or preview/download outputs. Documents and memories are stored in `astrion-agent/research_data/astrion.sqlite3` by default. The workspace is intended for local, single-user use and does not provide authentication. Disconnecting the page does not cancel an ongoing backend task.
+
+### Enable isolated computation
+
+From `astrion-agent/`, with Docker installed and running:
+
+```bash
+docker build -t astrion-research:1 research/execution
+ASTRION_TEST_DOCKER=1 .venv-ui/bin/python -B -m unittest tests.research.test_docker_live -v
+.venv-ui/bin/python -m research.acceptance --stage 3 --output research_data/stage3-with-docker.json
+```
+
+Execution has no network, no host credentials, read-only selected inputs, a 512 MB memory limit and a 1–60 second code deadline. Code runs in bounded container tmpfs; output files are collected into the project artifact store. These are container boundaries, not a microVM or a proof against all kernel vulnerabilities. Only trusted prebuilt images are used; there is no host-process execution fallback. The task deadline is separate from the research agent's step budget.
+
+Research snapshots remain in SQLite, artifacts live beside the database under `projects/<project_id>/artifacts/`, and complete events/results live under `runs/<project_id>/<run_id>/`. Back up both the database and sibling data directories when moving existing projects.
 
 ## CLI and tests
 
@@ -116,8 +131,8 @@ Run the research API and local HTTP streaming integration tests:
 
 ```bash
 cd astrion-agent
-.venv-ui/bin/python -m pip install -r requirements-ui-test.txt
-.venv-ui/bin/python -m unittest test_research_api test_research_http
+.venv-ui/bin/python -m pip install -r requirements-research-test.txt
+bash run_research_tests.sh
 ```
 
 Build the frontend from the repository root:
@@ -146,7 +161,10 @@ Astrion/
     ├── context_tools.py     Search, reread, and pin tools
     ├── context_adapter.py   Optional server contract and client fallback
     ├── context_service.py   Runnable reference context-editing service
-    ├── research/            Research agents, SQLite, API, and streaming
+    ├── tools/               Capability declarations, bindings and role assembly
+    ├── research/            Orchestration, storage, ingestion, retrieval, providers, execution and API
+    ├── fixtures/research/   Fixed acceptance documents, data and analysis script
+    ├── tests/research/      Research regression and opt-in real Docker tests
     ├── frontend/            Vue 3 research workspace
     ├── evaluation/          Independent evaluation layer
     ├── benchmarks/          BFCL adapters and comparisons

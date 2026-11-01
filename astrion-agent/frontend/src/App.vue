@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { request, streamResearch } from './api.js'
+import Artifacts from './components/Artifacts.vue'
 import ExternalSources from './components/ExternalSources.vue'
 import SourceLibrary from './components/SourceLibrary.vue'
 import { renderMarkdown } from './markdown.js'
@@ -160,6 +161,7 @@ onMounted(() => action(loadProjects))
       <nav class="workspace-nav" aria-label="工作台导航">
         <button :class="{ selected: activeTab === 'research' }" @click="activeTab = 'research'"><span class="nav-icon">◻</span> 研究工作台</button>
         <button :class="{ selected: activeTab === 'sources' }" @click="activeTab = 'sources'"><span class="nav-icon">▤</span> 资料库 <span class="nav-count">{{ documents.length }}</span></button>
+        <button :class="{ selected: activeTab === 'artifacts' }" @click="activeTab = 'artifacts'">数据与产物</button>
         <button :class="{ selected: activeTab === 'external' }" @click="activeTab = 'external'">外部证据</button>
         <button :class="{ selected: activeTab === 'memory' }" @click="activeTab = 'memory'"><span class="nav-icon">◌</span> 长期记忆 <span class="nav-count">{{ memories.length }}</span></button>
       </nav>
@@ -194,6 +196,8 @@ onMounted(() => action(loadProjects))
                     <span>子 Agent：{{ result.workers.length }}</span><span>Token：{{ usageText }}</span>
                     <span>引用检查：{{ result.citation_audit.status }}</span>
                     <small>引用位置检查不判断原文是否支持结论。</small>
+                    <small v-if="result.report_error">报告文件保存失败；回答和事件记录仍已保留。</small>
+                    <a v-if="result.report_artifact" :href="`/api/projects/${projectId}/artifacts/${result.report_artifact.id}/download`">下载研究报告</a>
                   </div>
                 </template>
                 <div v-else class="empty-report"><p>输入问题后，研究结果会显示在这里。</p></div>
@@ -210,10 +214,11 @@ onMounted(() => action(loadProjects))
         </section>
 
         <section v-else-if="activeTab === 'sources'">
-          <SourceLibrary :project-id="projectId" :busy="busy" @changed="loadProjectData" />
+          <SourceLibrary :key="projectId" :project-id="projectId" :busy="busy" @changed="loadProjectData" />
         </section>
 
-        <section v-else-if="activeTab === 'external'"><ExternalSources :project-id="projectId" :busy="busy" @changed="loadProjectData" /></section>
+        <section v-else-if="activeTab === 'artifacts'"><Artifacts :key="projectId" :project-id="projectId" :busy="busy" /></section>
+        <section v-else-if="activeTab === 'external'"><ExternalSources :key="projectId" :project-id="projectId" :busy="busy" @changed="loadProjectData" /></section>
         <section v-else>
           <h2>长期记忆</h2><p class="section-copy">查看和管理对话记忆、项目记忆。</p>
           <div class="panel collection-panel">

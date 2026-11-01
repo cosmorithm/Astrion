@@ -182,7 +182,7 @@ class Memory:
     def _store_evidence(self, record):
         record = copy.deepcopy(record)
         kind = record.pop('kind', 'observation')
-        field = {'document': 'excerpt', 'file': 'content', 'worker_report': 'answer'}.get(kind)
+        field = {'document': 'excerpt', 'file': 'content', 'artifact': 'content', 'worker_report': 'answer'}.get(kind)
         content = record.pop(field) if field else json.dumps(record, ensure_ascii=False)
         return self.archive.put(kind, content, record)
 

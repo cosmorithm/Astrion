@@ -1,4 +1,5 @@
 """基础文件、算术与控制工具；agent.py 保留兼容导出。"""
+
 from __future__ import annotations
 import ast
 import json
@@ -51,7 +52,9 @@ def write_file(path: str, content: str, *, sandbox: Path | None = None) -> str:
         raise ValueError("内容太大")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
-    return json.dumps({"ok": True, "path": path, "bytes": len(content.encode())}, ensure_ascii=False)
+    return json.dumps(
+        {"ok": True, "path": path, "bytes": len(content.encode())}, ensure_ascii=False
+    )
 
 
 _BINOPS = {
@@ -109,7 +112,9 @@ TOOLS = [
             "description": "列出 sandbox 目录下的文件和子目录",
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string", "description": "相对 sandbox 的路径，默认 '.'"}},
+                "properties": {
+                    "path": {"type": "string", "description": "相对 sandbox 的路径，默认 '.'"}
+                },
             },
         },
     },
@@ -176,43 +181,76 @@ TOOL_IMPL = {
 }
 
 # 多目标计划是模型声明的工作清单，不是对任务结果的独立验收。
-TOOLS.insert(-1, {
-    "type": "function", "function": {
-        "name": "update_task_plan",
-        "description": "为多目标任务记录完整子任务清单并更新状态；完成状态必须有工具结果或其他事实依据",
-        "parameters": {"type": "object", "properties": {
-            "items": {"type": "array", "minItems": 1, "items": {
-                "type": "object", "properties": {
-                    "goal": {"type": "string", "minLength": 1},
-                    "status": {"type": "string", "enum": ["pending", "completed"]},
-                }, "required": ["goal", "status"], "additionalProperties": False,
-            }},
-        }, "required": ["items"], "additionalProperties": False},
+TOOLS.insert(
+    -1,
+    {
+        "type": "function",
+        "function": {
+            "name": "update_task_plan",
+            "description": "为多目标任务记录完整子任务清单并更新状态；完成状态必须有工具结果或其他事实依据",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "goal": {"type": "string", "minLength": 1},
+                                "status": {"type": "string", "enum": ["pending", "completed"]},
+                            },
+                            "required": ["goal", "status"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["items"],
+                "additionalProperties": False,
+            },
+        },
     },
-})
-TOOLS.insert(-1, {
-    "type": "function", "function": {
-        "name": "ask_user", "description": "缺少必要信息时暂停任务并向用户询问",
-        "parameters": {"type": "object", "properties": {
-            "question": {"type": "string", "minLength": 1},
-        }, "required": ["question"], "additionalProperties": False},
+)
+TOOLS.insert(
+    -1,
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": "缺少必要信息时暂停任务并向用户询问",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "minLength": 1},
+                },
+                "required": ["question"],
+                "additionalProperties": False,
+            },
+        },
     },
-})
+)
 
 _TOOL_OUTPUTS = {
-    "list_files": "目录路径和文件列表", "read_file": "文件路径和文本内容（可能截断）",
-    "write_file": "写入是否成功、文件路径和字节数", "calculator": "算术表达式和计算结果",
-    "finish": "提交给用户的最终回答", "ask_user": "等待用户回答的问题",
+    "list_files": "目录路径和文件列表",
+    "read_file": "文件路径和文本内容（可能截断）",
+    "write_file": "写入是否成功、文件路径和字节数",
+    "calculator": "算术表达式和计算结果",
+    "finish": "提交给用户的最终回答",
+    "ask_user": "等待用户回答的问题",
     "update_task_plan": "本次任务的子目标及其声明状态",
 }
 for _tool in TOOLS:
     _tool["function"]["parameters"].setdefault("additionalProperties", False)
-TOOL_SPECS = [ToolSpec(
-    name=tool["function"]["name"], description=tool["function"]["description"],
-    input_schema=tool["function"]["parameters"],
-    output_description=_TOOL_OUTPUTS[tool["function"]["name"]],
-    terminal=tool["function"]["name"] in {"finish", "ask_user"},
-) for tool in TOOLS]
+TOOL_SPECS = [
+    ToolSpec(
+        name=tool["function"]["name"],
+        description=tool["function"]["description"],
+        input_schema=tool["function"]["parameters"],
+        output_description=_TOOL_OUTPUTS[tool["function"]["name"]],
+        terminal=tool["function"]["name"] in {"finish", "ask_user"},
+    )
+    for tool in TOOLS
+]
 TOOL_SPECS[-1:-1] = CONTEXT_SPECS
 TOOLS = [spec.as_api_tool() for spec in TOOL_SPECS]
 
@@ -225,4 +263,3 @@ def tools_for_sandbox(sandbox: Path) -> dict:
         "read_file": partial(TOOL_IMPL["read_file"], sandbox=sandbox),
         "write_file": partial(TOOL_IMPL["write_file"], sandbox=sandbox),
     }
-
