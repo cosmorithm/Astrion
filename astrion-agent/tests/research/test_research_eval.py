@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import logging
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from unittest.mock import patch
 from research.store import Store
 from evaluation.research import runner, review, model_judge
 from evaluation.research import documents, dataset
+from evaluation.research import __main__ as exam_cli
 from test_research import ScriptedLLM, call
 
 
@@ -44,6 +46,7 @@ class ExamTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             result=runner.evaluate('R01','single',lambda:model,self.root/'out',base=self.base,steps=4)
         self.assertEqual(result['case_outcome'],'pending')
+        self.assertEqual(result['settings']['worker_steps'],6)
         self.assertEqual(len(result['base_database_sha256']),64)
         self.assertEqual(result['semantic_assessment'],'pending')
         self.assertEqual([j['status'] for j in result['judgments']],['pass','pass','pending'])
@@ -73,6 +76,23 @@ class ExamTests(unittest.TestCase):
         child={t['function']['name'] for t in model.inputs[1][1]}
         self.assertNotIn('run_worker',child);self.assertNotIn('read_webpage',child)
         self.assertEqual(len(result['run']['workers']),1)
+        self.assertEqual(result['settings']['max_workers'],3)
+
+    def test_exam_defaults_and_three_worker_limit(self):
+        fake={'case_outcome':'pending','semantic_assessment':'pending','report_path':str(self.root/'fake.json')}
+        with patch.dict(os.environ,{'AGENT_API_KEY':'fake'},clear=True), \
+             patch.object(exam_cli.agent,'load_env'), \
+             patch.object(exam_cli,'evaluate',return_value=fake) as evaluate, \
+             patch.object(exam_cli,'summary',return_value={}), \
+             patch.object(exam_cli,'save_report',return_value=self.root/'summary.json'), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status=exam_cli.main(['run','--case','R01','--mode','multi','--output',str(self.root/'out')])
+        self.assertEqual(status,0)
+        self.assertEqual((evaluate.call_args.kwargs['steps'], evaluate.call_args.kwargs['workers'],
+                          evaluate.call_args.kwargs['worker_steps']), (10,3,6))
+        with self.assertRaisesRegex(ValueError,'最多创建 3 个'):
+            runner.evaluate('R01','multi',self.model,self.root/'invalid',base=self.base,workers=4)
+        self.assertFalse((self.root/'invalid').exists())
 
     def test_review_is_explicit_immutable_and_unknown_never_becomes_pass(self):
         with contextlib.redirect_stdout(io.StringIO()):

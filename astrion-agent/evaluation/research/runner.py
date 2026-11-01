@@ -14,6 +14,7 @@ from research.store import Store
 from evaluation.reporting import save_report
 from .dataset import load_data, DEFAULT_BASE, digest
 from .judges import registry
+from .config import DEFAULT_STEPS, DEFAULT_WORKERS, DEFAULT_WORKER_STEPS, validate_workers
 
 # No web, external literature, arbitrary code, historical logs or preexisting artifacts.
 ALLOWED = {'list_documents', 'document_outline', 'search_knowledge', 'read_knowledge',
@@ -68,9 +69,11 @@ def check_base(path):
     finally: db.close()
 
 
-def evaluate(case_id, mode, llm_factory, output, *, base=DEFAULT_BASE, steps=8, worker_steps=6, workers=2, budget_chars=12000):
+def evaluate(case_id, mode, llm_factory, output, *, base=DEFAULT_BASE, steps=DEFAULT_STEPS,
+             worker_steps=DEFAULT_WORKER_STEPS, workers=DEFAULT_WORKERS, budget_chars=12000):
     started = perf_counter()
     if mode not in {'single','multi'}: raise ValueError('invalid_mode')
+    validate_workers(workers)
     case = case_by_id(case_id)
     project, ids = check_base(base)
     output = Path(output).expanduser().resolve()

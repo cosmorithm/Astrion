@@ -11,6 +11,7 @@ from .dataset import DEFAULT_BASE, DEFAULT_SOURCE, load_data, validate, prepare
 from .runner import evaluate, summary
 from .review import template, apply
 from .model_judge import judge
+from .config import DEFAULT_STEPS, DEFAULT_WORKERS, DEFAULT_WORKER_STEPS, MAX_WORKERS
 
 
 def main(argv=None):
@@ -29,8 +30,10 @@ def main(argv=None):
     run.add_argument('--mode',choices=['single','multi','both'],default='both')
     run.add_argument('--base',type=Path,default=DEFAULT_BASE)
     run.add_argument('--output',type=Path,default=Path('research_data/research_eval_v1/results'))
-    run.add_argument('--steps',type=int,default=8);run.add_argument('--worker-steps',type=int,default=6)
-    run.add_argument('--workers',type=int,default=2);run.add_argument('--budget-chars',type=int,default=12000)
+    run.add_argument('--steps',type=int,default=DEFAULT_STEPS,help='主 Agent 最大轮数（默认 10）')
+    run.add_argument('--worker-steps',type=int,default=DEFAULT_WORKER_STEPS,help='每个子 Agent 最大轮数（默认 6）')
+    run.add_argument('--workers',type=int,choices=range(MAX_WORKERS + 1),default=DEFAULT_WORKERS,help='子 Agent 总数，最多 3 个')
+    run.add_argument('--budget-chars',type=int,default=12000)
     show=sub.add_parser('show',help='查看一道题的标准要点（不要提供给受测 Agent）');show.add_argument('case_id')
     rt=sub.add_parser('review-template',help='根据运行报告创建人工复核模板');rt.add_argument('report',type=Path);rt.add_argument('--output',type=Path,required=True)
     ar=sub.add_parser('apply-review',help='保存独立复核结果，不覆盖原始报告');ar.add_argument('report',type=Path);ar.add_argument('review',type=Path);ar.add_argument('--output',type=Path,default=Path('research_data/research_eval_v1/results/reviews'))

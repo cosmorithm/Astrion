@@ -26,11 +26,13 @@
 
 # 单题对照。两组使用同样模型、资料和主轮数；多 Agent 可自行决定是否委派。
 .venv-ui/bin/python -m evaluation.research run --case R07 --mode both \
-  --steps 8 --workers 2 --worker-steps 6 --budget-chars 12000
+  --steps 10 --workers 3 --worker-steps 6 --budget-chars 12000
 
 # 一次指定两题；或使用 --split dev / --split holdout / --split all。
 .venv-ui/bin/python -m evaluation.research run --case R01 --case R07 --mode both
 ```
+
+科研考试默认主 Agent 最多 10 轮、每个子 Agent 最多 6 轮、多 Agent 组累计最多 3 个子 Agent；轮数可以显式调整，子 Agent 数可以在 0–3 之间设置。单 Agent 组不创建子 Agent，工作台的研究预算不受此设置影响。
 
 `--split all` 的 `both` 会产生 40 次研究运行；R20 是两段续写，每组两次研究。命令会调用真实模型，可能花费大量 token。轮数、子 Agent 数和字符预算均是上限/触发阈值，不是总 token 或费用硬上限；没有任务时间上限。建议先运行单题观察实际费用。每次评测使用独立数据库副本（目前约 112 MB，删除不属于 split 的文献后 SQLite 不一定回收空间），全量可能占用数 GB；报告和轨迹可能含论文文本。
 
