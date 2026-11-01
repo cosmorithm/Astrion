@@ -60,20 +60,22 @@ class Artifacts:
         safe_name(name)
         if not isinstance(data, bytes) or len(data) > MAX_FILE:
             raise ResearchError("artifact_size_limit: maximum 8 MB")
-        size, count = self.store.db.execute(
-            "SELECT COALESCE(SUM(size),0),COUNT(*) FROM artifacts WHERE project_id=?", (project,)
-        ).fetchone()
-        if size + len(data) > 256_000_000 or count >= 2000:
-            raise ResearchError("project_artifact_quota: maximum 256 MB or 2000 files")
         identifier = uuid4().hex
         path = self._path(project, identifier, name)
         path.parent.mkdir(parents=True, exist_ok=False)
         media = mimetypes.guess_type(name)[0] or "application/octet-stream"
         sha = hashlib.sha256(data).hexdigest()
         try:
-            with path.open("xb") as handle:
-                handle.write(data)
             with self.store.db:
+                # Reserve quota under the same write transaction as insertion.
+                self.store.db.execute("BEGIN IMMEDIATE")
+                size, count = self.store.db.execute(
+                    "SELECT COALESCE(SUM(size),0),COUNT(*) FROM artifacts WHERE project_id=?", (project,)
+                ).fetchone()
+                if size + len(data) > 256_000_000 or count >= 2000:
+                    raise ResearchError("project_artifact_quota: maximum 256 MB or 2000 files")
+                with path.open("xb") as handle:
+                    handle.write(data)
                 self.store.db.execute(
                     "INSERT INTO artifacts(id,project_id,name,size,sha256,media_type,provenance) VALUES (?,?,?,?,?,?,?)",
                     (

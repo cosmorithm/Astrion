@@ -41,7 +41,7 @@ LIST_DOCS = spec(
 )
 OUTLINE = spec(
     "document_outline",
-    "浏览文档章节或页面目录，offset 分页。",
+    "浏览文档章节或页面目录。offset>=0，limit 为 1–50（默认30）；用 next_offset 接续，null 表示结束。",
     {"document_id": I, "offset": I, "limit": I},
     ["document_id"],
 )

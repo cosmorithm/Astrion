@@ -61,6 +61,33 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.post(f'/api/projects/{project}/documents', json=payload).status_code, 400)
         self.assertEqual(self.client.post(f'/api/projects/{project}/documents', json={'name': '../hack.md', 'content': '文本'}).status_code, 400)
 
+    def test_history_continuation_sse_and_budget_validation(self):
+        project = self.client.post('/api/projects', json={'name': 'Versions'}).json()['id']
+        config = self.client.get('/api/research/config').json()
+        self.assertEqual((config['max_steps'], config['worker_steps'], config['max_workers']), (50, 50, 5))
+        with patch.dict(os.environ, {'AGENT_API_KEY': 'fake-key'}, clear=True), patch.object(api, 'StreamingChatLLM', FakeStreamingModel), patch.object(api.agent, 'load_env'):
+            def run(**options):
+                response = self.client.post('/api/research/stream', json={'project_id': project, 'task': '完善报告', **options})
+                self.assertEqual(response.status_code, 200)
+                events = [json.loads(line[5:]) for line in response.text.splitlines() if line.startswith('data:')]
+                self.assertEqual(events[-1]['type'], 'done')
+                return events[-1]['result']
+            first = run()
+            second = run(continue_run_id=first['run_id'])
+            self.assertEqual(second['parent_run_id'], first['run_id'])
+            history = self.client.get(f'/api/projects/{project}/runs?limit=1').json()
+            self.assertEqual(history['total'], 2)
+            self.assertEqual(history['next_offset'], 1)
+            self.assertTrue(history['runs'][0]['can_continue'])
+            self.assertEqual(self.client.get(f'/api/projects/{project}/runs/{first["run_id"]}').json()['result']['answer'], '研究完成')
+            other = self.client.post('/api/projects', json={'name': 'Other'}).json()['id']
+            self.assertEqual(self.client.get(f'/api/projects/{other}/runs/{first["run_id"]}').status_code, 400)
+            self.assertEqual(self.client.post('/api/research/stream', json={
+                'project_id': other, 'task': '跨项目', 'continue_run_id': first['run_id']}).status_code, 400)
+        for options in ({'max_steps': 51}, {'worker_steps': 51}, {'max_workers': 6}, {'continue_run_id': '../bad'}):
+            response = self.client.post('/api/research/stream', json={'project_id': project, 'task': 'test', **options})
+            self.assertEqual(response.status_code, 422)
+
     def test_leaked_protocol_stream_ends_as_error_without_report(self):
         from test_response_contract import RAW
         class Upstream:

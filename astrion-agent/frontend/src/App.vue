@@ -4,6 +4,7 @@ import { request, streamResearch } from './api.js'
 import Artifacts from './components/Artifacts.vue'
 import ExternalSources from './components/ExternalSources.vue'
 import SourceLibrary from './components/SourceLibrary.vue'
+import ResearchHistory from './components/ResearchHistory.vue'
 import { renderMarkdown } from './markdown.js'
 
 const projects = ref([])
@@ -22,6 +23,10 @@ const pendingAnswer = ref('')
 const progressText = ref('')
 const progress = ref([])
 const result = ref(null)
+const historyPanel = ref(null)
+const historyLoading = ref(false)
+const continueRunId = ref('')
+const budgets = ref(null)
 const runError = ref('')
 const fileInput = ref(null)
 const currentProject = computed(() => projects.value.find(item => item.id === Number(projectId.value)))
@@ -114,11 +119,13 @@ function describeEvent(item) {
   return ''
 }
 async function startResearch() {
-  if (!projectId.value || !task.value.trim() || busy.value) return
+  if (!projectId.value || !task.value.trim() || busy.value || historyLoading.value || !budgets.value) return
   error.value = ''; runError.value = ''; notice.value = ''; result.value = null
   progress.value = []; pendingAnswer.value = ''; progressText.value = ''; busy.value = true
   try {
-    await streamResearch({ project_id: Number(projectId.value), task: task.value }, message => {
+    await streamResearch({ project_id: Number(projectId.value), task: task.value,
+      max_steps: budgets.value.max_steps, worker_steps: budgets.value.worker_steps, max_workers: budgets.value.max_workers,
+      continue_run_id: continueRunId.value || null }, message => {
       if (message.type === 'model_delta' && message.role === 'root') {
         if (message.kind === 'answer') pendingAnswer.value += message.text
         else progressText.value += message.text
@@ -130,6 +137,8 @@ async function startResearch() {
         if (text) progress.value.push(text)
       } else if (message.type === 'done') {
         result.value = message.result
+        continueRunId.value = message.result.context_archive ? message.result.run_id : ''
+        task.value = ''
         pendingAnswer.value = ''
         progressText.value = ''
         if (message.result.result.status === 'error') runError.value = message.result.result.error?.message || '模型未生成有效报告，本次研究未完成。'
@@ -137,13 +146,27 @@ async function startResearch() {
         throw new Error(message.message)
       }
     })
-  } catch (e) { error.value = e.message; runError.value = e.message } finally { busy.value = false }
+  } catch (e) { error.value = e.message; runError.value = e.message } finally {
+    busy.value = false
+    await historyPanel.value?.refresh()
+  }
+}
+function openRun(run) {
+  result.value = run
+  continueRunId.value = run?.context_archive ? run.run_id : ''
+  runError.value = run?.error_type ? `该运行失败（${run.error_type}），缺少可恢复上下文。` : ''
+  // Legacy exception records may contain status at the top level.
+  if (run && !run.result) result.value = { ...run, result: { status: run.status || 'error' } }
+  progress.value = []; pendingAnswer.value = ''; progressText.value = ''
 }
 watch(projectId, () => {
+  continueRunId.value = ''
   result.value = null; runError.value = ''; progress.value = []; pendingAnswer.value = ''; progressText.value = ''
   action(loadProjectData)
 })
-onMounted(() => action(loadProjects))
+onMounted(() => action(async () => {
+  await Promise.all([loadProjects(), request('/api/research/config').then(value => { budgets.value = value })])
+}))
 </script>
 
 <template>
@@ -182,10 +205,20 @@ onMounted(() => action(loadProjects))
           <p class="hero-copy">选择项目、导入资料并提出研究问题。</p>
           <div v-if="!projectId" class="empty-project"><div><strong>请先创建项目</strong><p>在左侧输入项目名称。</p></div></div>
           <template v-else>
+            <ResearchHistory ref="historyPanel" :project-id="projectId" :busy="busy" :selected="result?.run_id || continueRunId" @open="openRun" @error="error = $event" @loading="historyLoading = $event" />
             <form class="question-card" @submit.prevent="startResearch">
-              <div class="card-top"><div><strong>研究问题</strong></div><span class="hint-pill">基于项目资料研究</span></div>
+              <div class="card-top"><div><strong>{{ continueRunId ? '补充研究要求' : '研究问题' }}</strong></div><span class="hint-pill">{{ continueRunId ? '继承上下文 · 另存新版本' : '基于项目资料研究' }}</span></div>
               <textarea v-model="task" class="form-control question-input" rows="4" placeholder="你想探索什么？例如：多 Agent 在什么情况下能改善研究任务？" :disabled="busy"></textarea>
-              <div class="question-bottom"><span>基于当前项目资料进行研究</span><button class="btn primary-btn" :disabled="busy || !task.trim()">{{ busy ? '研究中…' : '开始研究' }}</button></div>
+              <details v-if="budgets" class="my-2">
+                <summary>运行预算：主 Agent {{ budgets.max_steps }} 轮，子 Agent {{ budgets.worker_steps }} 轮，最多 {{ budgets.max_workers }} 个</summary>
+                <div class="row g-2 mt-1">
+                  <label class="col-sm-4">主 Agent 轮数<input v-model.number="budgets.max_steps" class="form-control" type="number" min="1" :max="budgets.limits.steps" required :disabled="busy"></label>
+                  <label class="col-sm-4">每个子 Agent 轮数<input v-model.number="budgets.worker_steps" class="form-control" type="number" min="1" :max="budgets.limits.steps" required :disabled="busy"></label>
+                  <label class="col-sm-4">子 Agent 总数<input v-model.number="budgets.max_workers" class="form-control" type="number" min="0" :max="budgets.limits.workers" required :disabled="busy"></label>
+                </div>
+                <small>独立子任务可并发；预算是上限，任务完成后提前结束。</small>
+              </details>
+              <div class="question-bottom"><span>{{ continueRunId ? '保留旧报告、已读证据与待办；本次计量独立记录。' : '基于当前项目资料进行研究' }}</span><button class="btn primary-btn" :disabled="busy || historyLoading || !task.trim() || !budgets">{{ busy ? '研究中…' : continueRunId ? '继续研究' : '开始研究' }}</button></div>
             </form>
             <div class="research-grid">
               <section class="panel report-panel">
@@ -196,8 +229,9 @@ onMounted(() => action(loadProjects))
                   <div class="report-text" v-html="reportHtml"></div>
                   <div v-if="result" class="result-meta">
                     <span>状态：{{ result.result.status }}</span><span>耗时：{{ result.duration_seconds?.toFixed(1) }} s</span>
-                    <span>子 Agent：{{ result.workers.length }}</span><span>Token：{{ usageText }}</span>
-                    <span>引用检查：{{ result.citation_audit.status }}</span>
+                    <span>子 Agent：{{ result.workers?.length || 0 }}</span><span>Token：{{ usageText }}</span>
+                    <span>引用检查：{{ result.citation_audit?.status || '未检查' }}</span>
+                    <small v-if="result.parent_run_id">续写自 {{ result.parent_run_id }}；旧版本可在研究历史中查看。</small>
                     <small>引用位置检查不判断原文是否支持结论。</small>
                     <small v-if="result.report_error">报告文件保存失败；回答和事件记录仍已保留。</small>
                     <a v-if="result.report_artifact" :href="`/api/projects/${projectId}/artifacts/${result.report_artifact.id}/download`">下载研究报告</a>

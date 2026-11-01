@@ -195,7 +195,7 @@ class Documents:
 
     def outline(self, project, document, offset=0, limit=30):
         if offset < 0 or not 1 <= limit <= 50:
-            raise ValueError("invalid_pagination")
+            raise ValueError("invalid_pagination: document_outline offset>=0; limit must be 1..50; follow next_offset")
         row = self.get(project, document)
         meta = json.loads(row["metadata"])
         items = meta.get("sections", []) or meta.get("pages", [])

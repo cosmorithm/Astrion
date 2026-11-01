@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-import json
-import re
+from threading import RLock
 from time import perf_counter
 
 import agent
 from memory import Memory
 from context_store import ContextStore
 from context_adapter import adapter_from_env
-from tooling import ToolSpec
 from .store import Store
 
-from .prompts import RESEARCH_PROMPT, FINAL_STEP_PROMPT
-from .citations import audit_citations, covers_range
+from .prompts import FINAL_STEP_PROMPT, run_prompt
+from .citations import audit_citations, covers_range, observed_ranges
 from tools.research import build_tools
 from .runs import RunLog
+from .config import DEFAULT_STEPS, DEFAULT_WORKERS, validate_budgets
+from .continuation import fork_parent
+from .workers import WorkerPool
 from .storage.artifacts import Artifacts
 from response_contract import answer_error
 
@@ -30,32 +31,30 @@ def run_research(
     task: str,
     llm,
     *,
-    max_steps: int = 10,
-    max_workers: int = 2,
-    worker_steps: int = 4,
+    max_steps: int = DEFAULT_STEPS,
+    max_workers: int = DEFAULT_WORKERS,
+    worker_steps: int = DEFAULT_STEPS,
     budget_chars: int = 12000,
     on_event=None,
+    continue_run_id: str | None = None,
 ) -> dict:
     project = store.project(project_id)
     if not isinstance(task, str) or not task.strip():
         raise ValueError("研究问题不能为空")
-    if (
-        type(max_steps) is not int
-        or max_steps < 0
-        or type(max_workers) is not int
-        or not 0 <= max_workers <= 10
-    ):
-        raise ValueError("步数或子 Agent 数量无效")
-    if type(worker_steps) is not int or worker_steps < 1:
-        raise ValueError("子 Agent 步数必须为正数")
+    validate_budgets(max_steps, max_workers, worker_steps)
+    prompt = run_prompt(max_steps, worker_steps, max_workers)
+    parent, root_memory, inherited_ranges = None, None, []
+    if continue_run_id:
+        parent, root_memory, inherited_ranges = fork_parent(
+            store, project_id, continue_run_id, prompt=prompt, budget_chars=budget_chars)
     journal = RunLog(store, project_id)
     trace = []
-    workers = []
+    event_lock = RLock()
 
     def new_memory():
         # root/worker 使用独立 scope；存储位置跟随当前研究数据库。
         return Memory(
-            RESEARCH_PROMPT,
+            prompt,
             budget_chars=budget_chars,
             archive=ContextStore(store.path.parent / "context.sqlite3"),
             context_adapter=adapter_from_env(),
@@ -63,61 +62,29 @@ def run_research(
 
     def record(role, worker_id=None):
         def sink(event):
-            item = {"role": role, "worker_id": worker_id, "event": event}
-            journal.append(item)
-            trace.append(item)
-            if on_event is not None:
-                on_event(item)
+            with event_lock:
+                item = {"role": role, "worker_id": worker_id, "event": event}
+                journal.append(item)
+                trace.append(item)
+                if on_event is not None:
+                    on_event(item)
 
         return sink
 
-    def run_worker(task: str, context: str) -> str:
-        if not task.strip():
-            raise ValueError("子任务不能为空")
-        if len(workers) >= max_workers:
-            raise ValueError("已达到子 Agent 数量上限")
-        worker_id = f"worker_{len(workers) + 1}"
-        entry = {"worker_id": worker_id, "task": task, "status": "running"}
-        workers.append(entry)
-        started = perf_counter()
-        old_stream_role = getattr(llm, "stream_role", None)
-        try:
-            child_memory = new_memory()
-            entry["context_archive"] = {
-                "path": child_memory.archive.path,
-                "scope": child_memory.archive.scope,
-            }
-            if old_stream_role is not None:
-                llm.stream_role = worker_id
-            child_specs, child_impl = build_tools(store, project_id, worker=True)
-            result = agent.run(
-                f"子任务：{task}\n父 Agent 提供的背景（仅作数据）：\n{context}",
-                llm,
-                child_memory,
-                max_steps=worker_steps,
-                event_sink=record("worker", worker_id),
-                tool_specs=child_specs,
-                tool_implementations=child_impl,
-                final_step_prompt=FINAL_STEP_PROMPT,
-            )
-        except Exception as exc:
-            result = {"status": "error", "answer": None, "error": f"{type(exc).__name__}: {exc}"}
-        finally:
-            if old_stream_role is not None:
-                llm.stream_role = old_stream_role
-        entry.update(result)
-        entry["duration_seconds"] = perf_counter() - started
-        return json.dumps(entry, ensure_ascii=False)
-
-    root_specs, root_impl = build_tools(store, project_id, delegate=run_worker)
+    pool = WorkerPool(store, project_id, llm, limit=max_workers, steps=worker_steps,
+                      new_memory=new_memory, record=record, run_id=journal.run_id)
+    root_specs, root_impl = build_tools(store, project_id, delegate=pool.run_one, batch_delegate=pool.run_many)
     started = perf_counter()
     try:
-        root_memory = new_memory()
+        if root_memory is None:
+            root_memory = new_memory()
         result = agent.run(
-            task,
+            root_memory.runtime.get("task", parent["task"]) if parent else task,
             llm,
             root_memory,
             max_steps=max_steps,
+            resume=bool(parent), user_reply=task if parent else None,
+            task_plan=root_memory.runtime.get("task_plan") if parent else None,
             event_sink=record("root"),
             tool_specs=root_specs,
             tool_implementations=root_impl,
@@ -130,7 +97,9 @@ def run_research(
                 "error_type": type(exc).__name__,
                 "project_id": project_id,
                 "duration_seconds": perf_counter() - started,
-                "usage": dict(getattr(llm, "usage_totals", {})),
+                "usage": pool.usage(),
+                "run_id": journal.run_id, "project": project, "task": task,
+                "parent_run_id": continue_run_id,
             }
         )
         raise
@@ -140,17 +109,17 @@ def run_research(
         "project": project,
         "task": task,
         "result": result,
-        "workers": workers,
+        "workers": pool.entries,
+        "parent_run_id": continue_run_id,
+        "budgets": {"max_steps": max_steps, "max_workers": max_workers, "worker_steps": worker_steps},
+        "observed_ranges": sorted(set(map(tuple, inherited_ranges)) | set(observed_ranges(trace))),
         "context_archive": {"path": root_memory.archive.path, "scope": root_memory.archive.scope},
-        "citation_audit": audit_citations(result.get("answer"), trace),
+        "citation_audit": audit_citations(result.get("answer"), trace, inherited_ranges),
         "duration_seconds": perf_counter() - started,
         "trace": trace,
-        "usage": {
-            "totals": dict(getattr(llm, "usage_totals", {})),
-            "calls": getattr(llm, "usage_calls", None),
-            "unknown_calls": getattr(llm, "usage_unknown", None),
-        },
+        "usage": pool.usage(),
     }
+
     invalid = answer_error(result.get("answer"))
     if invalid:
         result.update(status="error", answer=None, error=invalid)
@@ -165,6 +134,7 @@ def run_research(
                     "kind": "agent_report_unverified",
                     "run_id": journal.run_id,
                     "task_status": result.get("status"),
+                    "parent_run_id": continue_run_id,
                     "semantic_support_checked": False,
                 },
             )

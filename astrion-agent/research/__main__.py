@@ -11,6 +11,8 @@ import agent
 from .runner import run_research
 from .store import Store
 from .commands import artifacts as artifact_commands
+from .config import DEFAULT_STEPS, DEFAULT_WORKERS
+from .runs import RunRepository
 
 
 def main():
@@ -41,11 +43,16 @@ def main():
     search.add_argument("--offset", type=int, default=0)
     run = sub.add_parser("run", help="运行研究 Agent（调用真实模型）")
     run.add_argument("--project", type=int, required=True)
-    run.add_argument("--steps", type=int, default=10)
-    run.add_argument("--workers", type=int, default=2)
-    run.add_argument("--worker-steps", type=int, default=4)
+    run.add_argument("--steps", type=int, default=DEFAULT_STEPS)
+    run.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    run.add_argument("--worker-steps", type=int, default=DEFAULT_STEPS)
+    run.add_argument("--continue-run", help="继承指定历史运行的上下文、证据与待办，另存新版本")
     run.add_argument("--trace", type=Path, help="保存运行事实 JSON，目标文件必须不存在")
     run.add_argument("task")
+    runs = sub.add_parser("runs", help="查看研究历史和可续写的运行 ID")
+    runs.add_argument("--project", type=int, required=True)
+    runs.add_argument("--offset", type=int, default=0)
+    runs.add_argument("--limit", type=int, default=20)
     docs = sub.add_parser("documents")
     docs.add_argument("--project", type=int, required=True)
     outline = sub.add_parser("outline")
@@ -87,6 +94,8 @@ def main():
                 result = {"project_id": store.create_project(args.name)}
             elif args.command == "projects":
                 result = store.projects()
+            elif args.command == "runs":
+                result = RunRepository(store, args.project).listing(args.offset, args.limit)
             elif args.command == "document-add":
                 result = {"document_id": store.add_document(args.project, args.path, ocr=args.ocr)}
             elif args.command == "memory-add":
@@ -151,6 +160,7 @@ def main():
                     max_steps=args.steps,
                     max_workers=args.workers,
                     worker_steps=args.worker_steps,
+                    continue_run_id=args.continue_run,
                 )
                 if args.trace:
                     with args.trace.open("x", encoding="utf-8") as f:

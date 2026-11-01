@@ -105,6 +105,11 @@ class StreamingChatLLM(ChatLLM):
         self.on_delta = on_delta
         self.stream_role = "root"
 
+    def fork(self, role):
+        child = StreamingChatLLM(self.key, self.base_url, self.model, self.on_delta)
+        child.stream_role = role
+        return child
+
     def _post(self, payload, purpose="决策"):
         self.last_usage = None
         payload = {**payload, "stream": True, "stream_options": {"include_usage": True}}

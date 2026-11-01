@@ -59,9 +59,12 @@ export ASTRION_MODEL_CACHE="$PWD/research_data/models"
 tooling.py                  唯一 ToolSpec / ToolCall / ToolResult / ToolRegistry 契约
 tools/builtin.py            基础文件、算术与控制工具；agent.py 保留兼容导出
 tools/knowledge.py          资料工具声明与绑定，按 Agent 分别统计已读范围
-tools/research.py           角色工具装配；主 Agent 额外获得 run_worker
+tools/research.py           角色工具装配；主 Agent 额外获得 run_worker / run_workers
 agent.py                   循环、状态、调用验证、事件和上下文调度
-research/runner.py         科研编排、主子 Agent 生命周期
+research/runner.py         科研编排与根 Agent 生命周期
+research/workers.py        有界并发、独立客户端/连接、用量汇总
+research/continuation.py   检查点复制、上下文和任务状态继承
+research/config.py         CLI / API / 运行器共享研究预算
 research/prompts.py         研究与收尾提示
 research/citations.py       引用位置检查（不等于语义支持）
 research/store.py           兼容资料与记忆入口
@@ -69,7 +72,7 @@ research/storage/          持久化、迁移、位置与分页
 research/ingestion/         TXT/MD/PDF 与 OCR 适配
 research/retrieval/         关键词、向量适配与融合排序
 research/routes/           HTTP 校验、项目边界和响应转换
-research/runs.py           持久化每次研究的 Event v1 与结果
+research/runs.py           持久化 Event v1、版本结果、项目内历史读取
 frontend/src/components/   独立资料交互，主界面负责组合
 ```
 
@@ -234,3 +237,7 @@ Docker约束依据：[Docker security](https://docs.docker.com/engine/security/)
 ## 输出异常修复（2026-11-01）
 
 DSML 控制文本不再当作回答保存；最后一轮以只读历史快照收尾，异常返回 error，原始日志保留。目录按约2600字符分页，必须遵循 next_offset；详情与最新255项通过/4项跳过口径见 [P0事故记录](incidents/2026-11-01-protocol-as-report.md)。此前三阶段实测数据是历史记录，并未改写为修复后的成绩。
+
+## 持续研究与并发
+
+默认主/子 Agent 各50轮、每次运行最多5个子 Agent，支持批量并发与根上下文续写。每次另存报告版本并独立计量；完整命令、状态语义和验证记录见 [RESEARCH_CONTINUATION.md](RESEARCH_CONTINUATION.md)。

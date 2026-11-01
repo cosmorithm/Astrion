@@ -18,6 +18,8 @@ import agent
 from .runner import run_research
 from .store import Store
 from .streaming import StreamingChatLLM
+from .config import DEFAULT_STEPS, DEFAULT_WORKERS, MAX_WORKERS
+from .continuation import load_parent
 
 agent.load_env(agent.find_env_files(Path(agent.__file__).resolve().parent))
 app = FastAPI(title="Astrion Research API")
@@ -38,6 +40,9 @@ app.include_router(external_router)
 from .routes.artifacts import router as artifacts_router
 
 app.include_router(artifacts_router)
+from .routes.runs import router as runs_router
+
+app.include_router(runs_router)
 
 
 class ProjectInput(BaseModel):
@@ -58,9 +63,10 @@ class MemoryInput(BaseModel):
 class RunInput(BaseModel):
     project_id: int
     task: str = Field(min_length=1, max_length=10000)
-    max_steps: int = Field(default=10, ge=0, le=30)
-    max_workers: int = Field(default=2, ge=0, le=5)
-    worker_steps: int = Field(default=4, ge=1, le=10)
+    max_steps: int = Field(default=DEFAULT_STEPS, ge=0, le=DEFAULT_STEPS)
+    max_workers: int = Field(default=DEFAULT_WORKERS, ge=0, le=MAX_WORKERS)
+    worker_steps: int = Field(default=DEFAULT_STEPS, ge=1, le=DEFAULT_STEPS)
+    continue_run_id: str | None = Field(default=None, pattern=r"^research_[a-f0-9]{32}$")
 
 
 def run_store(fn):
@@ -112,11 +118,19 @@ def sse(value):
     return "data: " + json.dumps(value, ensure_ascii=True) + "\n\n"
 
 
+@app.get("/api/research/config")
+def research_config():
+    return {"max_steps": DEFAULT_STEPS, "worker_steps": DEFAULT_STEPS, "max_workers": DEFAULT_WORKERS,
+            "limits": {"steps": DEFAULT_STEPS, "workers": MAX_WORKERS}}
+
+
 @app.post("/api/research/stream")
 def research_stream(body: RunInput):
     if not body.task.strip():
         raise HTTPException(status_code=400, detail="研究问题不能为空")
     run_store(lambda s: s.project(body.project_id))
+    if body.continue_run_id:
+        run_store(lambda s: load_parent(s, body.project_id, body.continue_run_id))
     agent.load_env(agent.find_env_files(Path(agent.__file__).resolve().parent))
     key = agent.first_nonempty(
         os.environ.get("AGENT_API_KEY"),
@@ -148,6 +162,7 @@ def research_stream(body: RunInput):
                 max_steps=body.max_steps,
                 max_workers=body.max_workers,
                 worker_steps=body.worker_steps,
+                continue_run_id=body.continue_run_id,
                 on_event=lambda item: emit({"type": "event", **item}),
             )
             emit({"type": "done", "result": {k: v for k, v in result.items() if k != "trace"}})

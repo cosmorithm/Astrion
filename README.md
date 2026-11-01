@@ -8,15 +8,15 @@ Its current focus is research assistance: building agents that work with project
 ## Features
 
 - **Agent loop:** structured tool calls, argument validation, explicit task states, step budgets, and execution events.
-- **Two-level agent tree:** a parent agent delegates tasks to children with separate contexts. Child agents cannot delegate further.
+- **Two-level agent tree:** a parent delegates independent tasks concurrently, with separate model clients, database connections and contexts. Research defaults to 50 decision rounds per agent and at most five children per run; children cannot delegate further.
 - **Documents and memory:** SQLite stores project documents and explicitly saved long-term memories. Conversation memories are shared across projects; project documents and memories remain scoped to their project.
 - **Five-layer context management:** tool output budgets, duplicate-history trimming, microcompaction, local folding, and global summarization. Durable evidence can be searched, reread, and pinned independently of the active context.
 - **Research evidence:** PDF/OCR ingestion, page/section/line reading, multilingual semantic and keyword retrieval, Crossref/DataCite metadata, public webpage snapshots, and citation location checks.
 - **Computation and delivery:** project-scoped data and immutable artifacts, a Docker execution adapter, downloadable scripts/results/charts/reports, and persistent run journals. Execution fails closed without a usable container runtime.
-- **Research workspace:** Vue 3 and Bootstrap frontend, FastAPI backend, SSE streaming, and Markdown report rendering.
+- **Research workspace:** Vue 3 and Bootstrap frontend, FastAPI backend, SSE streaming, Markdown report rendering, version history and checkpoint-based continuation.
 - **Evaluation:** independent post-run judges, duration and token accounting, aggregate reports, and BFCL integration for comparing the official baseline with Astrion.
 
-Document import supports UTF-8 `.txt` / `.md` (1 MB) and PDF (20 MB / 300 pages), with page locations, extraction warnings and optional OCR. Retrieval combines exact keywords with an optional local multilingual encoder. Citation checks verify that referenced lines were read, but do not assess whether those lines support a claim. Child agents run sequentially. Python analysis is wired into research agents and the workspace. The current development machine has no Docker runtime, so real container execution and isolation checks remain unverified; mocked adapter tests do not establish sandbox security or scientific validity.
+Document import supports UTF-8 `.txt` / `.md` (1 MB) and PDF (20 MB / 300 pages), with page locations, extraction warnings and optional OCR. Retrieval combines exact keywords with an optional local multilingual encoder. Citation checks verify that referenced lines were read, but do not assess whether those lines support a claim. Independent child tasks can run concurrently in a bounded batch (up to five children per research run). Python analysis is wired into research agents and the workspace. The current development machine has no Docker runtime, so real container execution and isolation checks remain unverified; mocked adapter tests do not establish sandbox security or scientific validity.
 
 User requests remain verbatim. Selected evidence quotes and task-plan state stay in context; other observations remain accessible in the archive. These mechanisms preserve recorded information, not the truth of a summary or answer. Child reports remain unverified observations.
 
@@ -100,6 +100,22 @@ npm run dev
 Open the local URL printed by Vite, usually `http://127.0.0.1:5173/`. Create a project in the sidebar, import documents into its library, and submit a question in the research workspace. The current UI is in Chinese.
 
 The backend reads the model API key. Use the “外部证据” tab to search/import sources and “数据与产物” to upload data or preview/download outputs. Documents and memories are stored in `astrion-agent/research_data/astrion.sqlite3` by default. The workspace is intended for local, single-user use and does not provide authentication. Disconnecting the page does not cancel an ongoing backend task.
+
+### Continue a research report
+
+Select a previous run in **研究历史**, enter the additional instructions, and click **继续研究**. After a successful response, subsequent requests continue from that new version; select **新建研究** to start independently. Each continuation forks the saved root context, pinned evidence and task plan into a new archive scope and saves a new report artifact. Previous reports remain unverified drafts. Citation location checks include actual reads inherited from the parent run, not merely citations written in an old report.
+
+From `astrion-agent/`:
+
+```bash
+.venv-ui/bin/python -m research runs --project 1
+.venv-ui/bin/python -m research run --project 1 --continue-run research_REPLACE_WITH_RUN_ID \
+  "Continue reading uncovered papers and produce a complete revised report with source citations."
+```
+
+Both root and child agents default to **50 decision rounds**, with **five children total per run**. The root can use `run_workers` to execute independent tasks concurrently and wait for their results; `run_worker` remains available for sequential dependencies. Children get no delegation tools. These are ceilings, not mandatory work: agents can finish early. `--steps`, `--worker-steps`, `--workers` and the workspace budget controls can reduce them. Ordinary core CLI and BFCL defaults are unchanged.
+
+Each continuation has a fresh budget and reports its own duration and total provider-reported usage, including all child and compaction calls. It restores the root checkpoint, not a live child thread or an interrupted side effect. A missing/corrupt checkpoint is rejected. History is project-scoped and reloadable after a browser restart; there is no mid-stream cancellation or crash-safe tree replay. Full child reports are stored as artifacts; batch summaries are bounded and explicitly mark truncation. See [the continuation guide](astrion-agent/docs/RESEARCH_CONTINUATION.md) for contracts, limitations and verification.
 
 ### Enable isolated computation
 

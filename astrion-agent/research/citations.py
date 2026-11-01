@@ -20,9 +20,8 @@ def covers_range(observed, document_id, start, end):
     return False
 
 
-def audit_citations(answer, trace):
-    """赛后核对引用位置是否在本次实际检索结果中，不判断语义是否支持结论。"""
-    citations = re.findall(r"\[D(\d+):L(\d+)(?:-L(\d+))?\]", answer or "")
+def observed_ranges(trace):
+    """Only successful, untruncated source reads count as observed locations."""
     observed = []
     for item in trace:
         event = item["event"]
@@ -37,6 +36,13 @@ def audit_citations(answer, trace):
         for found in json.loads(payload["content"]).get("results", []):
             if not found.get("truncated"):
                 observed.append((found["document_id"], found["start_line"], found["end_line"]))
+    return sorted(set(observed))
+
+
+def audit_citations(answer, trace, prior_ranges=()):
+    """引用位置检查覆盖继承的真实阅读记录；不判断语义支持。"""
+    citations = re.findall(r"\[D(\d+):L(\d+)(?:-L(\d+))?\]", answer or "")
+    observed = [tuple(r) for r in prior_ranges] + observed_ranges(trace)
     checks = []
     for doc, start, end in citations:
         doc, start, end = int(doc), int(start), int(end or start)

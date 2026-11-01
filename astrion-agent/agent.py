@@ -166,6 +166,10 @@ class ChatLLM:
         # 最近一次调用的服务端 usage，供结构化运行事件读取；未知时明确为 None。
         self.last_usage: dict | None = None
 
+    def fork(self, role: str):
+        """Independent request/usage state for a research worker."""
+        return ChatLLM(self.key, self.base_url, self.model)
+
     def _record_usage(self, usage: dict | None, purpose: str) -> None:
         """记录一次响应的用量。缺失或不完整时标记未知，不按零计算。"""
         self.usage_calls += 1
