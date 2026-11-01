@@ -1,0 +1,8 @@
+{
+  "version": "context-live-recall-v1",
+  "cases": [
+    {"id":"L01","source_case":"C01","position":"early","source_step":1,"question":"Atlas 实验最初纳入了多少个样本？请只回答整数。","expected":"148"},
+    {"id":"L02","source_case":"C02","position":"middle","source_step":5,"question":"Birch 修订之后当前的学习率是多少？请只回答十进制数字。","expected":"0.0005"},
+    {"id":"L03","source_case":"C03","position":"late","source_step":7,"swap_steps":[5,7],"question":"溶液 B 的有效成分质量是多少毫克？请只回答整数。","expected":"450"}
+  ]
+}

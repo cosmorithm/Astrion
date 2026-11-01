@@ -45,3 +45,19 @@ SS 组额外报告模型计划选中或近期保护的关键 Step 比例。**选
 旧版结果若将 JSON 数字误判为字符串格式错误，可以用 `python -m evaluation.context.rescore 原报告.json --output 新报告.json` 重新判分；加长样例需指定 `--cases evaluation/context/cases_long.json`。该命令保留原始响应和原始评分，不重新调用模型，也不覆盖原报告。
 
 首次真实模型小样本结果与失败原因见 [RESULTS.md](RESULTS.md)。
+
+## 真实 Agent Loop 的历史回查试验
+
+```bash
+# 3 个合成历史 × 旧压缩/SS；每组在真实 Agent Loop 中最多 10 轮，调用真实模型
+.venv-ui/bin/python -m evaluation.context.live_recall --case L01 --case L02 --case L03
+
+# 先看单题；限制轮数会改变完成率和成本，不等同默认对照。
+.venv-ui/bin/python -m evaluation.context.live_recall --case L01 --steps 10
+```
+
+试验从 `live_cases.json` 和固定长历史构造早、中、晚三题。起始目标是整理研究过程，不要求统计目标数字；直接调用现有 SS 构造器或 `Memory.compact`，随后提出新问题，由 `agent.run` 和真实的 `search_step_history`、`read_step_history`、证据工具完成回答。所有 Agent 组共享本地输入预算 B；旧压缩原生使用字符阈值，因此其结果未必满足本地 0.5B 目标，报告单独列出，不把它当成同输出预算的严格对照。
+
+评测记录问题提出前答案是否**字面可见**、Agent 调用的历史工具、工具结果是否包含答案、最终回答与成本。报告检查答案最早是在初始视图、后续决策视图还是历史工具结果中出现；只有答案最早出现在工具结果且最终答对，才标记为“工具先返回且答对”。即使如此也不是因果证明或事实语义裁判。历史是合成数据，不能代表真实科研记忆。提问阶段实验性放宽字符水位，token 水位仍可触发后续重构，因此不是工作台默认配置的原样行为。具体预算、构造过程、事件快照、答案和错误保存在 `eval_reports/`，可能包含模型的详细输出，应按研究数据保存。
+
+旧版首次运行 `context_live_recall_v1.json` 没有保存 Agent 阶段的重试诊断，也未保存临时 SQLite 中的完整证据档案；已知费用仅是下限。后来脚本记录 Agent 重试提示并把证据档案的内容快照纳入结果。两者的执行代码不同，应以报告的运行标识和源码为准，避免把后续改进追溯为首次运行结果。
