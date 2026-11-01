@@ -105,6 +105,26 @@ def prediction(answer, doc_id, observed, paragraphs):
     return clean, [paragraphs[n] for n in sorted(selected)]
 
 
+def partial_usage(workspace):
+    """Account for completed model events before a fatal call; failed calls are unknown."""
+    totals={'prompt_tokens':0,'completion_tokens':0,'total_tokens':0};calls=0;unknown=0
+    journals=list((Path(workspace)/'runs').rglob('events.jsonl'))
+    if not journals:return {'totals':{},'calls':None,'unknown_calls':None}
+    try:
+        for journal in journals:
+            with journal.open(encoding='utf-8') as f:
+                for line in f:
+                    event=(json.loads(line).get('event') or {});kind=event.get('type')
+                    if kind not in ('model.call.finished','model.call.failed'):continue
+                    calls+=1;usage=(event.get('payload') or {}).get('usage')
+                    if kind=='model.call.failed' or not isinstance(usage,dict) or any(type(usage.get(k)) is not int for k in totals):
+                        unknown+=1;continue
+                    for k in totals:totals[k]+=usage[k]
+    except (OSError,ValueError,TypeError):
+        return {'totals':totals,'calls':None,'unknown_calls':None}
+    return {'totals':totals,'calls':calls,'unknown_calls':unknown if calls else None}
+
+
 def run(data_dir, output, factory, *, count=2, offset=0, split='dev', steps=10, workers=3, worker_steps=6, budget_chars=12000):
     if split not in SPLITS: raise ValueError('unknown_split')
     data_dir, output = Path(data_dir), Path(output)
@@ -142,14 +162,16 @@ def run(data_dir, output, factory, *, count=2, offset=0, split='dev', steps=10, 
                 'citation_audit': record.get('citation_audit'), 'observed_ranges': record.get('observed_ranges'),
                 'duration_seconds': record.get('duration_seconds'), 'usage': record.get('usage'),
                 'workers': len(record.get('workers') or []), 'run_id': record.get('run_id'), 'workspace': str(case_path)})
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             reports.append({'paper_id': paper_id, 'question_id': qa['question_id'], 'status': 'error',
                             'error_type': type(exc).__name__, 'duration_seconds': perf_counter()-started,
-                            'workspace': str(case_path)})
+                            'usage':partial_usage(case_path),'workspace': str(case_path)})
         finally: store.close()
-        (suite / 'cases.json').write_text(json.dumps(reports, ensure_ascii=False, indent=2), encoding='utf-8')
-    (suite/'gold.json').write_text(json.dumps(gold, ensure_ascii=False), encoding='utf-8')
-    (suite/'predictions.jsonl').write_text(''.join(json.dumps(p, ensure_ascii=False)+'\n' for p in predictions), encoding='utf-8')
+        # Persist every complete case so an interruption cannot discard earlier work.
+        for name,content in [('cases.json',json.dumps(reports,ensure_ascii=False,indent=2)),
+                             ('gold.json',json.dumps(gold,ensure_ascii=False)),
+                             ('predictions.jsonl',''.join(json.dumps(p,ensure_ascii=False)+'\n' for p in predictions))]:
+            tmp=suite/(name+'.tmp');tmp.write_text(content,encoding='utf-8');tmp.replace(suite/name)
     scored = subprocess.run([sys.executable, str(evaluator.resolve()), '--gold', str((suite/'gold.json').resolve()),
                              '--predictions', str((suite/'predictions.jsonl').resolve())], capture_output=True, text=True, check=True)
     result = {'benchmark':'QASPER', 'version':'0.3', 'split':split, 'sample_count':count, 'selection':f'first question per paper, official order, offset={offset}',
@@ -199,6 +221,13 @@ def merge(suites, evaluator, output):
                         if event.get('type') == 'model.call.started':
                             model = (event.get('payload') or {}).get('model')
                             if model: models.add(model)
+            case=dict(case)
+            if case.get('status')=='error' and not case.get('usage'):
+                try:
+                    case['usage']=partial_usage(case['workspace'])
+                    case['usage_source']='reconstructed_from_events; failed call usage unknown'
+                except (OSError, ValueError, TypeError):
+                    case['usage']=None
             all_cases.append(case)
     spec=importlib.util.spec_from_file_location('qasper_official_evaluator',evaluator)
     official=importlib.util.module_from_spec(spec);spec.loader.exec_module(official)
@@ -206,6 +235,10 @@ def merge(suites, evaluator, output):
     if set(references) != seen or set(combined_pred)-seen: raise ValueError('invalid_predictions_or_gold')
     if len(models) != 1: raise ValueError('missing_or_mixed_models')
     metrics=official.evaluate(references,combined_pred)
+    successful={c['question_id'] for c in all_cases if c.get('status') in ('completed','no_tool_call')
+                and c['question_id'] in combined_pred and combined_pred[c['question_id']]['answer'].strip()}
+    successful_metrics=official.evaluate({qid:references[qid] for qid in successful},
+                                         {qid:combined_pred[qid] for qid in successful}) if successful else None
     for case in all_cases:
         qid=case['question_id']
         grade=official.evaluate({qid:references[qid]}, {qid:combined_pred[qid]} if qid in combined_pred else {})
@@ -215,12 +248,140 @@ def merge(suites, evaluator, output):
     result={'benchmark':'QASPER','version':baseline[0],'split':baseline[1], 'dataset_sha256':baseline[2],
             'official_evaluator_sha256':baseline[3], 'settings':baseline[4], 'model':next(iter(models)), 'sample_count':len(seen),
             'selection':'first question per paper, merged independent official-order samples; see source suites',
-            'metrics':metrics,'cases':all_cases,'duration_seconds':duration,
+            'metrics':metrics,'successful_cases':len(successful),'successful_only_metrics':successful_metrics,
+            'cases':all_cases,'duration_seconds':duration,
             'known_total_tokens':sum(x for x in token_values if x is not None),
             'unknown_token_runs':sum(x is None or (c.get('usage') or {}).get('unknown_calls') != 0 for x,c in zip(token_values,all_cases)),
             'source_suites':[str(p.resolve()) for p in suites],
             'note':'Pilot sample only. Answer F1 is token overlap; evidence F1 uses cited, observed paragraphs. Neither is semantic correctness.'}
     target=Path(output)/('qasper-merged-'+uuid.uuid4().hex)
     target.mkdir(parents=True,exist_ok=False)
+    (target/'summary.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+    return target,result
+
+
+def recover_partial(partial, data_dir, output, *, offset, split='dev', steps=10, workers=3, worker_steps=6, budget_chars=12000):
+    """Reconstruct a new suite from saved complete cases; preserve all original files."""
+    partial,data_dir=Path(partial).resolve(),Path(data_dir)
+    if (partial/'summary.json').exists():raise ValueError('suite_already_complete')
+    reports=json.loads((partial/'cases.json').read_text())
+    if not reports:raise ValueError('no_complete_cases')
+    source=data_dir/SPLITS[split];evaluator=data_dir/'qasper_evaluator.py'
+    data=json.loads(source.read_text());selected=select(data,len(reports),offset)
+    gold={};predictions=[]
+    for report,(paper_id,paper,question) in zip(reports,selected):
+        if report.get('paper_id')!=paper_id or report.get('question_id')!=question['question_id']:
+            raise ValueError('partial_question_mismatch')
+        if report.get('status') is None:raise ValueError('not_a_finalized_case')
+        workspace=Path(report['workspace']).resolve(); db=workspace/'research.sqlite3'
+        import sqlite3
+        con=sqlite3.connect(f'file:{db}?mode=ro',uri=True)
+        try: row=con.execute('SELECT id,content FROM documents ORDER BY id').fetchall()
+        finally:con.close()
+        text,paragraphs=paper_text(paper)
+        if len(row)!=1 or row[0][1]!=text:raise ValueError('partial_document_mismatch')
+        gold[paper_id]={**paper,'qas':[question]}
+        if report.get('status')=='error':
+            continue
+        answer,evidence=prediction(report.get('answer'),row[0][0],report.get('observed_ranges') or [],paragraphs)
+        if report.get('predicted_answer')!=answer or report.get('evidence_paragraphs')!=len(evidence):
+            raise ValueError('partial_prediction_mismatch')
+        predictions.append({'question_id':question['question_id'],'predicted_answer':answer,'predicted_evidence':evidence})
+    suite=Path(output)/('qasper-recovered-'+uuid.uuid4().hex);suite.mkdir(parents=True,exist_ok=False)
+    (suite/'gold.json').write_text(json.dumps(gold,ensure_ascii=False),encoding='utf-8')
+    (suite/'predictions.jsonl').write_text(''.join(json.dumps(p,ensure_ascii=False)+'\n' for p in predictions),encoding='utf-8')
+    (suite/'cases.json').write_text(json.dumps(reports,ensure_ascii=False,indent=2),encoding='utf-8')
+    scored=subprocess.run([sys.executable,str(evaluator.resolve()),'--gold',str((suite/'gold.json').resolve()),
+                           '--predictions',str((suite/'predictions.jsonl').resolve())],capture_output=True,text=True,check=True)
+    result={'benchmark':'QASPER','version':'0.3','split':split,'sample_count':len(reports),
+            'selection':f'first question per paper, official order, offset={offset}',
+            'dataset_sha256':sha256(source),'official_evaluator_sha256':sha256(evaluator),
+            'code_version':None,'recovered_from':str(partial),
+            'recovery_note':'Settings supplied from launching command; original case workspaces and logs preserved.',
+            'settings':{'steps':steps,'workers':workers,'worker_steps':worker_steps,'budget_chars':budget_chars},
+            'scoring':'unmodified official evaluator, adapted answer and cited+observed paragraph evidence',
+            'scope':'QASPER structured text; captions included, figure/table visual content not provided',
+            'metrics':json.loads(scored.stdout),'cases':reports}
+    (suite/'summary.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+    return suite,result
+
+
+def replace_failed(merged_path, retry_suites, evaluator, output):
+    """Create a separately labelled report, retrying failed cases only."""
+    import importlib.util
+    merged_path=Path(merged_path).resolve();merged=json.loads(merged_path.read_text())
+    if merged.get('benchmark')!='QASPER':raise ValueError('not_qasper')
+    evaluator=Path(evaluator)
+    if sha256(evaluator)!=merged['official_evaluator_sha256']:raise ValueError('mismatched_evaluator')
+    gold={};predictions={}
+    for source in merged['source_suites']:
+        path=Path(source)
+        for pid,paper in json.loads((path/'gold.json').read_text()).items():
+            if pid in gold:raise ValueError('duplicate_paper')
+            gold[pid]=paper
+        for line in (path/'predictions.jsonl').read_text().splitlines():
+            row=json.loads(line);qid=row['question_id']
+            if qid in predictions:raise ValueError('duplicate_prediction')
+            predictions[qid]={'answer':row['predicted_answer'],'evidence':row['predicted_evidence']}
+    cases={c['question_id']:dict(c) for c in merged['cases']}
+    q_paper={q['question_id']:pid for pid,paper in gold.items() for q in paper['qas']}
+    if set(cases)!=set(q_paper):raise ValueError('cases_gold_mismatch')
+    replaced=[];attempts=[];seen=set()
+    total_tokens=merged.get('known_total_tokens',0);unknown=merged.get('unknown_token_runs',0)
+    duration=merged.get('duration_seconds',0)
+    for suite in map(Path,retry_suites):
+        report=json.loads((suite/'summary.json').read_text());retry_gold=json.loads((suite/'gold.json').read_text())
+        if (report.get('benchmark')!='QASPER' or report.get('dataset_sha256')!=merged['dataset_sha256']
+            or report.get('official_evaluator_sha256')!=merged['official_evaluator_sha256']
+            or report.get('settings')!=merged['settings'] or report.get('split')!=merged['split']):
+            raise ValueError('incompatible_retry')
+        for pid,paper in retry_gold.items():
+            if pid not in gold or paper!=gold[pid]:raise ValueError('retry_gold_mismatch')
+        retry_pred={}
+        for line in (suite/'predictions.jsonl').read_text().splitlines():
+            row=json.loads(line);retry_pred[row['question_id']]={'answer':row['predicted_answer'],'evidence':row['predicted_evidence']}
+        for case in report['cases']:
+            qid=case['question_id']
+            if qid in seen or qid not in cases or cases[qid].get('status')!='error':raise ValueError('not_unique_failed_case')
+            seen.add(qid)
+            if case['paper_id']!=q_paper[qid] or q_paper[qid] not in retry_gold:raise ValueError('retry_paper_mismatch')
+            models=set()
+            for f in (Path(case['workspace'])/'runs').rglob('events.jsonl'):
+                with f.open(encoding='utf-8') as stream:
+                    for line in stream:
+                        event=json.loads(line).get('event') or {}
+                        if event.get('type')=='model.call.started':
+                            model=(event.get('payload') or {}).get('model')
+                            if model:models.add(model)
+            if models!={merged['model']}:raise ValueError('retry_model_mismatch')
+            usage=case.get('usage')
+            if case.get('status')=='error' and not usage:
+                try:usage=partial_usage(case['workspace'])
+                except (OSError,ValueError,TypeError):usage=None
+            u=usage or {};tokens=(u.get('totals') or {}).get('total_tokens')
+            if tokens is not None:total_tokens+=tokens
+            if tokens is None or u.get('unknown_calls')!=0:unknown+=1
+            duration+=case.get('duration_seconds') or 0
+            attempts.append({'question_id':qid,'status':case.get('status'),'workspace':case['workspace'],'usage':usage})
+            if case.get('status') in ('completed','no_tool_call') and qid in retry_pred and retry_pred[qid]['answer'].strip():
+                case=dict(case);case['previous_failed_attempt']=cases[qid]['workspace']
+                cases[qid]=case;predictions[qid]=retry_pred[qid];replaced.append(qid)
+    spec=importlib.util.spec_from_file_location('qasper_official_evaluator',evaluator)
+    official=importlib.util.module_from_spec(spec);spec.loader.exec_module(official)
+    refs=official.get_answers_and_evidence(gold,False)
+    all_cases=[cases[c['question_id']] for c in merged['cases']]
+    success={c['question_id'] for c in all_cases if c.get('status') in ('completed','no_tool_call')
+             and c['question_id'] in predictions and predictions[c['question_id']]['answer'].strip()}
+    metrics=official.evaluate(refs,predictions)
+    success_metrics=official.evaluate({q:refs[q] for q in success},{q:predictions[q] for q in success}) if success else None
+    for c in all_cases:
+        qid=c['question_id'];score=official.evaluate({qid:refs[qid]}, {qid:predictions[qid]} if qid in predictions else {})
+        c['official_metrics']={'Answer F1':score['Answer F1'],'Evidence F1':score['Evidence F1']}
+    result={**merged,'metrics':metrics,'successful_cases':len(success),'successful_only_metrics':success_metrics,
+            'cases':all_cases,'known_total_tokens':total_tokens,'unknown_token_runs':unknown,'duration_seconds':duration,
+            'retry_policy':'one additional attempt only for explicitly failed cases; original result retained',
+            'original_summary':str(merged_path),'original_summary_sha256':sha256(merged_path),
+            'retry_suites':[str(Path(p).resolve()) for p in retry_suites],'retry_attempts':attempts,'replaced_question_ids':replaced}
+    target=Path(output)/('qasper-with-retries-'+uuid.uuid4().hex);target.mkdir(parents=True,exist_ok=False)
     (target/'summary.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     return target,result

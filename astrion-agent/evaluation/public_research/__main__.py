@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 import sys
 import agent
-from . import qasper, browsecomp
+from . import qasper, browsecomp, qasper_analysis, qasper_review
 
 
 def main(argv=None):
@@ -28,6 +28,35 @@ def main(argv=None):
     merge.add_argument('suites', type=Path, nargs='+')
     merge.add_argument('--evaluator', type=Path, default=Path('research_data/public_benchmarks/qasper/qasper_evaluator.py'))
     merge.add_argument('--output', type=Path, default=Path('research_data/public_benchmarks/results'))
+    retry = sub.add_parser('qasper-apply-retries', help='Create a separate report replacing only failed cases')
+    retry.add_argument('summary',type=Path)
+    retry.add_argument('suites',nargs='+',type=Path)
+    retry.add_argument('--evaluator',type=Path,default=Path('research_data/public_benchmarks/qasper/qasper_evaluator.py'))
+    retry.add_argument('--output',type=Path,default=Path('research_data/public_benchmarks/results'))
+    recover = sub.add_parser('qasper-recover', help='Recover finalized cases from an interrupted suite')
+    recover.add_argument('partial', type=Path)
+    recover.add_argument('--offset', type=int, required=True)
+    recover.add_argument('--data', type=Path, default=Path('research_data/public_benchmarks/qasper'))
+    recover.add_argument('--output', type=Path, default=Path('research_data/public_benchmarks/results'))
+    recover.add_argument('--split', choices=('dev','test'), default='dev')
+    recover.add_argument('--steps', type=int, default=10)
+    recover.add_argument('--workers', type=int, choices=range(4), default=3)
+    recover.add_argument('--worker-steps', type=int, default=6)
+    recover.add_argument('--budget-chars', type=int, default=12000)
+    analysis = sub.add_parser('qasper-analyze', help='Analyze retrieval, citation and optional model evidence support')
+    analysis.add_argument('summary', type=Path)
+    analysis.add_argument('--output', type=Path, default=Path('research_data/public_benchmarks/results'))
+    analysis.add_argument('--k', type=int, default=5)
+    analysis.add_argument('--model-review', action='store_true', help='Run provisional model reviewer; incurs cost')
+    analysis.add_argument('--judge-model', help='Judge model name (defaults to AGENT_MODEL)')
+    analysis.add_argument('--reuse', type=Path, help='Reuse matching prior reviews, preserving usage accounting')
+    human = sub.add_parser('qasper-review-template', help='Prepare a local human support-review form')
+    human.add_argument('summary', type=Path)
+    human.add_argument('--output', type=Path, required=True)
+    apply = sub.add_parser('qasper-apply-review', help='Validate a completed human review without overwriting history')
+    apply.add_argument('summary', type=Path)
+    apply.add_argument('review', type=Path)
+    apply.add_argument('--output', type=Path, default=Path('research_data/public_benchmarks/results'))
     download = sub.add_parser('browsecomp-download', help='Download all seven official fixed-corpus shards')
     download.add_argument('--corpus-dir', type=Path, default=Path('research_data/public_benchmarks/browsecomp_plus/corpus'))
     download.add_argument('--endpoint', default='https://huggingface.co')
@@ -48,6 +77,32 @@ def main(argv=None):
         if args.command == 'qasper-merge':
             path, result = qasper.merge(args.suites,args.evaluator,args.output)
             print(json.dumps({'summary_path':str(path/'summary.json'),'metrics':result['metrics']},indent=2)); return 0
+        if args.command == 'qasper-apply-retries':
+            path,result=qasper.replace_failed(args.summary,args.suites,args.evaluator,args.output)
+            print(json.dumps({'summary_path':str(path/'summary.json'),'replaced':len(result['replaced_question_ids']),
+                              'metrics':result['metrics']},ensure_ascii=False,indent=2));return 0
+        if args.command == 'qasper-recover':
+            path,result=qasper.recover_partial(args.partial,args.data,args.output,offset=args.offset,split=args.split,
+                steps=args.steps,workers=args.workers,worker_steps=args.worker_steps,budget_chars=args.budget_chars)
+            print(json.dumps({'summary_path':str(path/'summary.json'),'metrics':result['metrics']},ensure_ascii=False,indent=2)); return 0
+        if args.command == 'qasper-analyze':
+            factory = None
+            if args.model_review:
+                agent.load_env(agent.find_env_files(Path(agent.__file__).resolve().parent))
+                key = agent.first_nonempty(os.getenv('ASTRION_JUDGE_API_KEY'),os.getenv('AGENT_API_KEY'),os.getenv('DEEPSEEK_API_KEY'),os.getenv('OPENAI_API_KEY'))
+                if not key: raise ValueError('judge model API key not configured')
+                url = os.getenv('ASTRION_JUDGE_BASE_URL') or os.getenv('AGENT_BASE_URL') or 'https://api.deepseek.com'
+                model = args.judge_model or os.getenv('AGENT_MODEL') or 'deepseek-chat'
+                factory = lambda:agent.ChatLLM(key,url,model)
+            path,result = qasper_analysis.analyze(args.summary,args.output,k=args.k,judge_factory=factory,reuse=args.reuse)
+            print(json.dumps({'summary_path':str(path/'summary.json'),'statistics':result['statistics']},ensure_ascii=False,indent=2)); return 0
+        if args.command == 'qasper-review-template':
+            result=qasper_review.template(args.summary)
+            with args.output.open('x',encoding='utf-8') as f: json.dump(result,f,ensure_ascii=False,indent=2)
+            print(json.dumps({'review_template':str(args.output.resolve()),'cases':len(result['cases'])},ensure_ascii=False)); return 0
+        if args.command == 'qasper-apply-review':
+            path,result=qasper_review.apply(args.summary,args.review,args.output)
+            print(json.dumps({'summary_path':str(path/'summary.json'),'counts':result['counts']},ensure_ascii=False)); return 0
         if args.command == 'browsecomp-download':
             browsecomp.download_corpus(args.corpus_dir, args.endpoint); return 0
         if args.command == 'browsecomp-index':

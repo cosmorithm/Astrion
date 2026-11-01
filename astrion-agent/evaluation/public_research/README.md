@@ -30,3 +30,42 @@ Official source: https://allenai.org/data/qasper ; dataset v0.3 archives downloa
 ## ScholarQA-CS2 — integration preparation
 
 `scholarqa.execute()` runs the real research loop in an isolated project, with Astrion's own research tools. `asta_solver.py` supplies an optional Inspect solver for the official AstaBench task and scorer, but has not yet been validated against the gated official dataset. This is a custom toolset, not the standard Asta MCP environment. Official scorer expects structured section/citation JSON and uses a separate model service; missing dataset authorization, scoring credentials, or a malformed model response can prevent a valid score. Accept the upstream dataset terms and configure credentials locally; never send tokens to a third-party mirror. Do not call this an official benchmark result until the integration and scorer have actually run successfully.
+
+## QASPER evidence diagnostics and review
+
+After `qasper-merge`, analyze the actual recorded tool responses without another Agent run:
+
+```bash
+.venv-ui/bin/python -m evaluation.public_research qasper-analyze PATH_TO_MERGED_SUMMARY --k 5
+# Optional: use a separate LLM call as a provisional reviewer. This incurs extra costs.
+.venv-ui/bin/python -m evaluation.public_research qasper-analyze PATH_TO_MERGED_SUMMARY --k 5 --model-review
+# Set ASTRION_JUDGE_API_KEY / ASTRION_JUDGE_BASE_URL or --judge-model to use an independent provider/model.
+# Reuse previously completed reviews only when input, cited source, question, prompt and judge model match:
+.venv-ui/bin/python -m evaluation.public_research qasper-analyze PATH_TO_MERGED_SUMMARY \
+  --model-review --reuse PATH_TO_PREVIOUS_ANALYSIS_SUMMARY
+# Export a human review form; edit reviewer, verdict and reason, preserving the source fields.
+.venv-ui/bin/python -m evaluation.public_research qasper-review-template PATH_TO_ANALYSIS_SUMMARY --output review.json
+.venv-ui/bin/python -m evaluation.public_research qasper-apply-review PATH_TO_ANALYSIS_SUMMARY review.json
+```
+
+The diagnostics are distinct:
+
+- `first_search_recall_at_k_macro`: for each scorable question, count the fraction of a human-annotated evidence set present **in full** in the first `search_knowledge` call's first K returned excerpts. Average across scorable questions. A successful run with no search or a failed first search scores zero for the first attempt; later successful searches do not replace it. An absent, malformed, incomplete, or failed run is unknown.
+- `first_search_partial_recall_at_k_macro` is a separate, less strict diagnostic: at least 80 contiguous normalized characters of an annotated paragraph (or the full paragraph if shorter) must appear in an excerpt. A partial hit does not prove that sufficient evidence was retrieved or that the claim is supported.
+- `all_search_recall_macro` and `all_search_partial_recall_macro` use the union of all returned search results, so they are **not** Recall@K. `all_observed_recall_macro` additionally includes recorded `read_knowledge` and `read_document` responses; evidence must occur fully in a returned excerpt. This is a conservative trace-based measurement, not a semantic similarity judgment.
+- Each score uses the maximum over eligible complete text-only reference annotations, then macro-averages questions. Cases where any annotator says unanswerable, or no complete reference is represented as text (such as missing tables/figures), are excluded and separately counted. An annotation may have multiple valid evidence alternatives beyond those marked in QASPER; exact matching can undercount. Results report the measured denominator and excluded reasons.
+- Official Answer F1 and Evidence F1 remain unchanged and are shown separately. The support reviewer assesses answer claims against cited source text, and marks missing/unread citations, missing source, or overlong evidence as `unknown`. A narrow pattern guard also downgrades a supported verdict on an explicit inability/absence claim to `unknown`; other unsupported claims can still escape the guard. It is **provisional**, especially if it uses the same model as the agent, and does not establish semantic correctness. The report records reviewer token usage independently.
+- A human review form carries the question, answer, references and cited excerpts. `unknown` never counts as a pass. Applying the review validates its source hash and unchanged evidence fields, requires reasons for decided judgments, and writes a new report without modifying the original run.
+
+
+For interrupted or failed suites:
+
+```bash
+# Recover finalized cases to a new directory; pass the original command's exact options.
+.venv-ui/bin/python -m evaluation.public_research qasper-recover PATH_TO_INTERRUPTED_SUITE --offset ORIGINAL_OFFSET
+# Once a merged suite has failures, run those exact offsets once more if desired, then create
+# a clearly labelled separate score that substitutes only successful retries of failed cases:
+.venv-ui/bin/python -m evaluation.public_research qasper-apply-retries PATH_TO_ORIGINAL_MERGED_SUMMARY PATH_TO_RETRY_SUITE
+```
+
+Each finalized case is written as it finishes; a fatal `SystemExit` from the model client is recorded for that case and the next case is attempted. The recovery command reconstructs selected cases only after checking their IDs, paper text and predictions, leaves the interrupted source untouched, and records that settings were supplied by the caller. It cannot recover an in-flight case's final answer or verify settings that were not saved; retain the original launch command. The separately generated retry report checks the data/evaluator hashes, paper annotations, budgets and model name; it includes failed and retry usage separately in the total and preserves the original report. Never present the with-retry result as a no-retry run.
