@@ -807,6 +807,10 @@ DeepSeek 官方 [模型元数据](https://api-docs.deepseek.com/api/list-models/
 
 失败运行若有完整检查点，也可在研究历史中选择并继续；检查点后的操作可能需要重做，已有产物应先核对。每次续写新建 run_id 和 context scope，继承用户原话、已读证据、固定原句和任务计划。旧报告是待核查草稿；不会把旧报告中的引用直接算成已读证据。各版独立记录耗时、token、子任务和产物 ID，预算重新计数。主/子轮数及子 Agent 数可通过 `--steps`、`--worker-steps`、`--workers` 或工作台预算控件下调。详情见 [续写与并发说明](docs/RESEARCH_CONTINUATION.md)。
 
+### 科研考试 v1
+
+基于本地 25 篇论文原件建立 20 题和开发/保留集；每次研究使用隔离资料库，禁止外部来源工具，并由独立程序和可选模型裁判赛后评估。标准答案草案仍需人工复核，不能把位置有效当作语义正确。试题、运行与复核流程见 [科研考试说明](evaluation/research/README.md)。
+
 ## Research 工作台（Vue 3）
 
 本地工作台使用 Vue 3、Bootstrap 和 FastAPI，提供项目、资料、长期记忆与研究界面。研究过程通过 SSE 传递主 Agent 和子 Agent 运行事件；OpenAI 兼容的模型接口以流式方式返回内容和 `finish` 答案片段。生成中的内容是暂定的，最终以任务结束事件的结果为准。支持情况取决于实际模型服务的 Chat Completions 流式协议。

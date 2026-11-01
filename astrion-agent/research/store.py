@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS memories (
 
 from .retrieval.search import terms, search
 from .storage.documents import Documents, migrate
+from .ingestion.documents import MAX_FILE_BYTES
 
 
 class Store:
@@ -68,8 +69,8 @@ class Store:
     def add_document(self, project_id, path, *, ocr=False):
         self.project(project_id)
         path = Path(path).expanduser().resolve(strict=True)
-        if not path.is_file() or path.stat().st_size > 20_000_000:
-            raise ValueError("资料必须是小于等于 20 MB 的普通文件")
+        if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
+            raise ValueError("资料必须是小于等于 25 MB 的普通文件")
         return self.import_document(project_id, path.name, path.read_bytes(), str(path), ocr=ocr)
 
     def import_document(self, project_id, name, data, source="上传", *, ocr=False, extra=None):

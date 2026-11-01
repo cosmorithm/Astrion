@@ -26,7 +26,7 @@ DELEGATE_BATCH = spec(
 )
 
 
-def build_tools(store, project, *, worker=False, delegate=None, batch_delegate=None):
+def build_tools(store, project, *, worker=False, delegate=None, batch_delegate=None, allowlist=None):
     bound = KnowledgeTools(store, project)
     specs = [*KNOWLEDGE_SPECS, *EXTERNAL_SPECS, *COMPUTATION_SPECS, *HISTORY_SPECS, *CONTROL_SPECS]
     implementations = {
@@ -43,4 +43,9 @@ def build_tools(store, project, *, worker=False, delegate=None, batch_delegate=N
         if batch_delegate is not None:
             specs.append(DELEGATE_BATCH)
             implementations["run_workers"] = batch_delegate
+    if allowlist is not None:
+        if not isinstance(allowlist, (set, frozenset)) or 'finish' not in allowlist:
+            raise ValueError('tool allowlist must include finish')
+        specs = [item for item in specs if item.name in allowlist]
+        implementations = {name: fn for name, fn in implementations.items() if name in allowlist}
     return specs, implementations

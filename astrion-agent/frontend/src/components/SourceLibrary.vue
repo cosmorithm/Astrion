@@ -94,7 +94,7 @@ async function moreOutline() {
   <section>
     <h2>研究资料</h2>
     <p class="section-copy">
-      TXT / Markdown（1 MB）或 PDF（20 MB）。按页、章节与行号核对原文。
+      TXT / Markdown（1 MB）或 PDF（25 MB）。按页、章节与行号核对原文。
     </p>
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div class="panel collection-panel">

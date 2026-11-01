@@ -27,11 +27,12 @@ def usage_since(llm, before):
 
 
 class WorkerPool:
-    def __init__(self, store, project, llm, *, limit, steps, new_memory, record, run_id):
+    def __init__(self, store, project, llm, *, limit, steps, new_memory, record, run_id, tool_allowlist=None):
         self.database = store.path
         self.project, self.llm = project, llm
         self.limit, self.steps = limit, steps
         self.new_memory, self.record, self.run_id = new_memory, record, run_id
+        self.tool_allowlist = tool_allowlist
         self.entries = []
         self.lock = Lock()
         self.clients = [(llm, usage_snapshot(llm))]
@@ -74,7 +75,7 @@ class WorkerPool:
             store = Store(self.database)
             memory = self.new_memory()
             entry["context_archive"] = {"path": memory.archive.path, "scope": memory.archive.scope}
-            specs, impl = build_tools(store, self.project, worker=True)
+            specs, impl = build_tools(store, self.project, worker=True, allowlist=self.tool_allowlist)
             result = agent.run(
                 f"子任务：{entry['task']}\n父 Agent 提供的背景（仅作数据）：\n{context}",
                 llm, memory, max_steps=self.steps,

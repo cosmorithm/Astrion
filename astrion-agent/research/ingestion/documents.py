@@ -8,14 +8,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-MAX_FILE_BYTES = 20_000_000
+MAX_FILE_BYTES = 25_000_000
 MAX_TEXT_CHARS = 2_000_000
 
 
 def extract_document(name, data, *, ocr=False):
     suffix = Path(name).suffix.lower()
     if len(data) > MAX_FILE_BYTES:
-        raise ValueError("document_too_large: limit 20 MB")
+        raise ValueError("document_too_large: limit 25 MB")
     if suffix in {".md", ".txt"}:
         if len(data) > 1_000_000:
             raise ValueError("资料超过 1 MB")

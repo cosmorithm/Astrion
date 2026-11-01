@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "corpus_id": "agent-test-paper-v1",
+  "papers": [
+    {
+      "id": "P01",
+      "name": "01_2402.01680_llm-multi-agents-survey.pdf",
+      "sha256": "d3410856f2b8629ab7365af3bd62fe8291b1a595ec954f1feb859a2688c7179c",
+      "size_bytes": 1243493,
+      "pages": 15
+    },
+    {
+      "id": "P02",
+      "name": "02_2501.06322_collaboration-mechanisms-survey.pdf",
+      "sha256": "badaf8bb47535df96252be38c5a5b81d979478b860ed67c2c4ac0ebaa4483ae5",
+      "size_bytes": 2420086,
+      "pages": 35
+    },
+    {
+      "id": "P03",
+      "name": "03_2605.14892_life-survey.pdf",
+      "sha256": "07a860559c6424a0cf0ae1e9f33db35e428f3f2d8d64f6235c0c47172827cbbd",
+      "size_bytes": 12068508,
+      "pages": 89
+    },
+    {
+      "id": "P04",
+      "name": "04_2602.11583_five-ws-communication.pdf",
+      "sha256": "5c8a6a3368056ff0bb0c36d1a432e68d6a358e4ecbeabeae2565b94146ee8fdc",
+      "size_bytes": 3848111,
+      "pages": 143
+    },
+    {
+      "id": "P05",
+      "name": "05_2607.26212_multi-agent-debate-survey.pdf",
+      "sha256": "8e07e677271669a4296cd05169851c295a59f53aeb337a87fdfcaa75ebf2074b",
+      "size_bytes": 973564,
+      "pages": 35
+    },
+    {
+      "id": "P06",
+      "name": "06_2505.21116_creativity-mas-survey.pdf",
+      "sha256": "63099b5eda4d3678b795528f93c4dd52828625fdc50670103abe2c50ca6be10e",
+      "size_bytes": 1461925,
+      "pages": 23
+    },
+    {
+      "id": "P07",
+      "name": "07_2303.17760_camel.pdf",
+      "sha256": "926c73c2ae9f9abc7612ab58373e428476f4de55db78646ed59de09810db7777",
+      "size_bytes": 7536497,
+      "pages": 77
+    },
+    {
+      "id": "P08",
+      "name": "08_2308.00352_metagpt.pdf",
+      "sha256": "17582e47647fac8eaa3681feade41c8408310c4133acc5c6823565fbe880e1ac",
+      "size_bytes": 16753634,
+      "pages": 29
+    },
+    {
+      "id": "P09",
+      "name": "09_2308.08155_autogen.pdf",
+      "sha256": "fcf8b1acae6b1bd6f14c92463caa9726828bf998234ba9f10c2411087897c96b",
+      "size_bytes": 3571809,
+      "pages": 43
+    },
+    {
+      "id": "P10",
+      "name": "10_2307.07924_chatdev.pdf",
+      "sha256": "1cffa12eae0586ec7074fc660a90b4fe90e406e9c07f3a48819a899e4bf55fd1",
+      "size_bytes": 3477144,
+      "pages": 13
+    },
+    {
+      "id": "P11",
+      "name": "11_2308.10848_agentverse.pdf",
+      "sha256": "813320d58bd598428de4f2bba0c742f2ce305cdcda78537e6376e20543444397",
+      "size_bytes": 4652125,
+      "pages": 39
+    },
+    {
+      "id": "P12",
+      "name": "12_2305.14325_multiagent-debate.pdf",
+      "sha256": "b302ff15202dc3cda03f40ea1ac92b29e1519978540b345af92991f6d3e619b4",
+      "size_bytes": 1779875,
+      "pages": 27
+    },
+    {
+      "id": "P13",
+      "name": "13_2610.30429_roleflow.pdf",
+      "sha256": "575682004663c67dae82c3624074f57221b16db1bc698fa52dabcc4354c3b644",
+      "size_bytes": 5279396,
+      "pages": 21,
+      "known_extraction_warnings": [
+        "pypdf_font_mapping_lines_skipped"
+      ]
+    },
+    {
+      "id": "P14",
+      "name": "14_2610.33539_coevolve.pdf",
+      "sha256": "3e597863d0f31048b2261499b14167885e30add1a274d0345048dbb2d7a5747e",
+      "size_bytes": 3777789,
+      "pages": 25
+    },
+    {
+      "id": "P15",
+      "name": "15_2610.34450_evolvemas.pdf",
+      "sha256": "b1ec92a1f1a055c13df6362c2a755e8a2716193789d6619ab3f079474a7972b1",
+      "size_bytes": 2376904,
+      "pages": 27,
+      "known_extraction_warnings": [
+        "pypdf_fonttools_missing_encoding_may_be_incomplete"
+      ]
+    },
+    {
+      "id": "P16",
+      "name": "16_2610.35398_bcmaac.pdf",
+      "sha256": "4a9cd40e072c0c52924855b5e740edb9defaa2d7ef3b811e15ee9fd97f773bf2",
+      "size_bytes": 1108916,
+      "pages": 18
+    },
+    {
+      "id": "P17",
+      "name": "17_2610.35690_evorouter.pdf",
+      "sha256": "674bf17fa58feb1daf40107891f5af68bacaf1e5a12c40bbc14985cb7c6b257e",
+      "size_bytes": 2009890,
+      "pages": 13
+    },
+    {
+      "id": "P18",
+      "name": "18_2410.02506_agentprune.pdf",
+      "sha256": "f22167e93e36d6d8a8e38fbf23107959cced9e99b05fd559a3c09afa13c41678",
+      "size_bytes": 21130583,
+      "pages": 37
+    },
+    {
+      "id": "P19",
+      "name": "19_2406.07155_macnet.pdf",
+      "sha256": "218988f7944195a66d57383f4089b01151a3babf86e5e13a3d65b146baddda4f",
+      "size_bytes": 3241680,
+      "pages": 18
+    },
+    {
+      "id": "P20",
+      "name": "20_2503.13657_why-mas-fail.pdf",
+      "sha256": "1b9e317a2a421e60ca2b2eda4a30844557a01e63286a790890c0ecef32d25460",
+      "size_bytes": 1188307,
+      "pages": 47
+    },
+    {
+      "id": "P21",
+      "name": "21_2610.32060_communication-failures.pdf",
+      "sha256": "a3280f55451e0795fa67a0fbddec4234a4e29a4dd37cb782d212c0bddee68f6c",
+      "size_bytes": 548303,
+      "pages": 24
+    },
+    {
+      "id": "P22",
+      "name": "22_2610.31709_workflow-design-space.pdf",
+      "sha256": "5b2ad607284a3da874fce8110cd9942e66278584a0c60ff1f6890994f8811a66",
+      "size_bytes": 1096865,
+      "pages": 21,
+      "known_extraction_warnings": [
+        "pypdf_xobject_limit_content_may_be_skipped"
+      ]
+    },
+    {
+      "id": "P23",
+      "name": "23_2610.30769_herding-cascades.pdf",
+      "sha256": "ab247cd1916ce8fec27447ef557b7c80c0cb08522de03b54581a501f756054c7",
+      "size_bytes": 10837617,
+      "pages": 32
+    },
+    {
+      "id": "P24",
+      "name": "24_2610.27027_hallucination-clinical.pdf",
+      "sha256": "9449355210b43bc017601310cb1c39902067ea438d3698f7fbf5b6b2f5bca028",
+      "size_bytes": 458810,
+      "pages": 18
+    },
+    {
+      "id": "P25",
+      "name": "25_2610.29292_credit-attribution-topology.pdf",
+      "sha256": "e431d4f6588992efa7116e66ae2e5eaf14812461d664be73266fe3e6b1e8df90",
+      "size_bytes": 1279144,
+      "pages": 11
+    }
+  ]
+}

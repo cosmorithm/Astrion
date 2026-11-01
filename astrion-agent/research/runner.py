@@ -37,6 +37,7 @@ def run_research(
     budget_chars: int | None = None,
     on_event=None,
     continue_run_id: str | None = None,
+    tool_allowlist: set[str] | None = None,
 ) -> dict:
     project = store.project(project_id)
     if not isinstance(task, str) or not task.strip():
@@ -77,8 +78,10 @@ def run_research(
         return sink
 
     pool = WorkerPool(store, project_id, llm, limit=max_workers, steps=worker_steps,
-                      new_memory=new_memory, record=record, run_id=journal.run_id)
-    root_specs, root_impl = build_tools(store, project_id, delegate=pool.run_one, batch_delegate=pool.run_many)
+                      new_memory=new_memory, record=record, run_id=journal.run_id,
+                      tool_allowlist=tool_allowlist)
+    root_specs, root_impl = build_tools(store, project_id, delegate=pool.run_one, batch_delegate=pool.run_many,
+                                        allowlist=tool_allowlist)
     started = perf_counter()
     try:
         if root_memory is None:

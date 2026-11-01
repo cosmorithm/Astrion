@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request, UploadFile, File, Form
 from .dependencies import database
+from ..ingestion.documents import MAX_FILE_BYTES
 
 router = APIRouter(prefix="/api/projects/{project_id}")
 
@@ -8,7 +9,7 @@ router = APIRouter(prefix="/api/projects/{project_id}")
 def upload(
     project_id: int, request: Request, file: UploadFile = File(...), ocr: bool = Form(False)
 ):
-    data = file.file.read(20_000_001)
+    data = file.file.read(MAX_FILE_BYTES + 1)
     with database(request) as store:
         doc = store.import_document(project_id, file.filename or "", data, ocr=ocr)
         return {"id": doc, "outline": store.document_store.outline(project_id, doc)}

@@ -32,7 +32,7 @@ SQLite 采用加列、加表迁移，保留已有 document ID、原文和记忆�
 .venv-ui/bin/python -m research read --project 1 3 --page 1 --offset 1000
 ```
 
-PDF 限制为 20 MB / 300 页；TXT/MD 仍为 1 MB。每页保留稳定页号、提取方法、全局行号、扫描嫌疑和警告；有 PDF 目录时使用目录，否则以标题规则识别章节并标记推断来源。原始 PDF 字节保存在资料库，可供复核。没有文本的页面明确插入缺失标记。
+PDF 限制为 25 MB / 300 页；TXT/MD 仍为 1 MB。每页保留稳定页号、提取方法、全局行号、扫描嫌疑和警告；有 PDF 目录时使用目录，否则以标题规则识别章节并标记推断来源。原始 PDF 字节保存在资料库，可供复核。没有文本的页面明确插入缺失标记。
 
 提取不保证多栏、表格、公式或阅读顺序完整，统一携带 `layout_unverified` 和 `tables_and_equations_may_be_incomplete`；这不是自动识别所有丢失公式的能力。可用 `document-add --ocr` 或工作台复选框启用 Tesseract OCR（需安装 `tesseract` 及 `eng` / `chi_sim` 语言包），逐扫描页处理并标记 OCR 未验证。OCR 失败保留页面和错误状态，不冒充完整原文。
 

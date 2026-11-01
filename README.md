@@ -16,9 +16,13 @@ Its current focus is research assistance: building agents that work with project
 - **Research workspace:** Vue 3 and Bootstrap frontend, FastAPI backend, SSE streaming, Markdown report rendering, version history and checkpoint-based continuation.
 - **Evaluation:** independent post-run judges, duration and token accounting, aggregate reports, and BFCL integration for comparing the official baseline with Astrion.
 
-Document import supports UTF-8 `.txt` / `.md` (1 MB) and PDF (20 MB / 300 pages), with page locations, extraction warnings and optional OCR. Retrieval combines exact keywords with an optional local multilingual encoder. Citation checks verify that referenced lines were read, but do not assess whether those lines support a claim. Independent child tasks can run concurrently in a bounded batch (up to five children per research run). Python analysis is wired into research agents and the workspace. The current development machine has no Docker runtime, so real container execution and isolation checks remain unverified; mocked adapter tests do not establish sandbox security or scientific validity.
+Document import supports UTF-8 `.txt` / `.md` (1 MB) and PDF (25 MB / 300 pages), with page locations, extraction warnings and optional OCR. Retrieval combines exact keywords with an optional local multilingual encoder. Citation checks verify that referenced lines were read, but do not assess whether those lines support a claim. Independent child tasks can run concurrently in a bounded batch (up to five children per research run). Python analysis is wired into research agents and the workspace. The current development machine has no Docker runtime, so real container execution and isolation checks remain unverified; mocked adapter tests do not establish sandbox security or scientific validity.
 
 User requests remain verbatim. Selected evidence quotes and task-plan state stay in context; other observations remain accessible in the archive. These mechanisms preserve recorded information, not the truth of a summary or answer. Child reports remain unverified observations.
+
+### Research exam
+
+Astrion Research Eval v1 uses a local, frozen set of 25 original PDFs, 20 questions and separate development/holdout paper sets. It runs isolated single- and multi-agent research tasks with independent post-run checks. Answer keys and semantic judgments remain provisional until reviewed against the PDFs; the included small pilot is a connectivity test, not a benchmark score. See the [exam guide](astrion-agent/evaluation/research/README.md).
 
 ## Five-layer context pipeline
 
