@@ -5,6 +5,7 @@ from uuid import uuid4
 from pathlib import Path
 
 from memory import Memory
+from context_history import copy_history
 from context_adapter import adapter_from_env
 from .runs import RunRepository
 from .citations import observed_ranges
@@ -29,6 +30,7 @@ def fork_parent(store, project, run_id, *, prompt, budget_chars):
     state["archive_scope"] = state["archive_snapshot"]["scope"] = scope
     memory = Memory.from_dict(state, system_prompt=prompt, budget_chars=budget_chars)
     memory.attach_archive(store.path.resolve().parent / "context.sqlite3")
+    copy_history(previous.archive, memory.archive)
     memory.context_adapter = adapter_from_env()
     ranges = parent.get("observed_ranges")
     if ranges is None:

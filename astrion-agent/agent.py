@@ -43,6 +43,8 @@ from memory import Memory
 from memory_evidence import extract_tool_evidence
 from context_tools import CONTEXT_SPECS, context_implementations
 from context_adapter import adapter_from_env
+from context_history import AgentHistory
+from context_construction import ContextConstructor, estimate_tokens
 from session import load_session, save_session, validate_task_plan
 from response_contract import answer_error, finalization_messages
 from tooling import ToolCall, ToolRegistry, ToolResult, ToolSpec
@@ -275,6 +277,7 @@ def run(
     tool_implementations: dict[str, Callable] | None = None,
     final_step_prompt: str | None = None,
     capture_model_input: bool = False,
+    history_identity: dict | None = None,
 ) -> dict:
     """运行任务；可选独立目录、事件记录和会话持久化。
 
@@ -351,11 +354,19 @@ def run(
         **context_implementations(memory),
     })
     event_emitter = EventEmitter(event_sink)
+    identity = dict(history_identity or {})
+    identity.setdefault('task', task)
+    history = AgentHistory(memory.archive, event_emitter.run_id, identity)
+    # Durable histories retain each observable request, including generic CLI runs.
+    capture_model_input = capture_model_input or bool(memory.archive.path)
+    memory.agent_history = history
     model_call_count = 0
 
     def emit(event_type: str, *, step: int | None = None,
              payload: dict | None = None) -> dict:
-        return event_emitter.emit(event_type, step=step, payload=payload)
+        event = event_emitter.emit(event_type, step=step, payload=payload)
+        history.record(event)
+        return event
 
     def error_data(exc: BaseException) -> dict:
         return {"type": type(exc).__name__, "message": str(exc)}
@@ -435,7 +446,15 @@ def run(
     persist("running")
     for step in range(1, max_steps + 1):
         event_step = initial_steps + step
-        if memory.needs_compaction():
+        # Cheap five-layer cleanup remains available for oversized individual
+        # results. A full step-based rebuild starts at the 80% watermark.
+        token_budget_raw = os.environ.get('ASTRION_CONTEXT_INPUT_BUDGET_TOKENS', '').strip()
+        input_budget_tokens = int(token_budget_raw) if token_budget_raw.isdecimal() and int(token_budget_raw) > 0 else None
+        estimated_request = estimate_tokens({'messages': memory.for_model(), 'tools': selected_tools}) if input_budget_tokens else None
+        full_rebuild = bool(memory.archive.path and len(history.steps()) >= 2 and (
+            memory.chars() >= int(memory.budget_chars * 0.8)
+            or (input_budget_tokens is not None and estimated_request >= int(input_budget_tokens * 0.8))))
+        if memory.needs_compaction() or full_rebuild:
             before_chars = memory.chars()
             print(dim(f"  [记忆] 当前 {before_chars} 字符，预算 {memory.budget_chars}；检查五层压缩…"))
             emit("memory.compaction.started", step=event_step, payload={
@@ -457,7 +476,30 @@ def run(
 
             compaction_started = perf_counter()
             try:
-                compacted = memory.compact(summarize, force=False)
+                compacted = False
+                if full_rebuild:
+                    def context_model_call(purpose, request_messages):
+                        return call_model(
+                            lambda: llm.chat(request_messages, tools=[]), purpose=purpose,
+                            step=event_step,
+                            input_metadata={"message_count": len(request_messages),
+                                            "message_chars": len(json.dumps(request_messages, ensure_ascii=False)),
+                                            "tool_count": 0},
+                            request_snapshot={"messages": request_messages, "tools": []},
+                        )
+                    constructor = ContextConstructor(memory, history, context_model_call,
+                                                     model=getattr(llm, 'model', None),
+                                                     usage=lambda: getattr(llm, 'last_usage', None))
+                    try:
+                        constructor.rebuild(task, tools=selected_tools, input_budget_tokens=input_budget_tokens)
+                        compacted = True
+                    except (Exception, SystemExit) as exc:
+                        # Failed plans/summaries never replace the last good view.
+                        history.record_build({'status': 'failed', 'reason': str(exc)[:300],
+                                              'error_type': type(exc).__name__})
+                        print(dim(f"  [记忆] Step 重构未完成，沿用已有压缩：{type(exc).__name__}"))
+                if not compacted and memory.needs_compaction():
+                    compacted = memory.compact(summarize, force=False)
             except BaseException as exc:
                 emit("memory.compaction.failed", step=event_step, payload={
                     "before_chars": before_chars,
@@ -485,6 +527,7 @@ def run(
                 print(dim(f"  [记忆] 保留原记录：{memory.compaction_reason}"))
 
         print(bold(f"[{step}]"))
+        history.begin_step(event_step)
 
         messages = memory.for_model()
         finalizing = final_step_prompt is not None and step == max_steps
@@ -635,6 +678,7 @@ def run(
             return {"status": terminal_status, "answer": terminal_answer, "steps": steps_taken}
 
         # 这一批工具结果已经全部写回，历史此刻是自洽的，可以存档。
+        history.end_step("completed")
         persist("running")
 
     print(red(f"\n  ! 达到本次最大步数 {max_steps}，强制停止"))

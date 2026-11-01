@@ -98,8 +98,12 @@ def run_research(
             tool_implementations=root_impl,
             final_step_prompt=FINAL_STEP_PROMPT,
             capture_model_input=True,
+            history_identity={'outer_run_id': journal.run_id, 'agent_id': journal.run_id + '/root',
+                              'role': 'root', 'task': task},
         )
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
+        if root_memory is not None and getattr(root_memory, 'agent_history', None):
+            root_memory.agent_history.fail_run()
         # Only a completed tool batch is resumable. Never checkpoint an in-flight
         # call here: restore the last checkpoint already committed by the loop.
         checkpoint = None

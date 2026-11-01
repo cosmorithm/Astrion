@@ -70,6 +70,7 @@ class WorkerPool:
     def _execute(self, entry, llm, context):
         started, before = perf_counter(), usage_snapshot(llm)
         store = None
+        memory = None
         try:
             # SQLite connections must be created/closed in their owning thread.
             store = Store(self.database)
@@ -82,6 +83,9 @@ class WorkerPool:
                 event_sink=self.record("worker", entry["worker_id"]),
                 tool_specs=specs, tool_implementations=impl, final_step_prompt=FINAL_STEP_PROMPT,
                 capture_model_input=True,
+                history_identity={'outer_run_id': self.run_id, 'agent_id': self.run_id + '/' + entry['worker_id'],
+                                  'parent_agent_id': self.run_id + '/root', 'role': 'worker',
+                                  'task': entry['task']},
             )
             entry.update(result)
             if result.get("answer"):
@@ -92,7 +96,9 @@ class WorkerPool:
                                     "worker_id": entry["worker_id"], "semantic_support_checked": False})
                 except (ValueError, OSError) as exc:
                     entry["report_error"] = {"code": "report_save_failed", "type": type(exc).__name__}
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
+            if memory is not None and getattr(memory, 'agent_history', None):
+                memory.agent_history.fail_run()
             entry.update(status="error", answer=None,
                          error={"code": "worker_failed", "type": type(exc).__name__})
         finally:

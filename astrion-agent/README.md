@@ -438,15 +438,33 @@ python3 -B -m unittest -v test_token_usage
 
 ### 搜索、重读与固定证据
 
-所有运行中的 Agent 都获得三个受限工具，引用不是任意文件路径：
+所有运行中的 Agent 都获得以下受限工具，引用和 Step ID 都限定在当前 Agent 作用域：
 
 ```text
 search_evidence(query, offset=0)        # 每页 5 条；查找旧引用与片段
 read_evidence(ref, offset=0, limit=2000) # 字符分页，最大 4000；返回来源与 next_offset
 pin_evidence(ref, quote)               # 固定原文；quote="" 显式取消固定
+search_step_history(query="", offset=0) # 查询本 Agent 的 Step 目录，每页 5 条
+read_step_history(step_id, level="RAW", offset=0, limit=2000) # 重读 Step 或已生成摘要
 ```
 
 原始工具结果在发送给模型时附带 `_context.result_ref` 与 `_context.evidence_refs`。大结果的凭据同样携带引用。取消固定不删除原文，重读的是当时观察到的快照；需要最新外部状态时应重新调用原工具。
+
+### 按 Agent 分隔的 Step 历史与上下文重构
+
+CLI 和研究入口为每个 Agent 的 `scope` 在 `context.sqlite3` 中记录 Step、执行事件与每次模型请求的消息/工具快照。主 Agent 与每个子 Agent 的历史相互隔离；子 Agent 完成后记录仍保留，主 Agent 只能看到显式返回的结果。继续研究时，主 Agent 的已有记录被复制到新的 scope，原记录不变；子 Agent 私有记录不会自动并入。正在执行中断时留下的 Step 可以处于 `running`，不能据此宣称工具已经执行完毕；旧运行没有的新字段也不会被追溯补造。通过 `Memory(...)` 直接构造的内存档案不会持久化，调用方需提供文件型 `ContextStore`。
+
+达到字符预算约 80%（或配置的估计 token 预算约 80%）且至少有两个已记录 Step 时，尝试进行一次重构。首先检查系统提示、工具声明、所有用户消息和近期原始 Step 能否放进半个预算；无法放入时不调用新摘要模型，沿用已有上下文及五层压缩。可重构时按 Step 逐条调用 LLM 生成 SS，并按来源版本缓存；SS 是导航摘要，目标约 80 token，可能遗漏事实。LLM 根据 SS 目录提出选择，程序验证 Step 属于本 Agent，再按需生成 S/M/L 或读取原文；S/M/L 仅在被选中时生成和缓存。摘要调用和选择调用记录为上下文事件，不占任务 Step。模型计划无效、摘要失败、目录过大、候选消息不合法或预算不足时，不用候选覆盖当前视图；如果原有五层处理条件满足，仍可能执行原有处理。原始消息和 Step 记录始终留在档案中。
+
+默认的字符预算仍是估算代理而非模型上下文窗口；重构的半预算检查包括工具 schema。可选设置 `ASTRION_CONTEXT_INPUT_BUDGET_TOKENS` 为正整数，表示已预留输出和安全余量的输入预算，并使用**启发式估算**检查 80% 触发和 50% 目标；不是供应商 tokenizer，也不能保证实际请求不超窗。模型实际报告的 usage 保存在调用事件中，估算数不能当作账单。SS、S、M、L 的长度只是生成目标，不是严格 token 截断。单个 Step 原始事件超过 32 个 20,000 字符片段时，本次重构会明确失败并保留原文；层级目录、精确分词器及语义保真评估仍待完善。新增一次 LLM 调用会增加成本，不代表回答质量必然提高。
+
+研究 API 通过项目和运行记录验证后，提供 `GET /api/projects/{project_id}/runs/{run_id}/agents` 列出本次 Agent，以及 `GET /api/projects/{project_id}/runs/{run_id}/agents/{agent_id}/steps?offset=0&limit=20` 列 Step；加 `step_id` 参数可分页查看该 Step 事件和当时模型请求快照。`agent_id` 为 `root` 或对应 `worker_1` 等。快照仅保存程序实际收到或发送的内容，不代表供应商内部未返回的思考；它可能含用户资料和模型输入，应按研究数据保护。事件中的完整快照也可能较大，注意保存周期和访问权限。上下文构建记录位于同一个数据库的 `agent_context_builds`，每次请求快照位于 `agent_context_snapshots`。
+
+验证新增 Step 历史与重构测试：
+
+```bash
+python -m unittest discover -s tests/context -q
+```
 
 ### 可选服务端适配
 
