@@ -1,6 +1,8 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
+from tests.context_counter import CodepointCounter
 from pathlib import Path
 
 from context_construction import ContextConstructor
@@ -12,6 +14,11 @@ from memory import Memory
 
 class StepHistoryTests(unittest.TestCase):
     def setUp(self):
+        token_patch = patch(
+            "context_construction.load_token_counter", return_value=CodepointCounter()
+        )
+        token_patch.start()
+        self.addCleanup(token_patch.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / "context.sqlite3"
         self.memory = Memory(
@@ -114,14 +121,16 @@ class StepHistoryTests(unittest.TestCase):
         self.assertEqual(before, self.memory.for_model())
         self.assertEqual(self.calls, [])
 
-    def test_invalid_plan_never_replaces_current_context(self):
+    def test_invalid_plan_uses_scoped_fallback(self):
         for n in range(1, 4):
             self.step(n)
-        before = self.memory.for_model()
         self.selection = [{"step_id": "other-agent-step", "level": "RAW"}]
-        with self.assertRaisesRegex(ValueError, "context_invalid_plan_reference"):
-            ContextConstructor(self.memory, self.history, self.model).rebuild("task")
-        self.assertEqual(before, self.memory.for_model())
+        build = ContextConstructor(self.memory, self.history, self.model).rebuild(
+            "task"
+        )
+        self.assertEqual(build["planner"], "deterministic_fallback")
+        self.assertNotIn("other-agent-step", build["selections"])
+        self.assertEqual(self.memory.check(), [])
 
     def test_isolation_snapshots_raw_pagination_and_fork(self):
         self.step(1)

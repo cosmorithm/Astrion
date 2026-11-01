@@ -22,6 +22,7 @@ from agent import SUMMARIZE_PROMPT
 from context_construction import ContextConstructor
 from context_history import AgentHistory
 from context_store import ContextStore, encode
+from context_tokenizer import load_token_counter
 from memory import Memory
 
 SYSTEM = (
@@ -158,7 +159,7 @@ def _catalog(history):
     return result
 
 
-def run_group(case, mode, llm, *, budget_factor=1.25):
+def run_group(case, mode, llm, *, budget_factor=1.25, followups=()):
     if mode not in MODES:
         raise ValueError("invalid_mode")
     calls = []
@@ -170,6 +171,7 @@ def run_group(case, mode, llm, *, budget_factor=1.25):
         "score": None,
         "calls": calls,
         "answer_response": None,
+        "followups": [],
     }
     started = perf_counter()
     with tempfile.TemporaryDirectory(prefix="astrion-context-eval-") as temp:
@@ -177,6 +179,9 @@ def run_group(case, mode, llm, *, budget_factor=1.25):
             case, Path(temp) / "context.sqlite3", budget_factor
         )
         initial_chars = memory.chars()
+        counter = load_token_counter(getattr(llm, "model", None))
+        initial_local_tokens = counter.count_request(memory.for_model(), [])
+        token_budget = max(1, int(initial_local_tokens * budget_factor))
         construction_started = perf_counter()
 
         def invoke(purpose, messages, *, summarize=False):
@@ -187,10 +192,15 @@ def run_group(case, mode, llm, *, budget_factor=1.25):
                 "request": request,
                 "duration_seconds": None,
                 "usage": None,
+                "sent": False,
+                "local_input_tokens": counter.count_request(messages, []),
             }
             calls.append(item)
             diagnostics = io.StringIO()
             try:
+                if mode != "append" and item["local_input_tokens"] > token_budget:
+                    raise ValueError("context_model_request_exceeds_local_token_budget")
+                item["sent"] = True
                 with contextlib.redirect_stdout(diagnostics):
                     if summarize:
                         value = llm.summarize(messages[1]["content"])
@@ -239,8 +249,11 @@ def run_group(case, mode, llm, *, budget_factor=1.25):
                     lambda purpose, messages: invoke(purpose, messages),
                     model=getattr(llm, "model", None),
                     usage=lambda: getattr(llm, "last_usage", None),
+                    token_counter=counter,
                 )
-                detail = constructor.rebuild(case["question"], tools=[])
+                detail = constructor.rebuild(
+                    case["question"], tools=[], input_budget_tokens=token_budget
+                )
             result["construction"] = {
                 "status": (
                     "applied"
@@ -263,7 +276,19 @@ def run_group(case, mode, llm, *, budget_factor=1.25):
         result["construction"]["effective_input_budget_chars"] = budget
         result["construction"]["target_chars"] = int(budget * 0.5)
         result["construction"]["after_chars"] = memory.chars()
-        result["construction"]["within_target"] = memory.chars() <= int(budget * 0.5)
+        result["construction"]["initial_local_tokens"] = initial_local_tokens
+        result["construction"]["input_budget_tokens"] = token_budget
+        result["construction"]["target_tokens"] = int(token_budget * 0.5)
+        result["construction"]["after_local_tokens"] = counter.count_request(
+            memory.for_model(), []
+        )
+        result["construction"]["tokenizer"] = counter.identifier
+        result["construction"]["within_char_target"] = memory.chars() <= int(
+            budget * 0.5
+        )
+        result["construction"]["within_target"] = result["construction"][
+            "after_local_tokens"
+        ] <= int(token_budget * 0.5)
         result["construction"]["message_protocol_errors"] = memory.check()
         if mode == "ss":
             catalog = _catalog(history)
@@ -304,6 +329,45 @@ def run_group(case, mode, llm, *, budget_factor=1.25):
             result["answer_response"] = response
             result["score"] = grade(response, case["accepted"])
             result["status"] = "completed"
+            if followups:
+                # Reuse the single reconstructed view and append each new
+                # question/answer. This is a replay experiment, not agent.run.
+                memory.add_user(FINAL)
+                memory.add_assistant(response)
+                for index, followup in enumerate(followups, 1):
+                    memory.add_user(followup["question"] + "\n" + FINAL)
+                    messages = memory.for_model()
+                    try:
+                        answer = invoke("followup_answer", messages)
+                        memory.add_assistant(answer)
+                        result["followups"].append(
+                            {
+                                "index": index,
+                                "question": followup["question"],
+                                "accepted": followup["accepted"],
+                                "response": answer,
+                                "score": grade(answer, followup["accepted"]),
+                                "history_chars": memory.chars(),
+                                "local_request_tokens": counter.count_request(
+                                    messages, []
+                                ),
+                                "status": "completed",
+                            }
+                        )
+                    except (Exception, SystemExit) as exc:
+                        result["followups"].append(
+                            {
+                                "index": index,
+                                "question": followup["question"],
+                                "accepted": followup["accepted"],
+                                "status": "failed",
+                                "error": {
+                                    "type": type(exc).__name__,
+                                    "message": str(exc)[:500],
+                                },
+                            }
+                        )
+                        break
         except (Exception, SystemExit) as exc:
             result["status"] = "answer_failed"
             result["error"] = {"type": type(exc).__name__, "message": str(exc)[:500]}
@@ -318,7 +382,9 @@ def run_group(case, mode, llm, *, budget_factor=1.25):
             for key in ("prompt_tokens", "completion_tokens", "total_tokens")
         },
         "reported_calls": sum(isinstance(c.get("usage"), dict) for c in calls),
-        "unknown_calls": sum(c.get("usage") is None for c in calls)
+        "unknown_calls": sum(
+            c.get("sent", True) and c.get("usage") is None for c in calls
+        )
         + sum(c.get("transport_retry_count", 0) for c in calls),
     }
     result["usage"]["complete"] = result["usage"]["unknown_calls"] == 0
@@ -364,6 +430,7 @@ def new_report(case_path, cases, model, modes, *, budget_factor=1.25):
         "memory.py",
         "context_history.py",
         "context_construction.py",
+        "context_tokenizer.py",
         "evaluation/context/runner.py",
         "evaluation/context/__main__.py",
     ]
@@ -402,7 +469,7 @@ def new_report(case_path, cases, model, modes, *, budget_factor=1.25):
             "shared_fixed_histories": True,
             "keep_recent": 1,
             "budget_factor": budget_factor,
-            "compressed_target": f"{budget_factor * 50:g}% of initial message characters",
+            "compressed_target": f"{budget_factor * 50:g}% of initial local serialized-request tokens",
             "append": "unbounded reference, may exceed target",
             "answer_tools": [],
             "evaluation": "exact normalized answer; JSON string or number; string-format compliance recorded separately",

@@ -13,14 +13,14 @@ def _escape(value):
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def render(report, cases):
+def render(report, cases, followups=None):
     by_id = {case["id"]: case for case in cases}
     lines = [
         "# Astrion 上下文对照实验",
         "",
         f"- 运行：`{report['run_id']}`；模型：`{report['model']}`。",
         f"- 样例：{', '.join(report['case_ids'])}；数据文件 SHA-256：`{report['case_file_sha256']}`。",
-        "- 固定合成历史重放并单次回答，不运行完整研究 Agent；每题每组一次。",
+        f"- 固定合成历史重放，初次回答后追加 {report['conditions'].get('followups', 0)} 次追问；不运行完整研究 Agent；每题每组一次。",
         f"- append 是不限预算的完整历史参考，legacy 与 ss 共同目标：{report['conditions']['compressed_target']}；两类不能视作相同预算。",
         "- 所有组无重读工具；SS 的事实字面检查只是线索，不能代替语义评估。",
         "- 发生构建失败的组仍会以保留的上下文回答；其回答正确数不能计作新方案的有效成功。",
@@ -37,7 +37,7 @@ def render(report, cases):
                     call["usage"]["total_tokens"]
                     for group in groups
                     for call in group["calls"]
-                    if (call["purpose"] == "answer") == answer
+                    if (call["purpose"] in ("answer", "followup_answer")) == answer
                     and isinstance(call.get("usage"), dict)
                     and type(call["usage"].get("total_tokens")) is int
                 )
@@ -66,8 +66,8 @@ def render(report, cases):
         "",
         "## 每题记录",
         "",
-        "| 样例 | 方案 | 预期 | 实际 | 正确 | 构建 | 原始/构建后/目标字符 | 已知 token | 耗时（秒） |",
-        "|---|---|---|---|---|---|---|---:|---:|",
+        "| 样例 | 方案 | 预期 | 实际 | 正确 | 构建 | 原始/构建后/目标字符 | 本地 token：原始/构建后/目标 | 已知 token | 耗时（秒） |",
+        "|---|---|---|---|---|---|---|---:|---:|---:|",
     ]
     for group in report["groups"]:
         case = by_id[group["case_id"]]
@@ -78,8 +78,35 @@ def render(report, cases):
             f"{_escape(score.get('answer') if score.get('answer') is not None else '未知')} | "
             f"{score.get('correct', '未知')} | {_escape(construction['status'])} | "
             f"{construction['initial_chars']}/{construction['after_chars']}/{construction['target_chars']} | "
+            f"{construction.get('initial_local_tokens', '-')}/{construction.get('after_local_tokens', '-')}/{construction.get('target_tokens', '-')} | "
             f"{group['usage']['known_totals']['total_tokens']} | {group['duration_seconds']:.2f} |"
         )
+    if any(group.get("followups") for group in report["groups"]):
+        lines += [
+            "",
+            "## 追问：一次构建后连续追加",
+            "",
+            "| 样例 | 方案 | 追问 | 实际/预期 | 正确 | 状态 | 请求本地 token |",
+            "|---|---|---:|---|---|---|---:|",
+        ]
+        for group in report["groups"]:
+            for item in group.get("followups", []):
+                if followups is None:
+                    raise ValueError("followup_gold_required")
+                gold = followups[group["case_id"]][item["index"] - 1]
+                if item["question"] != gold["question"]:
+                    raise ValueError("followup_question_mismatch")
+                score = item.get("score") or {}
+                lines.append(
+                    f"| {group['case_id']} | {group['mode']} | {item['index']} | "
+                    f"{_escape(score.get('answer', '未知'))}/{_escape('/'.join(gold['accepted']))} | "
+                    f"{score.get('correct', '未知')} | {item['status']} | {item.get('local_request_tokens', '不适用')} |"
+                )
+        lines += [
+            "",
+            "追问复用同一初始构建视图，后续只追加，不触发新重构；不调用补读工具。",
+            "",
+        ]
     lines += ["", "## 样例与 SS 选择", ""]
     for id in report["case_ids"]:
         case = by_id[id]
@@ -116,6 +143,9 @@ def main():
     parser.add_argument(
         "--cases", type=Path, default=Path(__file__).with_name("cases.json")
     )
+    parser.add_argument(
+        "--followups", type=Path, default=Path(__file__).with_name("followups.json")
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     report = json.loads(args.report.read_text(encoding="utf-8"))
@@ -127,10 +157,18 @@ def main():
         != report["case_file_sha256"]
     ):
         parser.error("样例文件的 SHA-256 与报告不一致，拒绝渲染")
+    followups = None
+    if any(g.get("followups") for g in report["groups"]):
+        raw = args.followups.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != report["conditions"].get(
+            "followups_sha256"
+        ):
+            parser.error("追问文件哈希不一致，拒绝渲染")
+        followups = json.loads(raw)["cases"]
     output = args.output or args.report.with_suffix(".md")
     if output.exists():
         parser.error("输出文件已存在，拒绝覆盖")
-    output.write_text(render(report, data["cases"]), encoding="utf-8")
+    output.write_text(render(report, data["cases"], followups), encoding="utf-8")
     print(output.resolve())
 
 

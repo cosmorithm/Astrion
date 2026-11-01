@@ -15,7 +15,7 @@ CONTEXT_SPECS = [
           'limit': {'type': 'integer', 'description': '1 到 4000，默认 2000'}}, ['ref']),
     spec('search_evidence', '在本 Agent 已观察的档案中搜索原文与引用，每页最多 5 条。',
          {'query': {'type': 'string', 'minLength': 1}, 'offset': {'type': 'integer'}}, ['query']),
-    spec('search_step_history', '搜索当前 Agent 的 Step 目录；摘要只在重构时生成。',
+    spec('search_step_history', '搜索本 Agent 的 Step 摘要和原始执行事件；摘要只在重构时生成。',
          {'query': {'type': 'string'}, 'offset': {'type': 'integer'}}, []),
     spec('read_step_history', '分页读取当前 Agent 的 Step 原始事件或已生成的摘要。',
          {'step_id': {'type': 'string'}, 'level': {'type': 'string', 'enum': ['RAW', 'SS', 'S', 'M', 'L']},
@@ -34,7 +34,17 @@ def context_implementations(memory):
         for step in history.steps() if history else []:
             summary = history.get_summary(step['step_id'], step['source_version'], 'SS') if step['source_version'] else None
             item = {'step_id': step['step_id'], 'status': step['status'], 'ss': summary['content'] if summary else None}
-            if not query or query.casefold() in json.dumps(item, ensure_ascii=False).casefold():
+            summary_match = not query or query.casefold() in json.dumps(item, ensure_ascii=False).casefold()
+            raw_match = False
+            if query and not summary_match:
+                events = history.step(step['step_id'])['events']
+                # Request snapshots recursively contain prior contexts; search only
+                # this step's observed output and action events.
+                observed = [{**event, 'payload': {k: v for k, v in event['payload'].items() if k != 'request_snapshot'}}
+                            for event in events]
+                raw_match = query.casefold() in json.dumps(observed, ensure_ascii=False).casefold()
+            if summary_match or raw_match:
+                item['matched_raw'] = raw_match
                 rows.append(item)
         return json.dumps({'items': rows[offset:offset + 5], 'next_offset': offset + 5 if offset + 5 < len(rows) else None}, ensure_ascii=False)
 

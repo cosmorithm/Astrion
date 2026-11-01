@@ -176,7 +176,7 @@ With the frontend development server running, open `/tests/markdown.html` to che
 
 CLI and research runs persist each agent's own execution steps, observable events, and model input snapshots in the scoped context SQLite database. Research workers have separate scopes; continuation forks the root history into a new scope and does not import worker-private history. Research history APIs expose agents and their steps under `/api/projects/{project_id}/runs/{run_id}/agents`; the detailed [agent guide](astrion-agent/README.md) includes pagination, privacy, and recovery details.
 
-When a persisted context approaches its budget, Astrion can generate per-step SS summaries with the configured model, cache them by source version, and use an LLM plan that Python validates before assembling a smaller context. Longer summaries are generated on demand; raw records remain available. The optional `ASTRION_CONTEXT_INPUT_BUDGET_TOKENS` uses a heuristic estimate rather than a provider tokenizer; actual usage is recorded separately. These calls add cost, and their semantic accuracy has not been established by an evaluation.
+When a persisted context approaches its budget, Astrion generates per-step SS summaries and validates their local tokenizer length, then assembles selected history within a hard local token target. Oversized catalogs use phase selection; lower-priority selections are downgraded or omitted if needed, while original records remain available. Configure a matching local tokenizer and, optionally, `ASTRION_CONTEXT_INPUT_BUDGET_TOKENS`; see the [agent guide](astrion-agent/README.md) for setup. Local counting uses a fixed JSON representation and does not guarantee the hosted provider uses an identical hidden chat template. Actual server usage is recorded separately. These calls add cost, and their semantic accuracy requires evaluation.
 
 ## Repository layout
 
@@ -194,6 +194,7 @@ Astrion/
     ├── context_store.py     Scoped journals, artifacts, and checkpoints
     ├── context_history.py   Per-agent steps, snapshots, summaries and builds
     ├── context_construction.py  On-demand SS catalog and validated reconstruction
+    ├── context_tokenizer.py     Local token counter and pinned tokenizer installer
     ├── context_tools.py     Search, reread, and pin tools
     ├── context_adapter.py   Optional server contract and client fallback
     ├── context_service.py   Runnable reference context-editing service

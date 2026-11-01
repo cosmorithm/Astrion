@@ -99,7 +99,8 @@ class ApiTests(unittest.TestCase):
                 yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n'
                 yield b'data: [DONE]\n'
         project = self.client.post('/api/projects', json={'name': 'protocol failure'}).json()['id']
-        with patch.dict(os.environ, {'AGENT_API_KEY':'fake-only'}, clear=True), patch.object(api.agent, 'load_env'), patch('urllib.request.urlopen', return_value=Upstream()):
+        from tests.context_counter import CodepointCounter
+        with patch.dict(os.environ, {'AGENT_API_KEY':'fake-only'}, clear=True), patch.object(api.agent, 'load_env'), patch('agent.load_token_counter', return_value=CodepointCounter()), patch('urllib.request.urlopen', return_value=Upstream()):
             response = self.client.post('/api/research/stream', json={'project_id':project,'task':'综述','max_steps':1})
         events = [json.loads(line[5:]) for line in response.text.splitlines() if line.startswith('data:')]
         self.assertNotIn('DSML', ''.join(e['text'] for e in events if e['type']=='model_delta'))

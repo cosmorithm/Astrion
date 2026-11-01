@@ -1,0 +1,2 @@
+# Local tokenizer for strict context and SS token budgets.
+tokenizers>=0.20,<1

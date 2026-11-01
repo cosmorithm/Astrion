@@ -1,0 +1,89 @@
+{
+  "version": "context-followups-v2",
+  "cases": {
+    "C01": [
+      {
+        "question": "Atlas 排除了多少个污染样本？只给整数。",
+        "accepted": [
+          "17"
+        ]
+      },
+      {
+        "question": "Atlas 排除了多少个重复样本？只给整数。",
+        "accepted": [
+          "9"
+        ]
+      }
+    ],
+    "C02": [
+      {
+        "question": "Birch 修订之前的早期学习率是多少？只给十进制数字。",
+        "accepted": [
+          "0.005"
+        ]
+      },
+      {
+        "question": "Birch 修订后的当前学习率是多少？只给十进制数字。",
+        "accepted": [
+          "0.0005"
+        ]
+      }
+    ],
+    "C03": [
+      {
+        "question": "溶液 A 的有效成分质量是几克？只给数字。",
+        "accepted": [
+          "1.8"
+        ]
+      },
+      {
+        "question": "溶液 B 的有效成分质量是多少毫克？只给整数。",
+        "accepted": [
+          "450"
+        ]
+      }
+    ],
+    "C04": [
+      {
+        "question": "记录 C-17 首次校验状态是什么？只回答 pass 或 fail。",
+        "accepted": [
+          "fail"
+        ]
+      },
+      {
+        "question": "记录 C-17 属于哪个项目？只回答项目名称。",
+        "accepted": [
+          "Falcon"
+        ]
+      }
+    ],
+    "C05": [
+      {
+        "question": "方法 M 的准确率是多少？只给整数。",
+        "accepted": [
+          "81"
+        ]
+      },
+      {
+        "question": "方法 M 是否已做显著性检验？如未做只回答 no。",
+        "accepted": [
+          "no"
+        ]
+      }
+    ],
+    "C06": [
+      {
+        "question": "最初失败的脚本是什么？只回答文件名。",
+        "accepted": [
+          "analysis_v2.py"
+        ]
+      },
+      {
+        "question": "最终成功生成的图表文件是什么？只回答文件名。",
+        "accepted": [
+          "figure.png"
+        ]
+      }
+    ]
+  }
+}

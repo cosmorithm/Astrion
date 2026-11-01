@@ -86,10 +86,20 @@ def history(store, project_id, run_id, agent_id, *, step_id=None, offset=0, limi
             ).fetchall()
             items = [dict(row) for row in rows]
             for item in items:
-                summary = db.execute(
-                    "SELECT content,token_count,token_count_kind FROM agent_context_summaries WHERE scope=? AND step_id=? AND source_version=? AND level='SS'",
-                    (scope, item["step_id"], item["source_version"]),
+                has_v2 = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_context_summaries_v2'"
                 ).fetchone()
+                summary = None
+                if has_v2:
+                    summary = db.execute(
+                        "SELECT content,token_count,'exact_local' AS token_count_kind,degraded FROM agent_context_summaries_v2 WHERE scope=? AND step_id=? AND source_version=? AND level='SS' ORDER BY created_at DESC LIMIT 1",
+                        (scope, item["step_id"], item["source_version"]),
+                    ).fetchone()
+                if not summary:
+                    summary = db.execute(
+                        "SELECT content,token_count,token_count_kind FROM agent_context_summaries WHERE scope=? AND step_id=? AND source_version=? AND level='SS'",
+                        (scope, item["step_id"], item["source_version"]),
+                    ).fetchone()
                 item["ss"] = dict(summary) if summary else None
         else:
             if not db.execute(

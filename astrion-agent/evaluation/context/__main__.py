@@ -34,6 +34,13 @@ def main():
     parser.add_argument("--model", default="", help="临时覆盖模型名")
     parser.add_argument("--base-url", default="", help="临时覆盖模型服务地址")
     parser.add_argument("--list", action="store_true", help="仅列出样例，不调用模型")
+    parser.add_argument(
+        "--followups",
+        type=int,
+        default=0,
+        choices=range(0, 3),
+        help="在同一视图下追加 0–2 条固定追问",
+    )
     args = parser.parse_args()
     try:
         data = load_cases(args.cases)
@@ -69,6 +76,17 @@ def main():
     report = new_report(
         args.cases, cases, model, modes, budget_factor=args.budget_factor
     )
+    followup_data = None
+    if args.followups:
+        import hashlib, json
+
+        followup_path = Path(__file__).with_name("followups.json")
+        raw_followups = followup_path.read_bytes()
+        followup_data = json.loads(raw_followups)["cases"]
+        report["conditions"]["followups"] = args.followups
+        report["conditions"]["followups_sha256"] = hashlib.sha256(
+            raw_followups
+        ).hexdigest()
     parsed = urlsplit(base)
     host = parsed.hostname or ""
     if ":" in host:
@@ -84,7 +102,15 @@ def main():
         for mode in modes:
             print(f'开始 {case["id"]} / {mode}', file=sys.stderr, flush=True)
             llm = agent.ChatLLM(key, base, model)
-            group = run_group(case, mode, llm, budget_factor=args.budget_factor)
+            group = run_group(
+                case,
+                mode,
+                llm,
+                budget_factor=args.budget_factor,
+                followups=(
+                    followup_data[case["id"]][: args.followups] if followup_data else ()
+                ),
+            )
             report["groups"].append(group)
             report["summary"] = summarize(report["groups"])
             save_report(report, path)

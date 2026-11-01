@@ -1,2 +1,3 @@
+-r requirements-context.txt
 fastapi>=0.110,<1
 uvicorn>=0.29,<1

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+from tests.context_counter import CodepointCounter
 
 import agent
 from context_store import ContextStore
@@ -45,6 +47,13 @@ class Model:
 
 
 class AgentRebuildTests(unittest.TestCase):
+    def setUp(self):
+        token_patch = patch(
+            "context_construction.load_token_counter", return_value=CodepointCounter()
+        )
+        token_patch.start()
+        self.addCleanup(token_patch.stop)
+
     def test_live_loop_records_steps_and_rebuilds_without_spending_steps(self):
         with tempfile.TemporaryDirectory() as tmp:
             memory = Memory(
@@ -82,7 +91,7 @@ class AgentRebuildTests(unittest.TestCase):
                     for row in db.execute("SELECT payload FROM agent_context_builds")
                 ]
                 summaries = db.execute(
-                    "SELECT count(*) FROM agent_context_summaries WHERE level=?",
+                    "SELECT count(*) FROM agent_context_summaries_v2 WHERE level=?",
                     ("SS",),
                 ).fetchone()[0]
             self.assertGreater(summaries, 0)

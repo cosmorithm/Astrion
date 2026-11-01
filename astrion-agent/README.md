@@ -454,9 +454,22 @@ read_step_history(step_id, level="RAW", offset=0, limit=2000) # 重读 Step 或�
 
 CLI 和研究入口为每个 Agent 的 `scope` 在 `context.sqlite3` 中记录 Step、执行事件与每次模型请求的消息/工具快照。主 Agent 与每个子 Agent 的历史相互隔离；子 Agent 完成后记录仍保留，主 Agent 只能看到显式返回的结果。继续研究时，主 Agent 的已有记录被复制到新的 scope，原记录不变；子 Agent 私有记录不会自动并入。正在执行中断时留下的 Step 可以处于 `running`，不能据此宣称工具已经执行完毕；旧运行没有的新字段也不会被追溯补造。通过 `Memory(...)` 直接构造的内存档案不会持久化，调用方需提供文件型 `ContextStore`。
 
-达到字符预算约 80%（或配置的估计 token 预算约 80%）且至少有两个已记录 Step 时，尝试进行一次重构。首先检查系统提示、工具声明、所有用户消息和近期原始 Step 能否放进半个预算；无法放入时不调用新摘要模型，沿用已有上下文及五层压缩。可重构时按 Step 逐条调用 LLM 生成 SS，并按来源版本缓存；SS 是导航摘要，目标约 80 token，可能遗漏事实。LLM 根据 SS 目录提出选择，程序验证 Step 属于本 Agent，再按需生成 S/M/L 或读取原文；S/M/L 仅在被选中时生成和缓存。摘要调用和选择调用记录为上下文事件，不占任务 Step。模型计划无效、摘要失败、目录过大、候选消息不合法或预算不足时，不用候选覆盖当前视图；如果原有五层处理条件满足，仍可能执行原有处理。原始消息和 Step 记录始终留在档案中。
+当字符或本地 token 使用量达到相应预算约 80%，且至少有两个已记录 Step 时，尝试重构。首先确保系统规则、用户消息、必要状态和近期 Step 可以放入本地 token 目标 `0.5B`；放不下时不删受保护内容，也不发送超本地预算的请求。每个 Step 只在重构时逐条生成 SS，使用配置的本地 tokenizer 校验 SS 正文不得超过 80 token；超长或格式不符最多重试一次。仍失败时保存明确标记的降级目录条目，原始事件不丢失，可通过 Step 搜索和重读工具回查。新摘要按来源版本、档位及 tokenizer 指纹隔离缓存，旧版摘要保留，不能绕过新校验。
 
-默认的字符预算仍是估算代理而非模型上下文窗口；重构的半预算检查包括工具 schema。可选设置 `ASTRION_CONTEXT_INPUT_BUDGET_TOKENS` 为正整数，表示已预留输出和安全余量的输入预算，并使用**启发式估算**检查 80% 触发和 50% 目标；不是供应商 tokenizer，也不能保证实际请求不超窗。模型实际报告的 usage 保存在调用事件中，估算数不能当作账单。SS、S、M、L 的长度只是生成目标，不是严格 token 截断。单个 Step 原始事件超过 32 个 20,000 字符片段时，本次重构会明确失败并保留原文；层级目录、精确分词器及语义保真评估仍待完善。新增一次 LLM 调用会增加成本，不代表回答质量必然提高。
+完整目录放不下规划请求时，程序按历史顺序建立阶段目录、选择阶段并展开能放入预算的 Step；未展开记录仍在当前 Agent 档案中。Planner 选择按优先级由程序组装：超限时依次尝试已缓存的较短档位和 SS（不会为退档额外调用模型），仍放不下就省略并记录原因。所有工具调用配对、受保护消息和本地 token 限制都由程序复核；无法构造合规视图时保留旧视图。`search_step_history` 可搜索摘要及本 Agent 的原始事件，`read_step_history` 可分页读取原始记录。摘要可能遗漏或失真，不能替代证据。
+
+**本地计数边界：** `B` 为输入预算，CLI/研究模式默认采用字符预算的数值作为独立的本地 token 预算，也可在根 `.env` 设置正整数 `ASTRION_CONTEXT_INPUT_BUDGET_TOKENS`。程序将消息、工具 schema 按固定 JSON 格式序列化，用本地 tokenizer 精确计数；重构结果不得超过 `0.5B`，每次模型请求的该本地计数不得超过 `B`。模型输出及服务端封装需另外预留空间。直接使用内存型 `Memory` 的库调用，如需对每次请求启用预算，也应显式设置该环境变量。
+
+本地 JSON 不是供应商服务端的隐藏聊天模板，**本地严格上限不等于服务端实际 token 的数学保证**；服务端 usage 才是实际处理的计量。DeepSeek 官方同样指出不同模型分词不同、应参考返回的 usage：[Token & Token Usage](https://api-docs.deepseek.com/quick_start/token_usage/)。如需服务端绝对上限，需供应商提供与实际请求一致的权威预检能力；目前不能凭估算声称已保证。无法加载配置的 tokenizer 时，持久化模型运行会失败并给出错误，不会偷偷改用估算值。
+
+首次使用当前官方 DeepSeek tokenizer（模型更新后须重新核实匹配性）：
+
+```bash
+pip install -r requirements-context.txt
+python -m context_tokenizer install-deepseek
+```
+
+安装器从 DeepSeek 官方下载 tokenizer，校验固定 SHA-256，不覆盖已有不同文件；默认保存到被 Git 忽略的 `research_data/tokenizers/deepseek-v4/tokenizer.json`。其他模型在 `.env` 设置 `ASTRION_CONTEXT_TOKENIZER_PATH` 指向匹配的 Hugging Face `tokenizer.json`，同时根据模型和服务端开销配置预算。tokenizer 的内容哈希进入摘要契约，换 tokenizer 后不会直接重用旧契约摘要。单个 Step 拆分超过 32 片时，构建会失败而不丢原文。新增模型调用会增加用量，需通过实际任务评测质量与成本。
 
 研究 API 通过项目和运行记录验证后，提供 `GET /api/projects/{project_id}/runs/{run_id}/agents` 列出本次 Agent，以及 `GET /api/projects/{project_id}/runs/{run_id}/agents/{agent_id}/steps?offset=0&limit=20` 列 Step；加 `step_id` 参数可分页查看该 Step 事件和当时模型请求快照。`agent_id` 为 `root` 或对应 `worker_1` 等。快照仅保存程序实际收到或发送的内容，不代表供应商内部未返回的思考；它可能含用户资料和模型输入，应按研究数据保护。事件中的完整快照也可能较大，注意保存周期和访问权限。上下文构建记录位于同一个数据库的 `agent_context_builds`，每次请求快照位于 `agent_context_snapshots`。
 

@@ -65,8 +65,12 @@ class HttpStreamTests(unittest.TestCase):
         thread = threading.Thread(target=upstream.serve_forever, daemon=True); thread.start()
         self.addCleanup(upstream.server_close); self.addCleanup(upstream.shutdown)
         with tempfile.TemporaryDirectory() as directory:
+            from tokenizers import Tokenizer, models
+            tokenizer_path = Path(directory) / 'tokenizer.json'
+            Tokenizer(models.WordLevel({'[UNK]': 0}, unk_token='[UNK]')).save(str(tokenizer_path))
             port = unused_port()
             env = {**os.environ, 'AGENT_API_KEY': 'fake-only', 'AGENT_BASE_URL': f'http://127.0.0.1:{upstream.server_port}',
+                   'ASTRION_CONTEXT_TOKENIZER_PATH': str(tokenizer_path),
                    'ASTRION_RESEARCH_DB': str(Path(directory) / 'db.sqlite')}
             process = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'research.api:app', '--host', '127.0.0.1', '--port', str(port)],
                                        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

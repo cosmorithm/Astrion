@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+from tests.context_counter import CodepointCounter
 
 from evaluation.context.runner import (
     grade,
@@ -49,6 +51,19 @@ class FakeModel:
 
 
 class ContextEvalTests(unittest.TestCase):
+    def setUp(self):
+        token_patch = patch(
+            "context_construction.load_token_counter", return_value=CodepointCounter()
+        )
+        token_patch.start()
+        self.addCleanup(token_patch.stop)
+        runner_patch = patch(
+            "evaluation.context.runner.load_token_counter",
+            return_value=CodepointCounter(),
+        )
+        runner_patch.start()
+        self.addCleanup(runner_patch.stop)
+
     def test_cases_validate_and_are_distinct(self):
         data = load_cases(CASES)
         self.assertEqual(len(data["cases"]), 6)
@@ -134,6 +149,30 @@ class ContextEvalTests(unittest.TestCase):
         self.assertFalse(row["usage"]["complete"])
         self.assertEqual(row["usage"]["unknown_calls"], 1)
         self.assertEqual(row["calls"][0]["transport_retry_count"], 1)
+
+    def test_multiple_followups_reuse_one_build_and_respect_budget(self):
+        case = next(c for c in load_cases(CASES)["cases"] if c["id"] == "C03")
+        model = FakeModel()
+        followups = [
+            {"question": "再核对一次", "accepted": ["1350"]},
+            {"question": "再核对第二次", "accepted": ["1350"]},
+        ]
+        row = run_group(case, "ss", model, followups=followups)
+        self.assertEqual(row["construction"]["status"], "applied")
+        self.assertEqual(len(row["followups"]), 2)
+        self.assertTrue(all(x["score"]["correct"] for x in row["followups"]))
+        self.assertEqual(sum(c["purpose"] == "context_plan" for c in row["calls"]), 1)
+        self.assertTrue(
+            all(
+                c["local_input_tokens"] <= row["construction"]["input_budget_tokens"]
+                for c in row["calls"]
+                if c["sent"]
+            )
+        )
+        self.assertLessEqual(
+            row["construction"]["after_local_tokens"],
+            row["construction"]["target_tokens"],
+        )
 
     def test_failed_summary_is_not_claimed_as_success(self):
         case = load_cases(CASES)["cases"][0]

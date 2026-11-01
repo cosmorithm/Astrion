@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS agent_context_summaries (
  level TEXT NOT NULL, content TEXT NOT NULL, token_count INTEGER, token_count_kind TEXT NOT NULL,
  model TEXT, usage TEXT, created_at TEXT NOT NULL, PRIMARY KEY(scope,summary_id),
  UNIQUE(scope,step_id,source_version,level));
+CREATE TABLE IF NOT EXISTS agent_context_summaries_v2 (
+ scope TEXT NOT NULL, summary_id TEXT NOT NULL, step_id TEXT NOT NULL, source_version TEXT NOT NULL,
+ level TEXT NOT NULL, contract_id TEXT NOT NULL, content TEXT NOT NULL, token_count INTEGER NOT NULL,
+ degraded INTEGER NOT NULL, model TEXT, usage TEXT, created_at TEXT NOT NULL,
+ PRIMARY KEY(scope,summary_id), UNIQUE(scope,step_id,source_version,level,contract_id));
 CREATE TABLE IF NOT EXISTS agent_context_builds (
  scope TEXT NOT NULL, build_id TEXT NOT NULL, local_run_id TEXT NOT NULL, payload TEXT NOT NULL,
  created_at TEXT NOT NULL, PRIMARY KEY(scope,build_id));
@@ -98,7 +103,13 @@ CREATE TABLE IF NOT EXISTS agent_context_builds (
         if event_type.startswith("memory.compaction.") or (
             event_type.startswith("model.call.")
             and payload.get("purpose")
-            in {"compaction", "context_ss", "context_summary", "context_plan"}
+            in {
+                "compaction",
+                "context_ss",
+                "context_summary",
+                "context_plan",
+                "context_plan_phase",
+            }
         ):
             step_id = None
         with self.archive.connect() as db:
@@ -214,6 +225,19 @@ CREATE TABLE IF NOT EXISTS agent_context_builds (
         return {**dict(row), "events": events}
 
     def get_summary(self, step_id, source_version, level):
+        if self.archive.path:
+            import sqlite3
+
+            with self.archive.connect() as db:
+                db.row_factory = sqlite3.Row
+                row = db.execute(
+                    "SELECT * FROM agent_context_summaries_v2 WHERE scope=? AND step_id=? AND source_version=? AND level=? ORDER BY created_at DESC LIMIT 1",
+                    (self.scope, step_id, source_version, level),
+                ).fetchone()
+                if row:
+                    result = dict(row)
+                    result["token_count_kind"] = "exact_local"
+                    return result
         if not self.archive.path:
             return None
         with self.archive.connect() as db:
@@ -273,6 +297,69 @@ CREATE TABLE IF NOT EXISTS agent_context_builds (
             )
         return self.get_summary(step_id, source_version, level)
 
+    def get_contract_summary(self, step_id, source_version, level, contract_id):
+        if not self.archive.path:
+            return None
+        import sqlite3
+
+        with self.archive.connect() as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM agent_context_summaries_v2 WHERE scope=? AND step_id=? AND source_version=? AND level=? AND contract_id=?",
+                (self.scope, step_id, source_version, level, contract_id),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def save_contract_summary(
+        self,
+        step_id,
+        source_version,
+        level,
+        contract_id,
+        content,
+        *,
+        token_count,
+        degraded=False,
+        model=None,
+        usage=None,
+    ):
+        if (
+            level not in ("SS", "S", "M", "L")
+            or not content.strip()
+            or type(token_count) is not int
+            or token_count < 0
+        ):
+            raise ValueError("invalid_summary")
+        with self.archive.connect() as db:
+            row = db.execute(
+                "SELECT source_version,status FROM agent_context_steps WHERE scope=? AND step_id=?",
+                (self.scope, step_id),
+            ).fetchone()
+            if (
+                not row
+                or row[0] != source_version
+                or row[1] not in ("completed", "failed", "interrupted")
+            ):
+                raise ValueError("invalid_summary_source")
+            db.execute(
+                "INSERT OR IGNORE INTO agent_context_summaries_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    self.scope,
+                    "summary_" + uuid4().hex,
+                    step_id,
+                    source_version,
+                    level,
+                    contract_id,
+                    content,
+                    token_count,
+                    int(degraded),
+                    model,
+                    encode(usage) if usage is not None else None,
+                    now(),
+                ),
+            )
+        return self.get_contract_summary(step_id, source_version, level, contract_id)
+
     def record_build(self, payload):
         if not self.archive.path:
             return None
@@ -295,6 +382,7 @@ def copy_history(source, target):
         "agent_context_events",
         "agent_context_snapshots",
         "agent_context_summaries",
+        "agent_context_summaries_v2",
         "agent_context_builds",
     )
     with source.connect() as db:
