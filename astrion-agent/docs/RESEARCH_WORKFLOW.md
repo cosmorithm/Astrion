@@ -84,3 +84,38 @@ frontend/src/components/   独立资料交互，主界面负责组合
 - 真实 Tesseract：扫描样例提取到 128 和 81，并保留 OCR 未验证提示。三页 PDF 已渲染目视核对。
 - `stage1-acceptance.json`：真实模型主动完成，6 轮决策，总计 7 次调用（含摘要），37.7 秒、29,447 token。跨资料引用位置可核对；人工抽查 RAG 定义、协作风险及扫描缺失描述得到来源支持。回答开头对中英文主题覆盖的概括偏强，后文有所限定；未给出全量语义通过率，也未声称比旧版本质量提高。
 - 仍有限制：章节识别依赖 PDF 目录或标题启发式，表格/公式不保证完整；语义模型需配置并预下载；不对任意资料自动证明语义支持。
+
+## 第二阶段：获取外部证据
+
+主 / 子 Agent 和工作台“外部证据”页均接入 `search_literature`、`doi_metadata`、`read_webpage`。文献服务适配器为 Crossref，与模型服务独立；默认公共接口无需 key，可设置 `ASTRION_LITERATURE_BASE_URL` 和 `ASTRION_LITERATURE_EMAIL`。核心循环不处理 Crossref 字段。
+
+```bash
+.venv-ui/bin/python -m research literature --project 1 'retrieval augmented generation'
+# 把返回的 next_cursor 原样传入 --cursor，不能自行拼造
+.venv-ui/bin/python -m research doi --project 1 10.1038/nature14539
+.venv-ui/bin/python -m research doi --project 1 10.1038/nature14539 --offset 20
+.venv-ui/bin/python -m research source-add --project 1 https://arxiv.org/pdf/2005.11401
+.venv-ui/bin/python -m research source-add --project 1 https://arxiv.org/abs/2312.10997
+.venv-ui/bin/python -m research.acceptance --stage 2 --live-model --steps 7 --output research_data/stage2-acceptance.json
+```
+
+搜索返回标题、作者、年份、DOI、来源、出版物类型和可能存在的摘要/全文链接。显式按 relevance score 排序；页内按 DOI 去重，后续筛选仍需模型核对相关性。Crossref 并非全部文献目录，某些 arXiv 的 DataCite DOI 不在其中；缺失或访问失败明确返回，不假造元数据。
+
+DOI 接口返回参考文献元数据分页；`metadata`、`paper_abstract`、`web_page` 和 `pdf_text` 区分来源类型。arXiv `/abs/` 页标为摘要页，普通网页仅称页面正文；下载 PDF 也不等于模型已读全部页。模型必须使用 `read_document` 接续，并保留提取不完整的警告。搜索元数据和摘要不作为已读论文全文。
+
+获取内容先存入 SQLite 的 `source_snapshots`（原始字节、URL、访问时间、SHA-256），再进入统一 documents；同 URL / 同内容重访复用文档 ID，但增加访问快照；内容变化生成新版本。检索、行号、页码与证据归档继续使用第一阶段接口。
+
+网络层独立在 `research/providers/http.py`：只允许公共 HTTP(S) 80/443，固定经校验的 DNS 地址并保留 TLS 主机名校验，重定向逐次重新验证且跨来源不传凭据，最多 5 跳；读取大小最多 20 MB。网页请求 15 秒、元数据请求 25 秒；限流只在 Retry-After 不超过 1 秒时额外重试一次，其余交还结构化错误。错误区分访问拒绝、DNS、网络、超时、限流、过大内容、提取失败。不会把失败页面当成已读全文，也不绕过登录或付费墙。
+
+新增模块：`research/providers/{http,literature,web}.py` 负责外部适配，`research/storage/sources.py` 负责快照，`tools/external.py` 负责声明和绑定，`research/routes/external.py` 负责 API，`ExternalSources.vue` 负责交互。新服务只需实现同样的 search / metadata 或 fetch 接口并在装配入口替换。
+
+参考契约：[Crossref REST API](https://github.com/CrossRef/rest-api-doc)、[pypdf 提取边界](https://pypdf.readthedocs.io/en/6.21.1/user/extract-text.html)、[FastEmbed 多语言模型](https://qdrant.github.io/fastembed/examples/Supported_Models/)。
+
+### 第二阶段验证与限制（2026-11-01）
+
+- 外部服务/错误/快照/API 回归 7 项通过；此前资料与原有接口回归一并通过，前端构建通过。
+- 真实 Crossref 搜索暴露了默认游标顺序的问题，已显式添加 score 降序排序；真实 DOI、公开 arXiv PDF 和摘要页可获取。网络验证也实际遇到过 DNS 失败和请求超时，均得到明确错误。
+- arXiv DOI 通常由 DataCite 注册：已补 `research/providers/doi.py`，仅在 Crossref 返回 404 时回退 DataCite；不把超时、限流或权限失败吞掉。
+- 第一次阶段验收耗时 87.1 秒，模型 7 轮决策、3 次摘要，共 49,992 token，预算收尾为 `no_tool_call`。读取了 RAG 原论文 PDF 开头和另一篇综述的摘要页，生成限定为摘要级的比较；没有读全两篇论文，不能标为完整全文研究完成。该运行发生在 DataCite 回退及摘要页专门分类补丁之前。
+- 手工核查发现回答的图 1 说明引用范围过窄，位置检查仍可通过。因此本次证据支持只算部分核查，语义裁判和来源绑定问题仍按根目录 PROBLEMS.md 跟踪，不宣称已全部解决。
+- Crossref 查询会返回书籍、预印本等多种记录，并可能存在同题不同 DOI；当前按 DOI 去重，尚未自动判定不同版本属于同一研究。付费墙、JavaScript 页面与 PDF 复杂版式依旧可能不可读。

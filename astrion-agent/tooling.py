@@ -196,6 +196,6 @@ class ToolRegistry:
             content = str(implementation(**args))
         except Exception as exc:
             return ToolResult(call.id, call.name, "error", f"ERROR: {type(exc).__name__}: {exc}",
-                              args, {"type": type(exc).__name__, "code": "execution_failed", "message": str(exc)},
+                              args, {"type": type(exc).__name__, "code": getattr(exc, "code", "execution_failed"), "message": str(exc)},
                               perf_counter() - started)
         return ToolResult(call.id, call.name, "success", content, args, duration_seconds=perf_counter() - started)

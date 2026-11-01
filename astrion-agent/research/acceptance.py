@@ -23,6 +23,25 @@ def stage1(store,project):
             'scan_warning': 'missing_text' in scan['pages'][0]['warnings'],'document_count':len(docs)}
 
 
+def stage2(store,project):
+    from .providers.doi import LiteratureCatalog
+    from .providers.web import WebReader
+    from .providers.http import ServiceError
+    checks={'search':None,'doi':None,'sources':[],'failures':[]}
+    provider=LiteratureCatalog()
+    try:
+        found=provider.search('retrieval augmented generation',limit=3)
+        checks['search']=found
+        if found['results']:checks['doi']=provider.metadata(found['results'][0]['doi'],limit=3)
+    except ServiceError as exc:checks['failures'].append({'operation':'literature','error':str(exc)})
+    for url in ['https://arxiv.org/pdf/2005.11401','https://arxiv.org/abs/2312.10997']:
+        try:
+            result=WebReader(store).read(project,url)
+            checks['sources'].append({'url':url,'document_id':result['document_id'],'snapshot':result['snapshot'],'kind':result['results'][0]['content_kind']})
+        except ServiceError as exc:checks['failures'].append({'operation':'read','url':url,'error':str(exc)})
+    return checks
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--stage',type=int,choices=[1,2,3],required=True)
     p.add_argument('--db',type=Path,default=Path('research_data/acceptance.sqlite3'));p.add_argument('--live-model',action='store_true')
@@ -34,6 +53,7 @@ def main():
         project=store.create_project(f'acceptance-stage{args.stage}-{uuid4().hex[:8]}')
         cases=json.loads((FIXTURES/'cases.json').read_text())
         if args.stage==1:checks=stage1(store,project)
+        elif args.stage==2:checks=stage2(store,project)
         else:raise ValueError('stage not installed')
         result={'stage':args.stage,'project_id':project,'checks':checks,'task':cases[f'stage{args.stage}']['task'],
                 'evidence_support':{'status':'not_assessed','method':'manual claim-to-source review required'},'model_run':None}

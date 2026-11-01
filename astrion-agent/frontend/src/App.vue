@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { request, streamResearch } from './api.js'
+import ExternalSources from './components/ExternalSources.vue'
 import SourceLibrary from './components/SourceLibrary.vue'
 import { renderMarkdown } from './markdown.js'
 
@@ -159,6 +160,7 @@ onMounted(() => action(loadProjects))
       <nav class="workspace-nav" aria-label="工作台导航">
         <button :class="{ selected: activeTab === 'research' }" @click="activeTab = 'research'"><span class="nav-icon">◻</span> 研究工作台</button>
         <button :class="{ selected: activeTab === 'sources' }" @click="activeTab = 'sources'"><span class="nav-icon">▤</span> 资料库 <span class="nav-count">{{ documents.length }}</span></button>
+        <button :class="{ selected: activeTab === 'external' }" @click="activeTab = 'external'">外部证据</button>
         <button :class="{ selected: activeTab === 'memory' }" @click="activeTab = 'memory'"><span class="nav-icon">◌</span> 长期记忆 <span class="nav-count">{{ memories.length }}</span></button>
       </nav>
       <div class="sidebar-footer"><span class="status-dot"></span><div><strong>本地工作空间</strong></div></div>
@@ -211,6 +213,7 @@ onMounted(() => action(loadProjects))
           <SourceLibrary :project-id="projectId" :busy="busy" @changed="loadProjectData" />
         </section>
 
+        <section v-else-if="activeTab === 'external'"><ExternalSources :project-id="projectId" :busy="busy" @changed="loadProjectData" /></section>
         <section v-else>
           <h2>长期记忆</h2><p class="section-copy">查看和管理对话记忆、项目记忆。</p>
           <div class="panel collection-panel">

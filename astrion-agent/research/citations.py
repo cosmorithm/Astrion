@@ -25,7 +25,7 @@ def audit_citations(answer, trace):
     for item in trace:
         event = item['event']
         payload = event.get('payload', {})
-        if event['type'] != 'tool.call.finished' or payload.get('name') not in {'search_knowledge', 'read_knowledge', 'read_document'} or payload.get('outcome') != 'success':
+        if event['type'] != 'tool.call.finished' or payload.get('name') not in {'search_knowledge', 'read_knowledge', 'read_document', 'read_webpage'} or payload.get('outcome') != 'success':
             continue
         for found in json.loads(payload['content']).get('results', []):
             if not found.get('truncated'):

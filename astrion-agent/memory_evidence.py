@@ -17,7 +17,7 @@ def extract_tool_evidence(name: str, content: str) -> list[dict]:
     if not isinstance(data, dict):
         return []
 
-    if name in {"search_knowledge", "read_knowledge", "read_document"}:
+    if name in {"search_knowledge", "read_knowledge", "read_document", "read_webpage"}:
         results = data.get("results")
         if not isinstance(results, list):
             return []

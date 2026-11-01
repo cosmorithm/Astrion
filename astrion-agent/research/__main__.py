@@ -27,6 +27,9 @@ def main():
     outline=sub.add_parser('outline');outline.add_argument('--project',type=int,required=True);outline.add_argument('document_id',type=int);outline.add_argument('--offset',type=int,default=0)
     read=sub.add_parser('read');read.add_argument('--project',type=int,required=True);read.add_argument('document_id',type=int)
     for option,default in [('page',0),('section',0),('start-line',1),('end-line',0),('offset',0),('limit',4000)]:read.add_argument('--'+option,type=int,default=default)
+    lit=sub.add_parser('literature');lit.add_argument('--project',type=int,required=True);lit.add_argument('query');lit.add_argument('--cursor',default='*')
+    doi=sub.add_parser('doi');doi.add_argument('--project',type=int,required=True);doi.add_argument('doi');doi.add_argument('--offset',type=int,default=0)
+    web=sub.add_parser('source-add');web.add_argument('--project',type=int,required=True);web.add_argument('url')
     args = p.parse_args()
     agent.load_env(agent.find_env_files(Path(agent.__file__).resolve().parent))
     try:
@@ -42,6 +45,11 @@ def main():
             elif args.command == 'documents': result = store.documents(args.project)
             elif args.command == 'outline': result = store.document_store.outline(args.project,args.document_id,args.offset)
             elif args.command == 'read': result = store.document_store.read_part(args.project,args.document_id,page=args.page,section=args.section,start_line=args.start_line,end_line=args.end_line,offset=args.offset,limit=args.limit)
+            elif args.command in {'literature','doi','source-add'}:
+                from tools.external import ExternalTools
+                store.project(args.project); external=ExternalTools(store,args.project)
+                raw=(external.search_literature(args.query,args.cursor) if args.command=='literature' else external.doi_metadata(args.doi,args.offset) if args.command=='doi' else external.read_webpage(args.url))
+                result=json.loads(raw)
             else:
                 if args.trace and args.trace.exists():
                     raise ValueError('trace 文件已存在，请选择新路径')

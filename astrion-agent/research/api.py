@@ -24,6 +24,8 @@ DB_PATH = Path(os.environ.get('ASTRION_RESEARCH_DB', Path(__file__).resolve().pa
 app.state.store_factory = lambda: Store(DB_PATH)
 from .routes.library import router as library_router
 app.include_router(library_router)
+from .routes.external import router as external_router
+app.include_router(external_router)
 
 class ProjectInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)

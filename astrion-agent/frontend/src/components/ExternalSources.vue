@@ -1,0 +1,17 @@
+<script setup>
+import {ref,watch} from 'vue'
+import {request} from '../api.js'
+const props=defineProps({projectId:String,busy:Boolean}),emit=defineEmits(['changed'])
+const query=ref(''),doi=ref(''),url=ref(''),results=ref(null),metadata=ref(null),imported=ref(null),error=ref(''),loading=ref(false)
+watch(()=>props.projectId,()=>{results.value=null;metadata.value=null;imported.value=null;error.value=''})
+async function act(fn){loading.value=true;error.value='';try{await fn()}catch(e){error.value=e.message}finally{loading.value=false}}
+async function search(cursor='*'){await act(async()=>{results.value=await request(`/api/projects/${props.projectId}/literature?${new URLSearchParams({query:query.value,cursor})}`)})}
+async function getDoi(value=doi.value,offset=0){doi.value=value;await act(async()=>{metadata.value=await request(`/api/projects/${props.projectId}/doi?${new URLSearchParams({doi:value,reference_offset:offset})}`)})}
+async function fetchSource(value=url.value){url.value=value;await act(async()=>{imported.value=await request(`/api/projects/${props.projectId}/sources/import`,{method:'POST',body:JSON.stringify({url:value})});emit('changed')})}
+</script>
+<template><section><h2>外部证据</h2><p>文献元数据、摘要和已读取正文分别标注。导入后到资料库接续阅读。</p><div v-if="error" class="alert alert-danger">{{error}}</div>
+<div class="panel collection-panel"><form class="d-flex gap-2" @submit.prevent="search()"><input class="form-control" v-model="query" placeholder="文献检索词"><button class="btn primary-btn" :disabled="!projectId||!query.trim()||busy||loading">搜索文献</button></form>
+<div v-if="results"><div class="list-row" v-for="item in results.results" :key="item.doi||item.title"><div><strong>{{item.title}}</strong><small>{{item.authors.join(', ')}} · {{item.year||'年份未知'}} · {{item.source}}</small><small>DOI {{item.doi}} · 元数据，未读全文</small><p v-if="item.abstract">论文摘要：{{item.abstract}}</p><button class="btn btn-link" v-if="item.doi" @click="getDoi(item.doi)">查看元数据与参考文献</button><a :href="item.url" target="_blank" rel="noopener noreferrer">来源</a></div></div><button v-if="results.next_cursor" class="btn btn-outline-secondary" @click="search(results.next_cursor)">下一页</button></div></div>
+<div class="panel collection-panel mt-3"><form class="d-flex gap-2" @submit.prevent="getDoi()"><input class="form-control" v-model="doi" placeholder="DOI，例如 10.1038/nature14539"><button class="btn primary-btn" :disabled="!projectId||!doi||busy||loading">查询 DOI</button></form><div v-if="metadata"><h3 class="h6 mt-3">{{metadata.title}}</h3><p>{{metadata.abstract||'此接口未提供摘要。'}} <small>未获取全文</small></p><div v-for="link in metadata.links" :key="link.url"><button class="btn btn-link" @click="fetchSource(link.url)">尝试读取 {{link.content_type||'外部材料'}}</button></div><pre style="white-space:pre-wrap">{{JSON.stringify(metadata.references,null,2)}}</pre><button v-if="metadata.next_reference_offset!==null" class="btn btn-link" @click="getDoi(doi,metadata.next_reference_offset)">更多参考文献</button></div></div>
+<div class="panel collection-panel mt-3"><form class="d-flex gap-2" @submit.prevent="fetchSource()"><input class="form-control" v-model="url" placeholder="公开网页或 PDF 地址"><button class="btn primary-btn" :disabled="!projectId||!url||busy||loading">读取并保存快照</button></form><div v-if="imported" class="mt-3">已保存为 D{{imported.document_id}} · {{imported.snapshot.accessed_at}}<p>保存的是实际获取的页面。请检查提取警告，不能据此认定已读论文全文。</p></div></div>
+</section></template>
