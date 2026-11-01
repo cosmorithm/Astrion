@@ -35,7 +35,9 @@ READ_PART = spec(
     ["document_id"],
 )
 LIST_DOCS = spec(
-    "list_documents", "列出当前项目资料和文档 ID，每页最多 20 份。", {"offset": I, "limit": I}
+    "list_documents",
+    "列出当前项目资料和文档 ID。limit 为1–20；按输出预算分页可能少于 limit，必须用 next_offset 接续，null 表示结束。",
+    {"offset": I, "limit": I},
 )
 OUTLINE = spec(
     "document_outline",
@@ -99,12 +101,26 @@ class KnowledgeTools:
 
     def list_documents(self, offset=0, limit=20):
         if offset < 0 or not 1 <= limit <= 20:
-            raise ValueError("invalid_pagination")
+            raise ValueError(
+                "invalid_pagination: offset>=0; limit must be 1..20, follow next_offset"
+            )
         rows = self.store.document_store.listing(self.project, offset, limit + 1)
+        selected = []
+        total = self.store.document_store.count(self.project)
+        for row in rows[:limit]:
+            candidate = {
+                "documents": selected + [row],
+                "next_offset": offset + len(selected) + 1,
+                "total": total,
+            }
+            if selected and len(dump(candidate)) > 2600:
+                break
+            selected.append(row)
         return dump(
             {
-                "documents": rows[:limit],
-                "next_offset": offset + limit if len(rows) > limit else None,
+                "documents": selected,
+                "next_offset": offset + len(selected) if offset + len(selected) < total else None,
+                "total": total,
             }
         )
 

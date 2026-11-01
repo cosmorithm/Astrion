@@ -30,6 +30,11 @@ class Documents:
             raise ValueError("当前项目中不存在此文档")
         return dict(row)
 
+    def count(self, project):
+        return self.db.execute(
+            "SELECT COUNT(*) FROM documents WHERE project_id=?", (project,)
+        ).fetchone()[0]
+
     def add(self, project, name, data, source="上传", *, ocr=False, extra=None):
         if not name or Path(name).name != name:
             raise ValueError("资料名称不能包含目录")

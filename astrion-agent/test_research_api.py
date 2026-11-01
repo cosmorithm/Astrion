@@ -61,4 +61,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.post(f'/api/projects/{project}/documents', json=payload).status_code, 400)
         self.assertEqual(self.client.post(f'/api/projects/{project}/documents', json={'name': '../hack.md', 'content': '文本'}).status_code, 400)
 
+    def test_leaked_protocol_stream_ends_as_error_without_report(self):
+        from test_response_contract import RAW
+        class Upstream:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def __iter__(self):
+                for text in (RAW[:5], RAW[5:]):
+                    yield ('data: ' + json.dumps({'choices':[{'delta':{'content':text}}]}) + '\n').encode()
+                yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n'
+                yield b'data: [DONE]\n'
+        project = self.client.post('/api/projects', json={'name': 'protocol failure'}).json()['id']
+        with patch.dict(os.environ, {'AGENT_API_KEY':'fake-only'}, clear=True), patch.object(api.agent, 'load_env'), patch('urllib.request.urlopen', return_value=Upstream()):
+            response = self.client.post('/api/research/stream', json={'project_id':project,'task':'综述','max_steps':1})
+        events = [json.loads(line[5:]) for line in response.text.splitlines() if line.startswith('data:')]
+        self.assertNotIn('DSML', ''.join(e['text'] for e in events if e['type']=='model_delta'))
+        self.assertEqual(events[-1]['type'], 'done')
+        output = events[-1]['result']
+        self.assertEqual(output['result']['status'], 'error')
+        self.assertIsNone(output['result']['answer'])
+        self.assertEqual(output['result']['error']['code'], 'tool_protocol_in_answer')
+        self.assertNotIn('report_artifact', output)
+        self.assertEqual(self.client.get(f'/api/projects/{project}/artifacts').json()['artifacts'], [])
+
 if __name__ == '__main__': unittest.main()

@@ -39,6 +39,8 @@ astrion-agent/
 源码、BFCL 虚拟环境启动脚本和本地报告路径均已统一到 `astrion-agent/`，
 仓库根目录不再保留旧目录名的兼容符号链接。历史运行仍可按运行 ID 查看或检查续跑。
 
+工具控制协议泄漏到答案时，运行返回 error，不保存为研究报告；原始日志保留。修复依据与验证见 [P0事故记录](docs/incidents/2026-11-01-protocol-as-report.md)。
+
 ## 科研能力扩展
 
 PDF/OCR、目录与接续阅读、多语言检索、联网证据、容器执行、产物交付、实际验收限制及模块关系见 [科研工作流](docs/RESEARCH_WORKFLOW.md)。

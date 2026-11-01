@@ -44,6 +44,7 @@ from memory_evidence import extract_tool_evidence
 from context_tools import CONTEXT_SPECS, context_implementations
 from context_adapter import adapter_from_env
 from session import load_session, save_session, validate_task_plan
+from response_contract import answer_error, finalization_messages
 from tooling import ToolCall, ToolRegistry, ToolResult, ToolSpec
 from decision import enhanced_decision
 
@@ -332,6 +333,9 @@ def run(
         return json.dumps({"items": plan}, ensure_ascii=False)
 
     def checked_finish(answer: str) -> str:
+        invalid = answer_error(answer)
+        if invalid:
+            raise ValueError(invalid['code'] + ': ' + invalid['message'])
         pending = [item["goal"] for item in plan if item["status"] == "pending"]
         if pending:
             raise ValueError("仍有未完成子任务: " + "、".join(pending))
@@ -406,6 +410,13 @@ def run(
         print(dim(f"  [记忆] {len(memory)} 条消息 / {memory.chars()} 字符"
                   f" / 压缩 {memory.compactions} 次"))
 
+    def reject_answer(invalid: dict) -> dict:
+        report("error")
+        persist("error")
+        failed = {"status": "error", "answer": None, "steps": steps_taken, "error": invalid}
+        emit("run.finished", payload=failed)
+        return failed
+
     emit("run.started", payload={
         "task": task,
         "model": getattr(llm, "model", None),
@@ -472,7 +483,7 @@ def run(
         if finalizing:
             active_tools = []
             active_registry = ToolRegistry([], {})
-            messages[0] = {**messages[0], "content": messages[0]["content"] + "\n\n" + final_step_prompt}
+            messages = finalization_messages(messages, final_step_prompt)
         if decision_mode == "enhanced" and not finalizing:
             def enhanced_call(request_messages, request_tools, purpose):
                 return call_model(
@@ -521,6 +532,9 @@ def run(
             print(f"  {dim('think:')} {thought}")
 
         if not calls:
+            invalid = answer_error(thought)
+            if invalid:
+                return reject_answer(invalid)
             if finalizing and not thought:
                 break
             if any(item["status"] == "pending" for item in plan):
@@ -596,6 +610,9 @@ def run(
                 terminal_answer = observation
 
         if terminal_status is not None:
+            invalid = answer_error(terminal_answer)
+            if invalid:
+                return reject_answer(invalid)
             print(green(f"\n  = {terminal_answer}"))
             print(dim(f"\n  共 {steps_taken} 步"))
             report(terminal_status)

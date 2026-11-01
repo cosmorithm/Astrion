@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 
 from agent import ChatLLM
+from response_contract import AnswerStream
 
 
 def partial_answer(arguments: str) -> str:
@@ -47,6 +48,8 @@ class DeltaAssembler:
         self.answers = {}
         self.usage = None
         self.finish_reason = None
+        self.content_stream = AnswerStream(lambda text: self.emit("content", text))
+        self.answer_streams = {}
 
     def add(self, chunk):
         if chunk.get("usage") is not None:
@@ -60,7 +63,7 @@ class DeltaAssembler:
             text = delta.get("content") or ""
             if text:
                 self.content += text
-                self.emit("content", text)
+                self.content_stream.add(text)
             for part in delta.get("tool_calls") or []:
                 index = part["index"]
                 item = self.calls.setdefault(
@@ -78,12 +81,18 @@ class DeltaAssembler:
                     answer = partial_answer(item["function"]["arguments"])
                     previous = self.answers.get(index, "")
                     if answer.startswith(previous) and len(answer) > len(previous):
-                        self.emit("answer", answer[len(previous) :])
+                        stream = self.answer_streams.setdefault(
+                            index, AnswerStream(lambda text: self.emit("answer", text))
+                        )
+                        stream.add(answer[len(previous) :])
                         self.answers[index] = answer
 
     def message(self):
         if self.finish_reason not in {"stop", "tool_calls"}:
             raise RuntimeError(f"模型响应未完成：{self.finish_reason}")
+        self.content_stream.finish()
+        for stream in self.answer_streams.values():
+            stream.finish()
         message = {"role": "assistant", "content": self.content or None}
         if self.calls:
             message["tool_calls"] = [self.calls[i] for i in sorted(self.calls)]

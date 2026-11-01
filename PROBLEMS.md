@@ -233,3 +233,9 @@
 - **AST-020：真实隔离执行尚未在开发机验收**。本机无 Docker/Podman，sandbox-exec 不可用。新增执行器 fail closed，保留脚本与 sandbox_unavailable 记录；四项真实 Docker 测试默认跳过。只有安装环境并跑通真实测试后才能更新为通过，适配器替身测试不算。
 
 阶段结果、独立语义核查边界和复现命令见 [科研工作流](astrion-agent/docs/RESEARCH_WORKFLOW.md)。
+
+## 8. P0 交付故障修复（2026-11-01）
+
+AST-018 在最新真实综述任务中升级为明确的交付缺陷：DSML 调用文本被当成 no_tool_call 回答并保存报告。现已为核心终止、流式展示和报告发布增加校验；最后一轮改用只读历史快照，异常返回 error 而非发布报告。脱敏回放、SSE/产物集成回归通过；一次真实收尾返回正常有限综述。原运行并未变成成功，19份资料覆盖与语义核查仍未完成。
+
+AST-003 的目录触发因素已缩小：list_documents 按输出预算分页，保留字段、total及next_offset；其他大结果仍可能外置后重读。详见 [P0事故记录](astrion-agent/docs/incidents/2026-11-01-protocol-as-report.md)。

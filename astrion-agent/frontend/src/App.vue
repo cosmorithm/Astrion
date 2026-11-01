@@ -25,10 +25,11 @@ const result = ref(null)
 const runError = ref('')
 const fileInput = ref(null)
 const currentProject = computed(() => projects.value.find(item => item.id === Number(projectId.value)))
-const statusLabels = { completed: '已完成', needs_input: '需要补充信息', no_tool_call: '已返回回答', step_limit: '达到步数上限，未完成', incomplete_plan: '仍有未完成子任务' }
+const statusLabels = { completed: '已完成', needs_input: '需要补充信息', no_tool_call: '已返回回答', step_limit: '达到步数上限，未完成', incomplete_plan: '仍有未完成子任务', error: '研究失败，未完成' }
 const reportState = computed(() => busy.value ? '研究中' : runError.value ? '研究失败' : result.value ? (statusLabels[result.value.result.status] || '未完成') : '等待研究')
 const reportText = computed(() => {
   if (result.value) {
+    if (result.value.result.status === 'error') return ''
     if (result.value.result.answer?.trim()) return result.value.result.answer
     return result.value.result.status === 'step_limit'
       ? '已达到本次最大步数，未生成最终答案。请缩小问题范围后重试。'
@@ -130,6 +131,8 @@ async function startResearch() {
       } else if (message.type === 'done') {
         result.value = message.result
         pendingAnswer.value = ''
+        progressText.value = ''
+        if (message.result.result.status === 'error') runError.value = message.result.result.error?.message || '模型未生成有效报告，本次研究未完成。'
       } else if (message.type === 'error') {
         throw new Error(message.message)
       }
@@ -189,7 +192,7 @@ onMounted(() => action(loadProjects))
                 <div class="panel-header"><div><strong>研究报告</strong></div><span class="panel-meta">{{ reportState }}</span></div>
                 <template v-if="result || reportText || runError">
                   <div v-if="busy" class="live-label"><span class="pulse"></span> 正在生成 · 内容可能调整</div>
-                  <div v-if="runError" class="alert alert-warning">生成中断{{ reportText ? '，以下内容尚未完成。' : '，未生成最终答案。' }}</div>
+                  <div v-if="runError" class="alert alert-warning">{{ runError }}{{ reportText ? ' 以下内容尚未完成。' : '' }}</div>
                   <div class="report-text" v-html="reportHtml"></div>
                   <div v-if="result" class="result-meta">
                     <span>状态：{{ result.result.status }}</span><span>耗时：{{ result.duration_seconds?.toFixed(1) }} s</span>

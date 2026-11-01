@@ -18,6 +18,7 @@ from .citations import audit_citations, covers_range
 from tools.research import build_tools
 from .runs import RunLog
 from .storage.artifacts import Artifacts
+from response_contract import answer_error
 
 # Backward-compatible names; declarations have one authority in tools/knowledge.py.
 from tools.knowledge import SEARCH_DOCS, READ_DOC, SEARCH_MEM
@@ -150,6 +151,10 @@ def run_research(
             "unknown_calls": getattr(llm, "usage_unknown", None),
         },
     }
+    invalid = answer_error(result.get("answer"))
+    if invalid:
+        result.update(status="error", answer=None, error=invalid)
+        output["citation_audit"] = audit_citations(None, trace)
     if result.get("answer"):
         try:
             output["report_artifact"] = Artifacts(store).put(

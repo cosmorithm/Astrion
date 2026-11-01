@@ -230,3 +230,7 @@ ASTRION_TEST_DOCKER=1 .venv-ui/bin/python -B -m unittest tests.research.test_doc
 Docker约束依据：[Docker security](https://docs.docker.com/engine/security/)、[resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)。
 
 工作台实测：独立验收项目完成 CSV 上传、预览和浏览器下载（与原文件字节相同）；PDF 目录/第3页缺失标记与 DOI 元数据查询均正常。原项目、文档和记忆的原有列哈希核对不变；迁移前备份位于 research_data/astrion.before-research-extension-20261101.sqlite3。GitHub Actions 增加研究依赖、真容器和前端构建任务，但本次尚未远程触发，不能据此宣称 CI 已通过。
+
+## 输出异常修复（2026-11-01）
+
+DSML 控制文本不再当作回答保存；最后一轮以只读历史快照收尾，异常返回 error，原始日志保留。目录按约2600字符分页，必须遵循 next_offset；详情与最新255项通过/4项跳过口径见 [P0事故记录](incidents/2026-11-01-protocol-as-report.md)。此前三阶段实测数据是历史记录，并未改写为修复后的成绩。

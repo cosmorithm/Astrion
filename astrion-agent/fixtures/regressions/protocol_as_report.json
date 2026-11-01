@@ -1,0 +1,8 @@
+{
+  "description": "Sanitized control text from 2026-11-01 failed final response; no user documents or keys",
+  "response": {
+    "role": "assistant",
+    "content": "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"read_evidence\">\n<｜｜DSML｜｜ parameter name=\"limit\" string=\"false\">5000</｜｜DSML｜｜ parameter>\n<｜｜DSML｜｜ parameter name=\"ref\" string=\"true\">ctx_fixture_catalog</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>"
+  },
+  "expected_error": "tool_protocol_in_answer"
+}

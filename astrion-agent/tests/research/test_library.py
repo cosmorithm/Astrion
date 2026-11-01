@@ -13,6 +13,34 @@ FIXTURES = Path(__file__).resolve().parents[2] / "fixtures/research"
 
 
 class LibraryTests(unittest.TestCase):
+    def test_large_catalog_pages_survive_immediate_compaction_without_losing_entries(self):
+        from tools.knowledge import KnowledgeTools
+        from memory import Memory
+        from test_research import call
+        identifiers = []
+        for index in range(20):
+            identifiers.append(self.store.import_document(
+                self.a, f'{index:02d}_' + 'long-paper-name-' * 6 + '.md', b'research text',
+                extra={'warnings': ['layout_unverified', 'tables_and_equations_may_be_incomplete']}))
+        tool = KnowledgeTools(self.store, self.a)
+        offset = 0
+        observed = []
+        while offset is not None:
+            content = tool.list_documents(offset=offset, limit=20)
+            self.assertLessEqual(len(content), 2600)
+            data = json.loads(content)
+            self.assertTrue(data['documents'])
+            self.assertEqual(data['total'], 20)
+            observed.extend(item['id'] for item in data['documents'])
+            memory = Memory('test')
+            memory.add_assistant(call('list_documents', {'offset': offset}, 'catalog'))
+            memory.add_tool('catalog', content)
+            memory.compact()
+            visible = json.loads(memory.for_model()[-1]['content'])
+            self.assertEqual(visible['documents'], data['documents'])
+            offset = data['next_offset']
+        self.assertEqual(observed, identifiers)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

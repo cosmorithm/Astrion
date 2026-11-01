@@ -62,6 +62,8 @@ Then set `ASTRION_CONTEXT_SERVICE_URL=http://127.0.0.1:8766/context-edits` in th
 
 `memory.compaction.finished` includes five layer reports with before/after character counts, decisions, affected units or IDs, and adapter fallback information. Validate with `python3 -B -m unittest test_memory test_context_pipeline test_session test_research` from `astrion-agent/`; the HTTP integration tests also exercise the real optional service protocol.
 
+Leaked tool-control syntax is rejected at the answer boundary and is not published as a report. See the [2026-11-01 incident and fix](astrion-agent/docs/incidents/2026-11-01-protocol-as-report.md).
+
 ## Research workflow
 
 See [the staged research workflow](astrion-agent/docs/RESEARCH_WORKFLOW.md) for PDF/OCR import, page and section reading, multilingual retrieval, external literature evidence, isolated computation, architecture, actual validation results and reproducible acceptance commands.
