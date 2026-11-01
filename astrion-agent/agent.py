@@ -274,6 +274,7 @@ def run(
     tool_specs: list[ToolSpec] | None = None,
     tool_implementations: dict[str, Callable] | None = None,
     final_step_prompt: str | None = None,
+    capture_model_input: bool = False,
 ) -> dict:
     """运行任务；可选独立目录、事件记录和会话持久化。
 
@@ -360,7 +361,7 @@ def run(
         return {"type": type(exc).__name__, "message": str(exc)}
 
     def call_model(fn: Callable[[], object], *, purpose: str, step: int,
-                   input_metadata: dict) -> object:
+                   input_metadata: dict, request_snapshot=None) -> object:
         """记录一次模型调用；不在 Event 中重复保存完整输入上下文。"""
         nonlocal model_call_count
         model_call_count += 1
@@ -370,8 +371,10 @@ def run(
             "purpose": purpose,
             "model": getattr(llm, "model", None),
         }
-        emit("model.call.started", step=step,
-             payload={**common, "input": input_metadata})
+        payload = {**common, "input": input_metadata}
+        if capture_model_input and request_snapshot is not None:
+            payload["request_snapshot"] = request_snapshot
+        emit("model.call.started", step=step, payload=payload)
         started = perf_counter()
         try:
             response = fn()
@@ -447,6 +450,9 @@ def run(
                     purpose="compaction",
                     step=event_step,
                     input_metadata={"transcript_chars": len(transcript)},
+                    request_snapshot={"messages": [{"role": "system", "content": SUMMARIZE_PROMPT},
+                                                   {"role": "user", "content": transcript}],
+                                      "tools": []},
                 )
 
             compaction_started = perf_counter()
@@ -496,6 +502,7 @@ def run(
                     input_metadata={"message_count": len(request_messages),
                                     "message_chars": len(json.dumps(request_messages, ensure_ascii=False)),
                                     "tool_count": len(request_tools)},
+                    request_snapshot={"messages": request_messages, "tools": request_tools},
                 )
             decision = enhanced_decision(messages, active_tools, enhanced_call)
             emit("decision.finished", step=event_step, payload={
@@ -525,6 +532,7 @@ def run(
                     "tool_count": len(active_tools),
                     "finalizing": finalizing,
                 },
+                request_snapshot={"messages": messages, "tools": (TOOLS if tool_specs is None and not finalizing else active_tools)},
             )
         steps_taken = event_step
         memory.add_assistant(msg)

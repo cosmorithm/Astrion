@@ -76,6 +76,24 @@ class RunRepository:
                 return [json.loads(line) for line in handle if line.strip()]
         return []
 
+    def events_page(self, run_id, offset=0, limit=10):
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 20:
+            raise ValueError("invalid_pagination: offset >= 0, limit 1–20")
+        self.get(run_id)
+        path = self.directory(run_id) / 'events.jsonl'
+        if path.is_symlink():
+            raise ValueError('research_run_path_denied')
+        events = []
+        if path.is_file():
+            with path.open(encoding='utf-8') as handle:
+                for index, line in enumerate(handle):
+                    if index < offset:
+                        continue
+                    if len(events) == limit:
+                        return {'events': events, 'next_offset': offset + limit}
+                    events.append(json.loads(line))
+        return {'events': events, 'next_offset': None}
+
     def listing(self, offset=0, limit=20):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 50:
             raise ValueError("invalid_pagination: offset >= 0, limit 1–50")

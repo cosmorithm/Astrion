@@ -46,6 +46,7 @@ def main():
     run.add_argument("--steps", type=int, default=DEFAULT_STEPS)
     run.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     run.add_argument("--worker-steps", type=int, default=DEFAULT_STEPS)
+    run.add_argument("--context-budget-chars", type=int, help="软压缩触发阈值（字符，非 token）")
     run.add_argument("--continue-run", help="继承指定历史运行的上下文、证据与待办，另存新版本")
     run.add_argument("--trace", type=Path, help="保存运行事实 JSON，目标文件必须不存在")
     run.add_argument("task")
@@ -160,6 +161,7 @@ def main():
                     max_steps=args.steps,
                     max_workers=args.workers,
                     worker_steps=args.worker_steps,
+                    budget_chars=args.context_budget_chars,
                     continue_run_id=args.continue_run,
                 )
                 if args.trace:

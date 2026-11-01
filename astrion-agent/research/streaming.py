@@ -44,6 +44,7 @@ class DeltaAssembler:
     def __init__(self, emit):
         self.emit = emit
         self.content = ""
+        self.reasoning_content = ""
         self.calls = {}
         self.answers = {}
         self.usage = None
@@ -60,6 +61,7 @@ class DeltaAssembler:
             if choice.get("finish_reason"):
                 self.finish_reason = choice["finish_reason"]
             delta = choice.get("delta") or {}
+            self.reasoning_content += delta.get("reasoning_content") or ""
             text = delta.get("content") or ""
             if text:
                 self.content += text
@@ -94,6 +96,8 @@ class DeltaAssembler:
         for stream in self.answer_streams.values():
             stream.finish()
         message = {"role": "assistant", "content": self.content or None}
+        if self.reasoning_content:
+            message["reasoning_content"] = self.reasoning_content
         if self.calls:
             message["tool_calls"] = [self.calls[i] for i in sorted(self.calls)]
         return message

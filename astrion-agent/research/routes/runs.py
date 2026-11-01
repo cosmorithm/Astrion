@@ -17,3 +17,9 @@ def listing(project_id: int, request: Request, offset: int = 0, limit: int = 20)
 def detail(project_id: int, run_id: str, request: Request):
     with database(request) as store:
         return RunRepository(store, project_id).get(run_id)
+
+
+@router.get("/{run_id}/events")
+def events(project_id: int, run_id: str, request: Request, offset: int = 0, limit: int = 10):
+    with database(request) as store:
+        return RunRepository(store, project_id).events_page(run_id, offset, limit)

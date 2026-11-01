@@ -3,6 +3,19 @@
 DEFAULT_STEPS = 50
 DEFAULT_WORKERS = 5
 MAX_WORKERS = 5
+DEEPSEEK_CONTEXT_TOKENS = 1_048_576
+DEFAULT_CONTEXT_CHARS = 600_000
+MAX_CONTEXT_CHARS = 786_432
+
+
+def context_policy(base_url, model):
+    from urllib.parse import urlsplit
+    official = urlsplit(base_url or '').hostname == 'api.deepseek.com'
+    known = model in {'deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-flash'}
+    return {'model': model, 'window_tokens': DEEPSEEK_CONTEXT_TOKENS if official and known else None,
+            'budget_chars': DEFAULT_CONTEXT_CHARS if official and known else 12_000,
+            'max_budget_chars': MAX_CONTEXT_CHARS,
+            'source': 'deepseek_official' if official and known else 'unverified_provider'}
 
 
 def validate_budgets(max_steps, max_workers, worker_steps):

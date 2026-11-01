@@ -15,7 +15,7 @@ from .prompts import FINAL_STEP_PROMPT, run_prompt
 from .citations import audit_citations, covers_range, observed_ranges
 from tools.research import build_tools
 from .runs import RunLog
-from .config import DEFAULT_STEPS, DEFAULT_WORKERS, validate_budgets
+from .config import DEFAULT_STEPS, DEFAULT_WORKERS, MAX_CONTEXT_CHARS, validate_budgets, context_policy
 from .continuation import fork_parent
 from .workers import WorkerPool
 from .storage.artifacts import Artifacts
@@ -34,7 +34,7 @@ def run_research(
     max_steps: int = DEFAULT_STEPS,
     max_workers: int = DEFAULT_WORKERS,
     worker_steps: int = DEFAULT_STEPS,
-    budget_chars: int = 12000,
+    budget_chars: int | None = None,
     on_event=None,
     continue_run_id: str | None = None,
 ) -> dict:
@@ -42,6 +42,11 @@ def run_research(
     if not isinstance(task, str) or not task.strip():
         raise ValueError("研究问题不能为空")
     validate_budgets(max_steps, max_workers, worker_steps)
+    context = context_policy(getattr(llm, 'base_url', ''), getattr(llm, 'model', ''))
+    if budget_chars is None:
+        budget_chars = context['budget_chars']
+    if type(budget_chars) is not int or not 1 <= budget_chars <= MAX_CONTEXT_CHARS:
+        raise ValueError("上下文字符预算须为 1–786432")
     prompt = run_prompt(max_steps, worker_steps, max_workers)
     parent, root_memory, inherited_ranges = None, None, []
     if continue_run_id:
@@ -89,6 +94,7 @@ def run_research(
             tool_specs=root_specs,
             tool_implementations=root_impl,
             final_step_prompt=FINAL_STEP_PROMPT,
+            capture_model_input=True,
         )
     except Exception as exc:
         # Only a completed tool batch is resumable. Never checkpoint an in-flight
@@ -124,6 +130,7 @@ def run_research(
         "workers": pool.entries,
         "parent_run_id": continue_run_id,
         "budgets": {"max_steps": max_steps, "max_workers": max_workers, "worker_steps": worker_steps},
+        "context_policy": {**context, "budget_chars": budget_chars},
         "observed_ranges": sorted(set(map(tuple, inherited_ranges)) | set(observed_ranges(trace))),
         "context_archive": {"path": root_memory.archive.path, "scope": root_memory.archive.scope},
         "citation_audit": audit_citations(result.get("answer"), trace, inherited_ranges),

@@ -18,7 +18,7 @@ import agent
 from .runner import run_research
 from .store import Store
 from .streaming import StreamingChatLLM
-from .config import DEFAULT_STEPS, DEFAULT_WORKERS, MAX_WORKERS
+from .config import DEFAULT_STEPS, DEFAULT_WORKERS, MAX_WORKERS, MAX_CONTEXT_CHARS, context_policy
 from .continuation import load_parent
 
 agent.load_env(agent.find_env_files(Path(agent.__file__).resolve().parent))
@@ -67,6 +67,7 @@ class RunInput(BaseModel):
     max_workers: int = Field(default=DEFAULT_WORKERS, ge=0, le=MAX_WORKERS)
     worker_steps: int = Field(default=DEFAULT_STEPS, ge=1, le=DEFAULT_STEPS)
     continue_run_id: str | None = Field(default=None, pattern=r"^research_[a-f0-9]{32}$")
+    context_budget_chars: int | None = Field(default=None, ge=1, le=MAX_CONTEXT_CHARS)
 
 
 def run_store(fn):
@@ -120,8 +121,10 @@ def sse(value):
 
 @app.get("/api/research/config")
 def research_config():
+    context = context_policy(os.environ.get('AGENT_BASE_URL') or 'https://api.deepseek.com',
+                             os.environ.get('AGENT_MODEL') or 'deepseek-chat')
     return {"max_steps": DEFAULT_STEPS, "worker_steps": DEFAULT_STEPS, "max_workers": DEFAULT_WORKERS,
-            "limits": {"steps": DEFAULT_STEPS, "workers": MAX_WORKERS}}
+            "limits": {"steps": DEFAULT_STEPS, "workers": MAX_WORKERS}, "context": context}
 
 
 @app.post("/api/research/stream")
@@ -162,6 +165,7 @@ def research_stream(body: RunInput):
                 max_steps=body.max_steps,
                 max_workers=body.max_workers,
                 worker_steps=body.worker_steps,
+                budget_chars=body.context_budget_chars,
                 continue_run_id=body.continue_run_id,
                 on_event=lambda item: emit({"type": "event", **item}),
             )

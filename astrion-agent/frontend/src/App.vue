@@ -5,6 +5,7 @@ import Artifacts from './components/Artifacts.vue'
 import ExternalSources from './components/ExternalSources.vue'
 import SourceLibrary from './components/SourceLibrary.vue'
 import ResearchHistory from './components/ResearchHistory.vue'
+import ResearchTrace from './components/ResearchTrace.vue'
 import { renderMarkdown } from './markdown.js'
 
 const projects = ref([])
@@ -22,6 +23,7 @@ const busy = ref(false)
 const pendingAnswer = ref('')
 const progressText = ref('')
 const progress = ref([])
+const traceEvents = ref([])
 const result = ref(null)
 const historyPanel = ref(null)
 const historyLoading = ref(false)
@@ -121,15 +123,16 @@ function describeEvent(item) {
 async function startResearch() {
   if (!projectId.value || !task.value.trim() || busy.value || historyLoading.value || !budgets.value) return
   error.value = ''; runError.value = ''; notice.value = ''; result.value = null
-  progress.value = []; pendingAnswer.value = ''; progressText.value = ''; busy.value = true
+  progress.value = []; traceEvents.value = []; pendingAnswer.value = ''; progressText.value = ''; busy.value = true
   try {
     await streamResearch({ project_id: Number(projectId.value), task: task.value,
       max_steps: budgets.value.max_steps, worker_steps: budgets.value.worker_steps, max_workers: budgets.value.max_workers,
-      continue_run_id: continueRunId.value || null }, message => {
+      continue_run_id: continueRunId.value || null, context_budget_chars: budgets.value.context.budget_chars }, message => {
       if (message.type === 'model_delta' && message.role === 'root') {
         if (message.kind === 'answer') pendingAnswer.value += message.text
         else progressText.value += message.text
       } else if (message.type === 'event') {
+        traceEvents.value.push({ role: message.role, worker_id: message.worker_id, event: message.event })
         if (message.role === 'root' && message.event.type === 'model.call.started' && message.event.payload?.purpose === 'decision') {
           pendingAnswer.value = ''; progressText.value = ''
         }
@@ -158,11 +161,11 @@ function openRun(run) {
     ? `该运行失败（${run.error_type}）。${run.context_archive ? '可从最近一次完整检查点继续。' : '缺少可恢复上下文。'}` : ''
   // Legacy exception records may contain status at the top level.
   if (run && !run.result) result.value = { ...run, result: { status: run.status || 'error' } }
-  progress.value = []; pendingAnswer.value = ''; progressText.value = ''
+  progress.value = []; traceEvents.value = []; pendingAnswer.value = ''; progressText.value = ''
 }
 watch(projectId, () => {
   continueRunId.value = ''
-  result.value = null; runError.value = ''; progress.value = []; pendingAnswer.value = ''; progressText.value = ''
+  result.value = null; runError.value = ''; progress.value = []; traceEvents.value = []; pendingAnswer.value = ''; progressText.value = ''
   action(loadProjectData)
 })
 onMounted(() => action(async () => {
@@ -217,7 +220,8 @@ onMounted(() => action(async () => {
                   <label class="col-sm-4">每个子 Agent 轮数<input v-model.number="budgets.worker_steps" class="form-control" type="number" min="1" :max="budgets.limits.steps" required :disabled="busy"></label>
                   <label class="col-sm-4">子 Agent 总数<input v-model.number="budgets.max_workers" class="form-control" type="number" min="0" :max="budgets.limits.workers" required :disabled="busy"></label>
                 </div>
-                <small>独立子任务可并发；预算是上限，任务完成后提前结束。</small>
+                <label class="d-block mt-2">上下文压缩阈值（字符，非 token）<input v-model.number="budgets.context.budget_chars" class="form-control" type="number" min="1" :max="budgets.context.max_budget_chars" required :disabled="busy"></label>
+                <small>模型窗口：{{ budgets.context.window_tokens ? budgets.context.window_tokens.toLocaleString() + ' tokens' : '未知，请核对模型服务' }}。字符阈值是软触发条件，不是 token 上限；调高可能增加费用。独立子任务可并发。</small>
               </details>
               <div class="question-bottom"><span>{{ continueRunId ? '保留旧报告、已读证据与待办；本次计量独立记录。' : '基于当前项目资料进行研究' }}</span><button class="btn primary-btn" :disabled="busy || historyLoading || !task.trim() || !budgets">{{ busy ? '研究中…' : continueRunId ? '继续研究' : '开始研究' }}</button></div>
             </form>
@@ -245,6 +249,7 @@ onMounted(() => action(async () => {
                 <div v-if="progress.length" class="timeline"><div v-for="(item, index) in progress" :key="index" class="timeline-item"><span class="timeline-dot"></span><span>{{ item }}</span></div></div>
                 <div v-else class="timeline-empty">Agent 的研究步骤会显示在这里。</div>
                 <details v-if="progressText" class="model-output"><summary>模型过程输出</summary><div>{{ progressText }}</div></details>
+                <details class="mt-3"><summary>查看每轮输入输出</summary><ResearchTrace :project-id="projectId" :run-id="result?.run_id || ''" :busy="busy" :live="traceEvents" /></details>
                 <div class="activity-note">运行事件与最终结论分开展示。</div>
               </section>
             </div>

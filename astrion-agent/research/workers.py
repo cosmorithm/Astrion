@@ -80,6 +80,7 @@ class WorkerPool:
                 llm, memory, max_steps=self.steps,
                 event_sink=self.record("worker", entry["worker_id"]),
                 tool_specs=specs, tool_implementations=impl, final_step_prompt=FINAL_STEP_PROMPT,
+                capture_model_input=True,
             )
             entry.update(result)
             if result.get("answer"):

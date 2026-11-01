@@ -6,6 +6,7 @@ from .knowledge import KNOWLEDGE_SPECS, KnowledgeTools
 from .contracts import spec, S
 from .computation import COMPUTATION_SPECS, ComputationTools
 from .external import EXTERNAL_SPECS, ExternalTools
+from .research_history import SPECS as HISTORY_SPECS, HistoryTools
 
 CONTROL_SPECS = [s for s in TOOL_SPECS if s.name in {"finish", "ask_user", "update_task_plan"}]
 DELEGATE = spec(
@@ -27,9 +28,10 @@ DELEGATE_BATCH = spec(
 
 def build_tools(store, project, *, worker=False, delegate=None, batch_delegate=None):
     bound = KnowledgeTools(store, project)
-    specs = [*KNOWLEDGE_SPECS, *EXTERNAL_SPECS, *COMPUTATION_SPECS, *CONTROL_SPECS]
+    specs = [*KNOWLEDGE_SPECS, *EXTERNAL_SPECS, *COMPUTATION_SPECS, *HISTORY_SPECS, *CONTROL_SPECS]
     implementations = {
         **bound.implementations(),
+        **HistoryTools(store, project).implementations(),
         **ExternalTools(store, project).implementations(),
         **ComputationTools(store, project).implementations(),
         "finish": finish,
