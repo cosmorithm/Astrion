@@ -74,14 +74,15 @@ class PublicQasperTests(unittest.TestCase):
                 (path/'predictions.jsonl').write_text(json.dumps(pred)+'\n' if status!='error' else '')
                 report={'benchmark':'QASPER','dataset_sha256':'data','official_evaluator_sha256':digest,'settings':settings,'split':'dev','cases':[case]}
                 (path/'summary.json').write_text(json.dumps(report));return path,case
-            a,failed=mk_suite('a','p1','q1','error');b,ok=mk_suite('b','p2','q2','completed');r,_=mk_suite('retry','p1','q1','completed')
+            a,failed=mk_suite('a','p1','q1','error');b,ok=mk_suite('b','p2','q2','completed');r,_=mk_suite('retry','p1','q1','completed');bad,_=mk_suite('bad-retry','p1','q1','error')
             original={'benchmark':'QASPER','dataset_sha256':'data','official_evaluator_sha256':digest,'settings':settings,
                       'split':'dev','model':'example','source_suites':[str(a),str(b)],'cases':[failed,ok],
                       'known_total_tokens':20,'unknown_token_runs':0,'duration_seconds':2}
             original_path=root/'original.json';original_path.write_text(json.dumps(original));before=original_path.read_bytes()
-            _,result=qasper.replace_failed(original_path,[r],evaluator,root/'out')
+            _,result=qasper.replace_failed(original_path,[bad,r],evaluator,root/'out')
             self.assertEqual(result['successful_cases'],2);self.assertEqual(result['replaced_question_ids'],['q1'])
-            self.assertEqual(result['known_total_tokens'],30);self.assertEqual(original_path.read_bytes(),before)
+            self.assertEqual(result['known_total_tokens'],40);self.assertEqual(len(result['retry_attempts']),2)
+            self.assertEqual(original_path.read_bytes(),before)
             with self.assertRaisesRegex(ValueError,'not_unique_failed_case'):
                 qasper.replace_failed(original_path,[r,r],evaluator,root/'out')
 

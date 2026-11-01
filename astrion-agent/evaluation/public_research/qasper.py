@@ -326,7 +326,8 @@ def replace_failed(merged_path, retry_suites, evaluator, output):
     cases={c['question_id']:dict(c) for c in merged['cases']}
     q_paper={q['question_id']:pid for pid,paper in gold.items() for q in paper['qas']}
     if set(cases)!=set(q_paper):raise ValueError('cases_gold_mismatch')
-    replaced=[];attempts=[];seen=set()
+    replaced=[];attempts=[];finished=set()
+    failed_original={qid for qid,case in cases.items() if case.get('status')=='error'}
     total_tokens=merged.get('known_total_tokens',0);unknown=merged.get('unknown_token_runs',0)
     duration=merged.get('duration_seconds',0)
     for suite in map(Path,retry_suites):
@@ -342,8 +343,7 @@ def replace_failed(merged_path, retry_suites, evaluator, output):
             row=json.loads(line);retry_pred[row['question_id']]={'answer':row['predicted_answer'],'evidence':row['predicted_evidence']}
         for case in report['cases']:
             qid=case['question_id']
-            if qid in seen or qid not in cases or cases[qid].get('status')!='error':raise ValueError('not_unique_failed_case')
-            seen.add(qid)
+            if qid not in failed_original or qid in finished:raise ValueError('not_unique_failed_case')
             if case['paper_id']!=q_paper[qid] or q_paper[qid] not in retry_gold:raise ValueError('retry_paper_mismatch')
             models=set()
             for f in (Path(case['workspace'])/'runs').rglob('events.jsonl'):
@@ -365,7 +365,7 @@ def replace_failed(merged_path, retry_suites, evaluator, output):
             attempts.append({'question_id':qid,'status':case.get('status'),'workspace':case['workspace'],'usage':usage})
             if case.get('status') in ('completed','no_tool_call') and qid in retry_pred and retry_pred[qid]['answer'].strip():
                 case=dict(case);case['previous_failed_attempt']=cases[qid]['workspace']
-                cases[qid]=case;predictions[qid]=retry_pred[qid];replaced.append(qid)
+                cases[qid]=case;predictions[qid]=retry_pred[qid];replaced.append(qid);finished.add(qid)
     spec=importlib.util.spec_from_file_location('qasper_official_evaluator',evaluator)
     official=importlib.util.module_from_spec(spec);spec.loader.exec_module(official)
     refs=official.get_answers_and_evidence(gold,False)
@@ -379,7 +379,7 @@ def replace_failed(merged_path, retry_suites, evaluator, output):
         c['official_metrics']={'Answer F1':score['Answer F1'],'Evidence F1':score['Evidence F1']}
     result={**merged,'metrics':metrics,'successful_cases':len(success),'successful_only_metrics':success_metrics,
             'cases':all_cases,'known_total_tokens':total_tokens,'unknown_token_runs':unknown,'duration_seconds':duration,
-            'retry_policy':'one additional attempt only for explicitly failed cases; original result retained',
+            'retry_policy':'retry only explicitly failed cases; all attempts and original result retained',
             'original_summary':str(merged_path),'original_summary_sha256':sha256(merged_path),
             'retry_suites':[str(Path(p).resolve()) for p in retry_suites],'retry_attempts':attempts,'replaced_question_ids':replaced}
     target=Path(output)/('qasper-with-retries-'+uuid.uuid4().hex);target.mkdir(parents=True,exist_ok=False)

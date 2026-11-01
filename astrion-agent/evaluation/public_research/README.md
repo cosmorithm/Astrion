@@ -63,9 +63,24 @@ For interrupted or failed suites:
 ```bash
 # Recover finalized cases to a new directory; pass the original command's exact options.
 .venv-ui/bin/python -m evaluation.public_research qasper-recover PATH_TO_INTERRUPTED_SUITE --offset ORIGINAL_OFFSET
-# Once a merged suite has failures, run those exact offsets once more if desired, then create
+# Once a merged suite has failures, retry those exact offsets if desired, then create
 # a clearly labelled separate score that substitutes only successful retries of failed cases:
 .venv-ui/bin/python -m evaluation.public_research qasper-apply-retries PATH_TO_ORIGINAL_MERGED_SUMMARY PATH_TO_RETRY_SUITE
 ```
 
 Each finalized case is written as it finishes; a fatal `SystemExit` from the model client is recorded for that case and the next case is attempted. The recovery command reconstructs selected cases only after checking their IDs, paper text and predictions, leaves the interrupted source untouched, and records that settings were supplied by the caller. It cannot recover an in-flight case's final answer or verify settings that were not saved; retain the original launch command. The separately generated retry report checks the data/evaluator hashes, paper annotations, budgets and model name; it includes failed and retry usage separately in the total and preserves the original report. Never present the with-retry result as a no-retry run.
+
+## Compare main-agent round budgets
+
+To compare 10 / 6 / 3, 15 / 6 / 3 and 20 / 6 / 3 on exactly the same 10 development questions:
+
+```bash
+# Run from astrion-agent/. These commands call the model and incur costs.
+.venv-ui/bin/python -m evaluation.public_research qasper-run --split dev --offset 0 --count 10 --steps 10 --worker-steps 6 --workers 3 --budget-chars 12000
+.venv-ui/bin/python -m evaluation.public_research qasper-run --split dev --offset 0 --count 10 --steps 15 --worker-steps 6 --workers 3 --budget-chars 12000
+.venv-ui/bin/python -m evaluation.public_research qasper-run --split dev --offset 0 --count 10 --steps 20 --worker-steps 6 --workers 3 --budget-chars 12000
+# Run qasper-merge on each suite separately to obtain its merged summary, then:
+.venv-ui/bin/python -m evaluation.public_research qasper-compare PATH_TO_10_SUMMARY PATH_TO_15_SUMMARY PATH_TO_20_SUMMARY
+```
+
+`qasper-compare` verifies equal case IDs, dataset/scorer hashes, model name and all budgets except the main-agent limit; it rejects retry reports by default and duplicate limits. To create a separately labelled successful-results comparison after retries, pass `--allow-retries`; the report records retry counts and includes their usage. It reports the official scores on all cases (including missing predictions), plus paired scores on questions answered in **every** group. Failed cases stay visible. Root steps come from the terminal events; absent or damaged events remain unknown. Token counts, actual worker creation, retrieval diagnostics, and durations are reported separately. Summed per-case durations are not wall-clock time, especially for concurrently run groups. Source Git revisions and dirty states are included, but a dirty worktree or a mutable model service means the exact implementation or provider behavior is not fully pinned. One run per condition and 10 nonrandom cases are only an exploratory comparison; repeat trials and use a larger fixed sample before drawing robust conclusions. The 12,000-character soft compaction threshold matches the earlier pilot and is not the model's context window or a token cap.

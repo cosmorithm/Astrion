@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 import sys
 import agent
-from . import qasper, browsecomp, qasper_analysis, qasper_review
+from . import qasper, browsecomp, qasper_analysis, qasper_review, qasper_compare
 
 
 def main(argv=None):
@@ -28,6 +28,10 @@ def main(argv=None):
     merge.add_argument('suites', type=Path, nargs='+')
     merge.add_argument('--evaluator', type=Path, default=Path('research_data/public_benchmarks/qasper/qasper_evaluator.py'))
     merge.add_argument('--output', type=Path, default=Path('research_data/public_benchmarks/results'))
+    compare = sub.add_parser('qasper-compare', help='Compare matched QASPER runs with different main-agent limits')
+    compare.add_argument('summaries', nargs='+', type=Path)
+    compare.add_argument('--output', type=Path, default=Path('research_data/public_benchmarks/results'))
+    compare.add_argument('--allow-retries', action='store_true', help='Label and include separately reported retries')
     retry = sub.add_parser('qasper-apply-retries', help='Create a separate report replacing only failed cases')
     retry.add_argument('summary',type=Path)
     retry.add_argument('suites',nargs='+',type=Path)
@@ -77,6 +81,9 @@ def main(argv=None):
         if args.command == 'qasper-merge':
             path, result = qasper.merge(args.suites,args.evaluator,args.output)
             print(json.dumps({'summary_path':str(path/'summary.json'),'metrics':result['metrics']},indent=2)); return 0
+        if args.command == 'qasper-compare':
+            path,result=qasper_compare.compare(args.summaries,args.output,allow_retries=args.allow_retries)
+            print(json.dumps({'summary_path':str(path/'summary.json'),'paired_successful_cases':result['paired_successful_cases']},ensure_ascii=False,indent=2));return 0
         if args.command == 'qasper-apply-retries':
             path,result=qasper.replace_failed(args.summary,args.suites,args.evaluator,args.output)
             print(json.dumps({'summary_path':str(path/'summary.json'),'replaced':len(result['replaced_question_ids']),
