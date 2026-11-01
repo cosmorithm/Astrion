@@ -104,3 +104,45 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result['budgets'], {'max_steps': 50, 'worker_steps': 50, 'max_workers': 5})
         for invalid in ({'max_workers': 6}, {'max_steps': 51}, {'worker_steps': 51}):
             with self.assertRaises(ValueError): self.run_model([], **invalid)
+
+    def test_failed_run_exposes_last_checkpoint_and_resumes_without_losing_reads(self):
+        class FailsAfterRead(ScriptedLLM):
+            def chat(self, messages, tools=None):
+                if self.inputs:
+                    raise RuntimeError('simulated network interruption')
+                return super().chat(messages, tools)
+        llm = FailsAfterRead([call('read_knowledge', {'document_id': self.doc, 'start_line': 1, 'end_line': 1}, 'read')])
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+            run_research(self.store, self.project, '研究', llm)
+        repo = RunRepository(self.store, self.project)
+        failed = repo.listing()['runs'][0]
+        self.assertTrue(failed['can_continue'])
+        saved = repo.get(failed['run_id'])
+        self.assertEqual(saved['status'], 'error')
+        restored = Memory.from_archive(**saved['context_archive'])
+        self.assertEqual(restored.runtime['steps'], 1)
+        self.assertEqual(saved['observed_ranges'], [[self.doc, 1, 1]])
+        resumed, model = self.run_model(
+            [call('finish', {'answer': f'已恢复 [D{self.doc}:L1]'}, 'finish')],
+            '从失败前的进度继续', continue_run_id=failed['run_id'])
+        self.assertEqual(resumed['parent_run_id'], failed['run_id'])
+        self.assertEqual(resumed['citation_audit']['status'], 'locations_found')
+        self.assertIn('Sample n=128', json.dumps(model.inputs[0][0], ensure_ascii=False))
+
+    def test_legacy_recovery_sidecar_is_project_and_database_scoped(self):
+        first, _ = self.run_model([{'role': 'assistant', 'content': 'Draft'}])
+        repo = RunRepository(self.store, self.project)
+        path = repo.directory(first['run_id']) / 'result.json'
+        saved = json.loads(path.read_text())
+        info = saved.pop('context_archive')
+        path.write_text(json.dumps(saved))
+        before = path.read_bytes()
+        sidecar = path.with_name('recovery.json')
+        sidecar.write_text(json.dumps({'run_id': first['run_id'], 'database_path': '/wrong', 'context_archive': info}))
+        self.assertFalse(repo.listing()['runs'][0]['can_continue'])
+        sidecar.write_text(json.dumps({'run_id': first['run_id'], 'database_path': str(self.store.path.resolve()), 'context_archive': info,
+                                       'workers': [{'worker_id': 'worker_1', 'status': 'completed'}]}))
+        self.assertTrue(repo.listing()['runs'][0]['can_continue'])
+        self.assertEqual(repo.get(first['run_id'])['context_archive'], info)
+        self.assertEqual(repo.get(first['run_id'])['workers'][0]['worker_id'], 'worker_1')
+        self.assertEqual(path.read_bytes(), before)

@@ -131,7 +131,7 @@ class Artifacts:
     def read(self, project, identifier, offset=0, limit=4000):
         item = self.get(project, identifier)
         if offset < 0 or not 1 <= limit <= 6000:
-            raise ResearchError("invalid_pagination")
+            raise ResearchError("invalid_pagination: offset>=0; limit must be 1..6000; follow next_offset")
         if Path(item["name"]).suffix.lower() not in TEXT_SUFFIXES:
             raise ResearchError("binary_artifact: use download")
         text = self.bytes(project, identifier).decode("utf-8")

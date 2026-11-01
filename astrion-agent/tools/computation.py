@@ -12,7 +12,7 @@ COMPUTATION_SPECS = [
     ),
     spec(
         "read_project_file",
-        "按 artifact_id 读取 UTF-8 数据或脚本，offset 分页；二进制用产物下载。",
+        "按 artifact_id 读取 UTF-8 数据或脚本；limit 为 1–6000，按 next_offset 分页；二进制用产物下载。",
         {"artifact_id": S, "offset": I, "limit": I},
         ["artifact_id"],
     ),

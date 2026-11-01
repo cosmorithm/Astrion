@@ -57,6 +57,13 @@ class RunRepository:
             raise ValueError("research_run_not_found_in_project")
         if result.get("run_id") != run_id:
             raise ValueError("research_run_identity_mismatch")
+        # Optional recovery metadata for legacy failed runs whose result omitted
+        # the checkpoint. The original result and event journal stay untouched.
+        recovery = path.with_name("recovery.json")
+        if recovery.is_file() and not recovery.is_symlink() and not result.get("context_archive"):
+            data = json.loads(recovery.read_text(encoding="utf-8"))
+            if data.get("run_id") == run_id and data.get("database_path") == self.database:
+                result.update({k: data[k] for k in ("context_archive", "observed_ranges", "workers") if k in data})
         return result
 
     def trace(self, run_id):

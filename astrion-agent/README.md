@@ -799,7 +799,7 @@ python3 -m research run --project 1 --trace research_data/run-001.json "比较�
   "继续阅读上次未覆盖的文献，保留有效内容，形成带引用的完整修订版"
 ```
 
-每次续写新建 run_id 和 context scope，继承用户原话、已读证据、固定原句和任务计划。旧报告是待核查草稿；不会把旧报告中的引用直接算成已读证据。各版独立记录耗时、token、子任务和产物 ID，预算重新计数。主/子轮数及子 Agent 数可通过 `--steps`、`--worker-steps`、`--workers` 或工作台预算控件下调。详情见 [续写与并发说明](docs/RESEARCH_CONTINUATION.md)。
+失败运行若有完整检查点，也可在研究历史中选择并继续；检查点后的操作可能需要重做，已有产物应先核对。每次续写新建 run_id 和 context scope，继承用户原话、已读证据、固定原句和任务计划。旧报告是待核查草稿；不会把旧报告中的引用直接算成已读证据。各版独立记录耗时、token、子任务和产物 ID，预算重新计数。主/子轮数及子 Agent 数可通过 `--steps`、`--worker-steps`、`--workers` 或工作台预算控件下调。详情见 [续写与并发说明](docs/RESEARCH_CONTINUATION.md)。
 
 ## Research 工作台（Vue 3）
 

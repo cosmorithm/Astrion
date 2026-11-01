@@ -91,6 +91,15 @@ def run_research(
             final_step_prompt=FINAL_STEP_PROMPT,
         )
     except Exception as exc:
+        # Only a completed tool batch is resumable. Never checkpoint an in-flight
+        # call here: restore the last checkpoint already committed by the loop.
+        checkpoint = None
+        if root_memory is not None:
+            try:
+                root_memory.archive.load_checkpoint()
+                checkpoint = {"path": root_memory.archive.path, "scope": root_memory.archive.scope}
+            except ValueError:
+                pass
         journal.finish(
             {
                 "status": "error",
@@ -100,6 +109,9 @@ def run_research(
                 "usage": pool.usage(),
                 "run_id": journal.run_id, "project": project, "task": task,
                 "parent_run_id": continue_run_id,
+                "context_archive": checkpoint,
+                "workers": pool.entries,
+                "observed_ranges": sorted(set(map(tuple, inherited_ranges)) | set(observed_ranges(trace))),
             }
         )
         raise

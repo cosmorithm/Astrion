@@ -154,7 +154,8 @@ async function startResearch() {
 function openRun(run) {
   result.value = run
   continueRunId.value = run?.context_archive ? run.run_id : ''
-  runError.value = run?.error_type ? `该运行失败（${run.error_type}），缺少可恢复上下文。` : ''
+  runError.value = run?.error_type
+    ? `该运行失败（${run.error_type}）。${run.context_archive ? '可从最近一次完整检查点继续。' : '缺少可恢复上下文。'}` : ''
   // Legacy exception records may contain status at the top level.
   if (run && !run.result) result.value = { ...run, result: { status: run.status || 'error' } }
   progress.value = []; pendingAnswer.value = ''; progressText.value = ''
