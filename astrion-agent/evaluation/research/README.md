@@ -77,3 +77,5 @@
 本地结果在 `research_data/research_eval_v1/pilot-20261101/`。`reports/` 是四份不可覆盖单题结果，`runs/` 包括每次独立数据库、上下文、事件和产物，`model-reviews-v2/` 是参考裁判报告，`summaries/` 的最新版区分金标未审/语义待审并将通过率留空。早期调试汇总未区分金标准未审，不能当作正式通过率。试验期间改进了报告元数据和论文提取警告，早期四份原始报告不含后来新增的 base 文件哈希和代码版本；保留原样，不追认这些字段。此后新报告会记录数据库哈希、git HEAD、工作树是否有修改和 Python 版本；`worktree_dirty=true` 时不能仅凭 commit 重现。
 
 重复运行相同题目应保存独立报告；可在一致的预算和数据版本下重复若干次、记录方差。两组所允许的子 Agent 数不同、实际调用成本可能相差很大；没有等额 token 硬预算，因此本版本不能宣称同成本比较。
+
+公开科研测试集接入和 QASPER 复现说明见 [public_research/README.md](../public_research/README.md)。

@@ -1,0 +1,3 @@
+# Optional: reading official BrowseComp-Plus Parquet (QASPER uses the standard library).
+pyarrow>=18,<24
+fsspec[http]>=2024.10
