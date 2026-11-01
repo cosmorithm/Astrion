@@ -466,6 +466,10 @@ CLI 和研究入口为每个 Agent 的 `scope` 在 `context.sqlite3` 中记录 S
 python -m unittest discover -s tests/context -q
 ```
 
+### 上下文对照实验
+
+固定历史的追加、旧压缩和 SS 重构对照见 [Context Eval v1](evaluation/context/README.md)。实验保存每次模型调用、结果与费用信息；它是合成历史重放，不代表完整科研 Agent 的任务表现。
+
 ### 可选服务端适配
 
 默认五层均在客户端组织，不绑定模型供应商。第 3 层支持 `HttpContextAdapter`：在根 `.env` 配置 `ASTRION_CONTEXT_SERVICE_URL`，以及可选的独立 `ASTRION_CONTEXT_SERVICE_KEY`、`ASTRION_CONTEXT_SERVICE_TIMEOUT`（默认 5 秒，最大 30 秒）。密钥不会复用模型 API key 或保存进会话。
