@@ -504,10 +504,19 @@ def run(
         # Cheap five-layer cleanup remains available for oversized individual
         # results. A full step-based rebuild starts at the 80% watermark.
         local_request_tokens = strict_counter.count_request(memory.for_model(), selected_tools) if strict_counter else None
-        full_rebuild = bool(memory.archive.path and len(history.steps()) >= 1 and (
-            memory.chars() >= int(memory.budget_chars * 0.8)
-            or (input_budget_tokens is not None and local_request_tokens >= int(input_budget_tokens * 0.8))))
-        if memory.needs_compaction() or full_rebuild:
+        if context_strategy == "ss" and input_budget_tokens is not None:
+            # A measured token budget is the SS strategy's watermark. Mixing
+            # it with the independent character threshold can immediately undo
+            # a valid half-window rebuild and trigger another model call.
+            full_rebuild = bool(memory.archive.path and len(history.steps()) >= 1
+                                and local_request_tokens >= int(input_budget_tokens * 0.8))
+            check_compaction = full_rebuild
+        else:
+            full_rebuild = bool(memory.archive.path and len(history.steps()) >= 1 and (
+                memory.chars() >= int(memory.budget_chars * 0.8)
+                or (input_budget_tokens is not None and local_request_tokens >= int(input_budget_tokens * 0.8))))
+            check_compaction = memory.needs_compaction() or full_rebuild
+        if check_compaction:
             before_chars = memory.chars()
             print(dim(f"  [记忆] 当前 {before_chars} 字符，预算 {memory.budget_chars}；检查五层压缩…"))
             emit("memory.compaction.started", step=event_step, payload={

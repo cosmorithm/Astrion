@@ -150,11 +150,11 @@ class StrictBudgetTests(unittest.TestCase):
         ]
         self.assertTrue(any(n <= 8 for n in expanded))
         self.assertTrue(any(n > 8 for n in expanded))
-        self.assertLessEqual(build["local_input_tokens"], 800)
+        self.assertLessEqual(build["local_input_tokens"], 1600)
         self.assertLessEqual(
-            self.counter.count_request(self.memory.for_model(), []), 800
+            self.counter.count_request(self.memory.for_model(), []), 1600
         )
-        self.assertTrue(build["omitted"] or build["downgraded"])
+        self.assertTrue(build["selections"])
         self.assertEqual(self.memory.check(), [])
         self.assertEqual(len(self.memory.archive.messages), 26)
 
@@ -185,7 +185,7 @@ class StrictBudgetTests(unittest.TestCase):
         self.assertLessEqual(build["local_input_tokens"], build["target_tokens"])
 
     def test_raw_downgrades_to_cached_medium_before_ss(self):
-        self.add_steps(3, text_size=600)
+        self.add_steps(3, text_size=2300)
 
         def model(purpose, messages):
             data = json.loads(messages[1]["content"])

@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -129,6 +130,36 @@ class AgentRebuildTests(unittest.TestCase):
             self.assertTrue(failures)
             self.assertEqual(failures[0]['reason'], 'step_context_rebuild_failed')
             self.assertEqual(failures[0]['rebuild_error']['reason'], 'protected: 3000>2000')
+
+    def test_ss_uses_token_watermark_and_reuses_constructed_context(self):
+        class QuarterCounter(CodepointCounter):
+            identifier = "test-quarter"
+            def count_text(self, text):
+                return (len(text) + 3) // 4
+
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memory("System", budget_chars=1200, keep_recent=4,
+                archive=ContextStore(Path(tmp) / "history.sqlite"))
+            empty = {"type": "object", "properties": {}, "additionalProperties": False}
+            finish = next(s for s in agent.TOOL_SPECS if s.name == "finish")
+            specs = [ToolSpec("work", "produce observation", empty), finish]
+            events = []
+            counter = QuarterCounter()
+            with patch.dict(os.environ, {"ASTRION_CONTEXT_INPUT_BUDGET_TOKENS": "2400"}), \
+                 patch("agent.load_token_counter", return_value=counter), \
+                 patch("context_construction.load_token_counter", return_value=counter), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                result = agent.run("task", Model(), memory, max_steps=12,
+                    tool_specs=specs, tool_implementations={"work": lambda: "x" * 1400,
+                    "finish": lambda answer: answer}, event_sink=events.append)
+            self.assertEqual(result["status"], "no_tool_call")
+            builds = [e["step"] for e in events if e["type"] == "memory.compaction.finished"
+                      and e["payload"].get("rebuild")]
+            self.assertTrue(builds)
+            self.assertGreater(builds[0], 2)  # character threshold crossed earlier
+            self.assertTrue(any(b - a > 1 for a, b in zip(builds, builds[1:]))
+                            or builds[-1] < result["steps"])
+            self.assertEqual(memory.check(), [])
 
 
 if __name__ == "__main__":
