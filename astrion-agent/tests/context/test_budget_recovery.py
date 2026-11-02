@@ -95,6 +95,22 @@ class BudgetRecoveryTests(unittest.TestCase):
         self.assertTrue(all(not m.get('_reduced') for m in self.memory._history if m['role'] == 'tool'))
         self.assertLessEqual(build['local_input_tokens'], 6000)
 
+    def test_raw_recent_batch_over_eighty_percent_is_kept_if_it_fits_hard_limit(self):
+        self.add_batch(count=3, size=1500)
+        visible = self.memory.for_model()
+        # The old Step is dropped, while system, user and the latest batch stay.
+        protected = [visible[0], visible[1], *visible[-4:]]
+        protected_tokens = self.counter.count_request(protected, [])
+        budget = (protected_tokens * 10 + 8) // 9
+        self.assertGreater(protected_tokens, budget * 4 // 5)
+        self.assertLessEqual(protected_tokens, budget)
+        build = self.build(budget)
+        self.assertEqual(build['reduced_tool_results'], [])
+        self.assertEqual(build['protected_tokens_after_reduction'], protected_tokens)
+        self.assertLessEqual(build['local_input_tokens'], budget)
+        self.assertTrue(all(not m.get('_reduced') for m in self.memory._history if m['role'] == 'tool'))
+        self.assertEqual(self.memory.check(), [])
+
     def test_one_large_first_batch_recovers_and_agent_completes(self):
         class Model:
             model = 'fake'

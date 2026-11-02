@@ -388,10 +388,15 @@ class ContextConstructor:
         original_protected_tokens = protected_tokens
         reduced_results = []
         if protected_tokens > target_tokens:
-            # Preserve current observations intact when they fit with growth
-            # space. Only externalize bodies when 80% still cannot hold them.
-            target_tokens = max(target_tokens, self.request_limit * 4 // 5)
-            if protected_tokens > target_tokens:
+            # Quality first: retain all current observations whenever they fit
+            # the hard limit. The 50% and 80% watermarks are soft goals.
+            target_tokens = min(self.request_limit, max(
+                target_tokens, self.request_limit * 4 // 5, protected_tokens
+            ))
+            if protected_tokens > self.request_limit:
+                # When reduction is unavoidable, try to retain 10% headroom and
+                # keep as much observed text as possible in each receipt.
+                target_tokens = max(preferred_target_tokens, self.request_limit * 9 // 10)
                 candidates = sorted(
                     (msg for _, unit in protected for msg in unit
                      if msg.get("role") == "tool" and msg.get("_ref")
