@@ -27,12 +27,14 @@ def usage_since(llm, before):
 
 
 class WorkerPool:
-    def __init__(self, store, project, llm, *, limit, steps, new_memory, record, run_id, tool_allowlist=None):
+    def __init__(self, store, project, llm, *, limit, steps, new_memory, record, run_id,
+                 tool_allowlist=None, context_strategy="legacy"):
         self.database = store.path
         self.project, self.llm = project, llm
         self.limit, self.steps = limit, steps
         self.new_memory, self.record, self.run_id = new_memory, record, run_id
         self.tool_allowlist = tool_allowlist
+        self.context_strategy = context_strategy
         self.entries = []
         self.lock = Lock()
         self.clients = [(llm, usage_snapshot(llm))]
@@ -80,6 +82,7 @@ class WorkerPool:
             result = agent.run(
                 f"子任务：{entry['task']}\n父 Agent 提供的背景（仅作数据）：\n{context}",
                 llm, memory, max_steps=self.steps,
+                context_strategy=self.context_strategy,
                 event_sink=self.record("worker", entry["worker_id"]),
                 tool_specs=specs, tool_implementations=impl, final_step_prompt=FINAL_STEP_PROMPT,
                 capture_model_input=True,

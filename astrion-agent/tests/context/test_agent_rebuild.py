@@ -78,6 +78,7 @@ class AgentRebuildTests(unittest.TestCase):
                     model,
                     memory,
                     max_steps=12,
+                    context_strategy="ss",
                     tool_specs=specs,
                     tool_implementations=impl,
                     event_sink=events.append,
@@ -121,7 +122,7 @@ class AgentRebuildTests(unittest.TestCase):
             events = []
             with patch("agent.ContextConstructor.rebuild", side_effect=ValueError("protected: 3000>2000")):
                 with contextlib.redirect_stdout(io.StringIO()):
-                    agent.run("task", Model(), memory, max_steps=5, tool_specs=specs,
+                    agent.run("task", Model(), memory, max_steps=5, context_strategy="ss", tool_specs=specs,
                               tool_implementations={"work": lambda: "x" * 1100,
                                                     "finish": lambda answer: answer},
                               event_sink=events.append)
@@ -149,7 +150,7 @@ class AgentRebuildTests(unittest.TestCase):
                  patch("agent.load_token_counter", return_value=counter), \
                  patch("context_construction.load_token_counter", return_value=counter), \
                  contextlib.redirect_stdout(io.StringIO()):
-                result = agent.run("task", Model(), memory, max_steps=12,
+                result = agent.run("task", Model(), memory, max_steps=12, context_strategy="ss",
                     tool_specs=specs, tool_implementations={"work": lambda: "x" * 1400,
                     "finish": lambda answer: answer}, event_sink=events.append)
             self.assertEqual(result["status"], "no_tool_call")

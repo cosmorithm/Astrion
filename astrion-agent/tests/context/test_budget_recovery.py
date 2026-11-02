@@ -136,7 +136,7 @@ class BudgetRecoveryTests(unittest.TestCase):
             with patch.dict(os.environ, {'ASTRION_CONTEXT_INPUT_BUDGET_TOKENS': '8500'}):
                 with patch('agent.load_token_counter', return_value=self.counter):
                     with contextlib.redirect_stdout(io.StringIO()):
-                        result = agent.run('task', fake, memory, max_steps=2,
+                        result = agent.run('task', fake, memory, max_steps=2, context_strategy='ss',
                             tool_specs=[work, finish],
                             tool_implementations={'large': lambda: 'evidence ' + 'x' * 1800,
                                                   'finish': lambda answer: answer},

@@ -38,7 +38,7 @@ def run_research(
     on_event=None,
     continue_run_id: str | None = None,
     tool_allowlist: set[str] | None = None,
-    context_strategy: str = "ss",
+    context_strategy: str = "legacy",
     scheduled_user_updates: dict[int, str] | None = None,
 ) -> dict:
     project = store.project(project_id)
@@ -47,8 +47,6 @@ def run_research(
     validate_budgets(max_steps, max_workers, worker_steps)
     if context_strategy not in {"ss", "legacy"}:
         raise ValueError("context_strategy 必须是 ss 或 legacy")
-    if context_strategy == "legacy" and max_workers:
-        raise ValueError("legacy_strategy_requires_single_agent")
     context = context_policy(getattr(llm, 'base_url', ''), getattr(llm, 'model', ''))
     if budget_chars is None:
         budget_chars = context['budget_chars']
@@ -85,7 +83,7 @@ def run_research(
 
     pool = WorkerPool(store, project_id, llm, limit=max_workers, steps=worker_steps,
                       new_memory=new_memory, record=record, run_id=journal.run_id,
-                      tool_allowlist=tool_allowlist)
+                      tool_allowlist=tool_allowlist, context_strategy=context_strategy)
     root_specs, root_impl = build_tools(store, project_id, delegate=pool.run_one, batch_delegate=pool.run_many,
                                         allowlist=tool_allowlist)
     started = perf_counter()

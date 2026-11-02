@@ -289,7 +289,7 @@ def run(
     final_step_prompt: str | None = None,
     capture_model_input: bool = False,
     history_identity: dict | None = None,
-    context_strategy: str = "ss",
+    context_strategy: str = "legacy",
     scheduled_user_updates: dict[int, str] | None = None,
 ) -> dict:
     """运行任务；可选独立目录、事件记录和会话持久化。

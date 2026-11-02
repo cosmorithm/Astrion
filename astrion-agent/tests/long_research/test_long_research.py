@@ -73,15 +73,6 @@ class LongResearchTests(unittest.TestCase):
         self.assertEqual(len(selected['groups']),1)
         self.assertEqual(len(selected['superseded_attempts']),1)
 
-    def test_legacy_research_rejects_uncontrolled_workers(self):
-        from research.runner import run_research
-        store = Store(self.db)
-        try:
-            with self.assertRaisesRegex(ValueError, 'legacy_strategy_requires_single_agent'):
-                run_research(store, 1, 'task', object(), context_strategy='legacy', max_workers=1)
-        finally:
-            store.close()
-
     def test_reference_judge_is_provisional_and_does_not_upgrade_missing_citations(self):
         report = self.root/'report.json'
         report.write_text(json.dumps({'kind':'long_research_eval','case_id':'LRX','strategy':'ss','model':'fake'}))

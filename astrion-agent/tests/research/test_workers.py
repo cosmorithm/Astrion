@@ -81,6 +81,9 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(result['usage']['totals']['total_tokens'], 130)  # 3 root + 5*2 child calls
         self.assertEqual(result['usage']['calls'], 13)
         self.assertEqual(model.usage_calls, 3)
+        starts = [e for e in result['trace'] if e['event']['type'] == 'run.started']
+        self.assertEqual(len(starts), 6)
+        self.assertTrue(all(e['event']['payload']['context_strategy'] == 'legacy' for e in starts))
         for child in children:
             names = {t['function']['name'] for t in child.inputs[0][1]}
             self.assertNotIn('run_workers', names); self.assertNotIn('run_worker', names)
@@ -91,6 +94,13 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(persisted, result['trace'])
         memory = Memory.from_archive(**result['context_archive'])
         self.assertEqual(len([r for r in memory.archive.records.values() if r['kind'] == 'worker_report']), 5)
+
+    def test_explicit_ss_strategy_is_propagated_to_workers(self):
+        model, _ = self.make_model(count=2)
+        result = self.run_model(model, context_strategy='ss')
+        starts = [e for e in result['trace'] if e['event']['type'] == 'run.started']
+        self.assertEqual(len(starts), 3)
+        self.assertTrue(all(e['event']['payload']['context_strategy'] == 'ss' for e in starts))
 
     def test_one_failure_does_not_discard_siblings_and_long_reports_are_rereadable(self):
         model, _ = self.make_model(count=2, failure=True, long_answer=True)

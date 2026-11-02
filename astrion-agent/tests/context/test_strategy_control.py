@@ -28,7 +28,7 @@ class Scripted:
 
 
 class StrategyControlTests(unittest.TestCase):
-    def run_case(self, strategy):
+    def run_case(self, strategy=None):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         memory = Memory('system', budget_chars=2700, keep_recent=1,
@@ -38,7 +38,8 @@ class StrategyControlTests(unittest.TestCase):
         model, events = Scripted(), []
         with patch('agent.ContextConstructor.rebuild', side_effect=AssertionError('SS forbidden')) as ss:
             with contextlib.redirect_stdout(io.StringIO()):
-                result = agent.run('initial', model, memory, max_steps=6, context_strategy=strategy,
+                result = agent.run('initial', model, memory, max_steps=6,
+                    **({'context_strategy': strategy} if strategy else {}),
                     scheduled_user_updates={2: 'replace original requirement'},
                     tool_specs=[work, finish], tool_implementations={'work': lambda: 'x' * 900,
                                                                     'finish': lambda answer: answer},
@@ -55,6 +56,15 @@ class StrategyControlTests(unittest.TestCase):
         self.assertEqual(updates[0]['step'], 2)
         self.assertTrue(any(m.get('content') == 'replace original requirement' for m in model.inputs[1]))
         self.assertFalse(any(m.get('content') == 'replace original requirement' for m in model.inputs[0]))
+
+    def test_default_runs_five_layer_compaction_without_ss(self):
+        result, _, events, ss = self.run_case()
+        self.assertEqual(result['status'], 'no_tool_call')
+        self.assertTrue(any(e['type'] == 'memory.compaction.finished' and e['payload']['compacted']
+                            for e in events))
+        self.assertEqual(next(e for e in events if e['type'] == 'run.started')
+                         ['payload']['context_strategy'], 'legacy')
+        ss.assert_not_called()
 
     def test_invalid_schedules_rejected_before_task_mutation(self):
         memory = Memory('system')

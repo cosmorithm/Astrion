@@ -452,6 +452,8 @@ read_step_history(step_id, level="RAW", offset=0, limit=2000) # 重读 Step 或�
 
 ### 按 Agent 分隔的 Step 历史与上下文重构
 
+**默认使用五层压缩（`legacy`）**：普通 Agent、研究主 Agent 和子 Agent 均走 `Memory.compact`，不会自动生成 SS 或调用 SS Planner。Step 历史、快照和证据仍按 Agent 保存；续写已有会话时保留旧档案与已有摘要，之后的压缩使用五层策略。下文的 SS 方案仅在 Python 接口显式设置 `context_strategy="ss"` 或对照实验指定 SS 时启用；研究运行会把显式选择的策略传给子 Agent。五层压缩可能无法把每个请求压到本地 token 硬上限以内，发送前检查仍会阻止超限请求。
+
 CLI 和研究入口为每个 Agent 的 `scope` 在 `context.sqlite3` 中记录 Step、执行事件与每次模型请求的消息/工具快照。主 Agent 与每个子 Agent 的历史相互隔离；子 Agent 完成后记录仍保留，主 Agent 只能看到显式返回的结果。继续研究时，主 Agent 的已有记录被复制到新的 scope，原记录不变；子 Agent 私有记录不会自动并入。正在执行中断时留下的 Step 可以处于 `running`，不能据此宣称工具已经执行完毕；旧运行没有的新字段也不会被追溯补造。通过 `Memory(...)` 直接构造的内存档案不会持久化，调用方需提供文件型 `ContextStore`。
 
 启用本地 token 预算时，SS 策略在使用量达到本地预算约 80%、且已有至少一个已记录 Step 时，尝试从该 Agent 的完整档案重新构建上下文；此时不再同时用字符水位触发，以免重构后立即再次重构。没有 token 预算时沿用字符水位，legacy 策略保持原有触发规则。系统规则、用户消息、固定证据、任务状态和模型尚未处理的最新工具调用及结果仍保留；无法归属已记录 Step 的旧版折叠内容为兼容而保留。其他已完成 Step，包括最近的历史，都通过 SS 目录交给 Planner 选择，不再固定保留最近四步。若只有最新工具批次、没有其他待选 Step，则无需调用摘要模型。
