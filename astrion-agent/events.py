@@ -21,6 +21,7 @@ EVENT_SCHEMA_VERSION = 1
 EVENT_TYPES = frozenset({
     "run.started",
     "run.finished",
+    "user.message.added",
     "model.call.started",
     "model.call.finished",
     "model.call.failed",

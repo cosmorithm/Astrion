@@ -458,7 +458,7 @@ CLI 和研究入口为每个 Agent 的 `scope` 在 `context.sqlite3` 中记录 S
 
 完整目录放不下规划请求时，程序按历史顺序建立阶段目录、选择阶段并展开能放入预算的 Step；未展开记录仍在当前 Agent 档案中。Planner 选择按优先级由程序组装：超限时依次尝试已缓存的较短档位和 SS（不会为退档额外调用模型），仍放不下就省略并记录原因。所有工具调用配对、受保护消息和本地 token 限制都由程序复核；无法构造合规视图时保留旧视图。`search_step_history` 可搜索摘要及本 Agent 的原始事件，`read_step_history` 可分页读取原始记录。摘要可能遗漏或失真，不能替代证据。
 
-预算恢复的回执、失败诊断与复现命令见 [上下文预算恢复](docs/CONTEXT_BUDGET_RECOVERY.md)。
+预算恢复的回执、失败诊断与复现命令见 [上下文预算恢复](docs/CONTEXT_BUDGET_RECOVERY.md)。 长科研任务中的旧压缩与 SS 对照见 [长程科研 Context 评测](evaluation/long_research/README.md)。
 
 **本地计数边界：** `B` 为输入预算，CLI/研究模式默认采用字符预算的数值作为独立的本地 token 预算，也可在根 `.env` 设置正整数 `ASTRION_CONTEXT_INPUT_BUDGET_TOKENS`。程序将消息、工具 schema 按固定 JSON 格式序列化，用本地 tokenizer 精确计数；重构优先 `0.5B`，但优先完整保留能放入 B 的近期观察；必要时提高目标，每次模型请求的该本地计数始终不得超过 `B`。模型输出及服务端封装需另外预留空间。直接使用内存型 `Memory` 的库调用，如需对每次请求启用预算，也应显式设置该环境变量。
 

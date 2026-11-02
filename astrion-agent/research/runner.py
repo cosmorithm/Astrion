@@ -38,11 +38,17 @@ def run_research(
     on_event=None,
     continue_run_id: str | None = None,
     tool_allowlist: set[str] | None = None,
+    context_strategy: str = "ss",
+    scheduled_user_updates: dict[int, str] | None = None,
 ) -> dict:
     project = store.project(project_id)
     if not isinstance(task, str) or not task.strip():
         raise ValueError("研究问题不能为空")
     validate_budgets(max_steps, max_workers, worker_steps)
+    if context_strategy not in {"ss", "legacy"}:
+        raise ValueError("context_strategy 必须是 ss 或 legacy")
+    if context_strategy == "legacy" and max_workers:
+        raise ValueError("legacy_strategy_requires_single_agent")
     context = context_policy(getattr(llm, 'base_url', ''), getattr(llm, 'model', ''))
     if budget_chars is None:
         budget_chars = context['budget_chars']
@@ -91,6 +97,8 @@ def run_research(
             llm,
             root_memory,
             max_steps=max_steps,
+            context_strategy=context_strategy,
+            scheduled_user_updates=scheduled_user_updates,
             resume=bool(parent), user_reply=task if parent else None,
             task_plan=root_memory.runtime.get("task_plan") if parent else None,
             event_sink=record("root"),

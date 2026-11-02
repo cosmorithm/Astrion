@@ -289,6 +289,8 @@ def run(
     final_step_prompt: str | None = None,
     capture_model_input: bool = False,
     history_identity: dict | None = None,
+    context_strategy: str = "ss",
+    scheduled_user_updates: dict[int, str] | None = None,
 ) -> dict:
     """运行任务；可选独立目录、事件记录和会话持久化。
 
@@ -304,6 +306,14 @@ def run(
     # 在任何预算检查或恢复读取前设置，确保实际回传字段也计入上下文大小。
     memory.reasoning_origin = getattr(llm, "reasoning_origin", None)
     memory.reasoning_synthetic_empty = bool(getattr(llm, "reasoning_synthetic_empty", False))
+    if context_strategy not in {"ss", "legacy"}:
+        raise ValueError("context_strategy 必须是 ss 或 legacy")
+    if scheduled_user_updates is None:
+        scheduled_user_updates = {}
+    if (not isinstance(scheduled_user_updates, dict) or any(
+            type(k) is not int or not 1 <= k <= max_steps or not isinstance(v, str) or not v.strip()
+            for k, v in scheduled_user_updates.items())):
+        raise ValueError("scheduled_user_updates 必须是步骤号到非空消息的字典")
     if decision_mode not in {"single", "enhanced"}:
         raise ValueError("decision_mode 必须是 single 或 enhanced")
     if final_step_prompt is not None and (not isinstance(final_step_prompt, str) or not final_step_prompt.strip()):
@@ -477,6 +487,7 @@ def run(
         "task": task,
         "model": getattr(llm, "model", None),
         "max_steps": max_steps,
+        "context_strategy": context_strategy,
         "initial_steps": initial_steps,
         "resume": resume,
         "sandbox": str(sandbox if sandbox is not None else SANDBOX),
@@ -484,6 +495,12 @@ def run(
     persist("running")
     for step in range(1, max_steps + 1):
         event_step = initial_steps + step
+        if step in scheduled_user_updates:
+            update = scheduled_user_updates[step]
+            memory.add_user(update)
+            emit("user.message.added", step=event_step,
+                 payload={"content": update, "source": "scheduled"})
+            persist("running")
         # Cheap five-layer cleanup remains available for oversized individual
         # results. A full step-based rebuild starts at the 80% watermark.
         local_request_tokens = strict_counter.count_request(memory.for_model(), selected_tools) if strict_counter else None
@@ -515,7 +532,7 @@ def run(
             rebuild_detail = None
             try:
                 compacted = False
-                if full_rebuild:
+                if full_rebuild and context_strategy == "ss":
                     def context_model_call(purpose, request_messages):
                         return call_model(
                             lambda: llm.chat(request_messages, tools=[]), purpose=purpose,
@@ -539,8 +556,10 @@ def run(
                         rebuild_error = {'reason': str(exc)[:300], 'error_type': type(exc).__name__}
                         history.record_build({'status': 'failed', **rebuild_error})
                         print(dim(f"  [记忆] Step 重构未完成，沿用已有压缩：{type(exc).__name__}: {str(exc)[:300]}"))
-                if not compacted and memory.needs_compaction():
-                    compacted = memory.compact(summarize, force=False)
+                if not compacted and (memory.needs_compaction() or
+                                      (full_rebuild and context_strategy == "legacy")):
+                    compacted = memory.compact(summarize,
+                                               force=bool(full_rebuild and context_strategy == "legacy"))
             except BaseException as exc:
                 emit("memory.compaction.failed", step=event_step, payload={
                     "before_chars": before_chars,
