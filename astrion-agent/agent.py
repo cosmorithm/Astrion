@@ -33,6 +33,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from functools import partial
 from pathlib import Path
 from time import perf_counter
@@ -164,6 +165,13 @@ class ChatLLM:
         self.key = key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        # 只对官方端点自动启用供应商特定的回传协议；其他客户端可显式声明此能力。
+        self.reasoning_origin = (
+            "deepseek:api.deepseek.com"
+            if (urlsplit(self.base_url).scheme == "https"
+                and urlsplit(self.base_url).hostname == "api.deepseek.com") else None
+        )
+        self.reasoning_synthetic_empty = self.reasoning_origin is not None
         # 累计服务端报告的实际用量；不拿字符数冒充 token 数。
         self.usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.usage_calls = 0
@@ -293,6 +301,9 @@ def run(
     同时收窄权限。直接回答保持 no_tool_call 状态；空回答或非法调用仍为 step_limit。
     未开启时保持原循环行为。
     """
+    # 在任何预算检查或恢复读取前设置，确保实际回传字段也计入上下文大小。
+    memory.reasoning_origin = getattr(llm, "reasoning_origin", None)
+    memory.reasoning_synthetic_empty = bool(getattr(llm, "reasoning_synthetic_empty", False))
     if decision_mode not in {"single", "enhanced"}:
         raise ValueError("decision_mode 必须是 single 或 enhanced")
     if final_step_prompt is not None and (not isinstance(final_step_prompt, str) or not final_step_prompt.strip()):

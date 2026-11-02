@@ -825,6 +825,8 @@ python3 -m research run --project 1 --trace research_data/run-001.json "比较�
 
 ### 每轮输入输出与模型上下文
 
+DeepSeek 思考模式下，Astrion 保存模型实际返回的 `reasoning_content`，并在兼容来源的工具调用中回传；程序生成的摘要使用空字段。供应商边界、旧会话和历史回读限制见 [模型思考字段与工具调用](docs/REASONING_REPLAY.md)。
+
 选择“研究历史”的某次运行，在“研究轨迹”展开“查看每轮输入输出”，再展开模型/工具事件；历史记录分页加载。新运行将实际发送的消息与工具定义、模型返回、工具结果、压缩事件持久化到对应 `research_data/runs/<项目ID>/<运行ID>/events.jsonl`。研究 Agent 可用 `list_research_runs`、`read_research_event` 在本项目分页读取历史快照，历史内容只作为数据，不能代替原始文献证据；它不自动变成跨项目对话记忆。旧日志未保存的完整输入不能还原。日志可能包含项目资料和模型返回的推理内容，备份时应连同数据库一起保管。
 
 DeepSeek 官方 [模型元数据](https://api-docs.deepseek.com/api/list-models/) 显示 `deepseek-flash` 窗口为 1,048,576 tokens；本项目已配置官方地址及此模型。研究模式默认 600,000 **字符**触发上下文压缩，在运行预算中可调整，CLI 可用 `--context-budget-chars`。字符不是 token；该阈值不是精确计数，也不保证请求一定落在窗口内。工具定义、输出、保留内容及模型分词均会影响实际用量；阈值提高可能增加费用。未知模型/非官方服务保留 12,000 字符默认值，窗口显示未知。

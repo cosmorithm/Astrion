@@ -417,6 +417,7 @@ def main():
     parser = argparse.ArgumentParser(description="真实 Agent 对固定合成历史做回查对照")
     parser.add_argument("--case", action="append", default=[])
     parser.add_argument("--steps", type=int, default=10)
+    parser.add_argument("--strategy", choices=("legacy", "ss", "both"), default="both")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     cases, fixture_hash, history_hash = fixtures()
@@ -491,7 +492,7 @@ def main():
         parser.error("output exists")
     save_report(report, path)
     for fixture in cases:
-        for strategy in ("legacy", "ss"):
+        for strategy in (("legacy", "ss") if args.strategy == "both" else (args.strategy,)):
             print("开始", fixture["spec"]["id"], strategy, file=sys.stderr, flush=True)
             result = run_one(
                 fixture, strategy, agent.ChatLLM(key, base, model), max_steps=args.steps

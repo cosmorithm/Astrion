@@ -87,6 +87,14 @@ def _clean_history(raw) -> list[dict]:
             raise ValueError(f"第 {index + 1} 条消息的 content 必须是字符串")
 
         item = {"role": role, "content": content}
+        if role == "assistant" and "_reasoning_content" in message:
+            if not isinstance(message["_reasoning_content"], str):
+                raise ValueError(f"第 {index + 1} 条消息的 reasoning_content 必须是字符串")
+            origin = message.get("_reasoning_origin")
+            if origin is not None and not isinstance(origin, str):
+                raise ValueError(f"第 {index + 1} 条消息的 reasoning 来源无效")
+            item["_reasoning_content"] = message["_reasoning_content"]
+            item["_reasoning_origin"] = origin
         if role == "assistant" and message.get("tool_calls"):
             item["tool_calls"] = _clean_tool_calls(message["tool_calls"], index)
         if role == "tool":
@@ -142,6 +150,9 @@ class Memory:
         self.layer_reports = []
         self.enabled_layers = {1, 2, 3, 4, 5}
         self.runtime = {}
+        # 仅对当前客户端声明兼容的来源回传；此策略不随会话快照持久化。
+        self.reasoning_origin = None
+        self.reasoning_synthetic_empty = False
 
     # ------------------------------------------------------------ 写入
 
@@ -163,8 +174,14 @@ class Memory:
             self._history.insert(0, item)
 
     def add_assistant(self, msg: dict) -> None:
-        """只保留必要字段，避免把厂商私有字段（如 reasoning_content）回传。"""
+        """保存模型实际返回的字段，供应商私有数据只回传给兼容的来源。"""
         clean = {"role": "assistant", "content": msg.get("content")}
+        reasoning = msg.get("reasoning_content")
+        if reasoning is not None:
+            if not isinstance(reasoning, str):
+                raise ValueError("reasoning_content 必须是字符串或 null")
+            clean["_reasoning_content"] = reasoning
+            clean["_reasoning_origin"] = self.reasoning_origin
         if msg.get("tool_calls"):
             clean["tool_calls"] = msg["tool_calls"]
         self._append(clean)
@@ -196,9 +213,16 @@ class Memory:
         if summary or self._pins or self.runtime.get('task_plan'):
             state = {'summary': summary, 'pinned_evidence': list(self._pins.values()),
                      'task_plan': self.runtime.get('task_plan', [])}
-            messages.append({"role": "assistant", "content": SUMMARY_HEADER + json.dumps(state, ensure_ascii=False)})
+            item = {"role": "assistant", "content": SUMMARY_HEADER + json.dumps(state, ensure_ascii=False)}
+            if self.reasoning_synthetic_empty:
+                item["reasoning_content"] = ""  # 程序生成的摘要没有模型推理
+            messages.append(item)
         for message in history:
             item = {k: copy.deepcopy(v) for k, v in message.items() if not k.startswith('_')}
+            if (message.get('role') == 'assistant' and self.reasoning_origin is not None
+                    and message.get('_reasoning_origin') == self.reasoning_origin
+                    and '_reasoning_content' in message):
+                item['reasoning_content'] = message['_reasoning_content']
             if (message.get('_ref') and not message.get('_reduced')
                     and message.get('_tool_name') not in {'finish', 'ask_user'}):
                 refs = {'result_ref': message['_ref'], 'evidence_refs': message.get('_evidence_refs', [])}
@@ -213,6 +237,8 @@ class Memory:
                     item['content'] += '\n[可重读档案] ' + json.dumps(refs, ensure_ascii=False)
             if message.get('_collapse'):
                 item['content'] = SUMMARY_HEADER + item['content']
+                if self.reasoning_synthetic_empty:
+                    item['reasoning_content'] = ''  # 程序生成的摘要，不冒充模型输出
             messages.append(item)
         return messages
 
