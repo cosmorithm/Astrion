@@ -108,5 +108,28 @@ class AgentRebuildTests(unittest.TestCase):
             )
 
 
+    def test_failed_rebuild_event_contains_current_error_not_stale_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = Memory("System", budget_chars=2500, keep_recent=1,
+                            archive=ContextStore(Path(tmp) / "history.sqlite"))
+            memory.compaction_reason = "old_success"
+            memory.needs_compaction = lambda: False
+            empty = {"type": "object", "properties": {}, "additionalProperties": False}
+            finish = next(s for s in agent.TOOL_SPECS if s.name == "finish")
+            specs = [ToolSpec("work", "produce observation", empty), finish]
+            events = []
+            with patch("agent.ContextConstructor.rebuild", side_effect=ValueError("protected: 3000>2000")):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    agent.run("task", Model(), memory, max_steps=5, tool_specs=specs,
+                              tool_implementations={"work": lambda: "x" * 1100,
+                                                    "finish": lambda answer: answer},
+                              event_sink=events.append)
+            failures = [e['payload'] for e in events
+                        if e['type'] == 'memory.compaction.finished' and not e['payload']['compacted']]
+            self.assertTrue(failures)
+            self.assertEqual(failures[0]['reason'], 'step_context_rebuild_failed')
+            self.assertEqual(failures[0]['rebuild_error']['reason'], 'protected: 3000>2000')
+
+
 if __name__ == "__main__":
     unittest.main()

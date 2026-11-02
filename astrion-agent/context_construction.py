@@ -319,7 +319,8 @@ class ContextConstructor:
         )
         if type(self.request_limit) is not int or self.request_limit <= 0:
             raise ValueError("invalid_context_token_budget")
-        target_tokens = int(self.request_limit * 0.5)
+        preferred_target_tokens = int(self.request_limit * 0.5)
+        target_tokens = preferred_target_tokens
         target_chars = int(m.budget_chars * 0.5)
         steps = [
             s
@@ -327,7 +328,7 @@ class ContextConstructor:
             if s["source_version"]
             and s["status"] in ("completed", "failed", "interrupted")
         ]
-        if len(steps) < 2:
+        if not steps:
             raise ValueError("context_insufficient_steps")
         recent = {s["step_id"] for s in steps[-m.keep_recent :]}
 
@@ -348,12 +349,21 @@ class ContextConstructor:
                 None,
             )
 
-        def raw_step(step):
+        active_reductions = {
+            msg.get("_seq"): msg for msg in m._history
+            if msg.get("role") == "tool" and msg.get("_reduced") and msg.get("_seq") is not None
+        }
+
+        def raw_step(step, *, preserve_reductions=False):
             messages = copy.deepcopy(
                 m.archive.messages[step["first_seq"] - 1 : step["last_seq"]]
             )
             for n, message in enumerate(messages, step["first_seq"]):
                 message["_seq"] = n
+                # Recent results already externalized must not silently expand on
+                # every rebuild. Explicit RAW selection still reads the original.
+                if preserve_reductions and n in active_reductions:
+                    messages[n - step["first_seq"]] = copy.deepcopy(active_reductions[n])
             return messages
 
         protected = []
@@ -362,7 +372,7 @@ class ContextConstructor:
                 protected.append((unit[0].get("_seq", 0), copy.deepcopy(unit)))
         for step in steps:
             if step["step_id"] in recent:
-                protected.append((step["first_seq"], raw_step(step)))
+                protected.append((step["first_seq"], raw_step(step, preserve_reductions=True)))
 
         def flatten(entries):
             return [v for _, unit in sorted(entries, key=lambda x: x[0]) for v in unit]
@@ -375,76 +385,140 @@ class ContextConstructor:
             )
 
         protected_tokens, _ = size(protected)
+        original_protected_tokens = protected_tokens
+        reduced_results = []
         if protected_tokens > target_tokens:
-            raise ValueError("context_protected_content_exceeds_token_target")
+            # Preserve current observations intact when they fit with growth
+            # space. Only externalize bodies when 80% still cannot hold them.
+            target_tokens = max(target_tokens, self.request_limit * 4 // 5)
+            if protected_tokens > target_tokens:
+                candidates = sorted(
+                    (msg for _, unit in protected for msg in unit
+                     if msg.get("role") == "tool" and msg.get("_ref")
+                     and not msg.get("_reduced")
+                     and msg.get("_tool_name") not in {"finish", "ask_user"}),
+                    key=lambda msg: msg.get("_seq", 0),
+                )
+                for msg in candidates:
+                    if protected_tokens <= target_tokens:
+                        break
+                    original = msg["content"]
+                    archived = m.archive.get(msg["_ref"])["content"]
+                    receipt = json.loads(m._receipt(msg, preview=True))
+                    msg["_reduced"] = "context_budget"
+
+                    def preview(length):
+                        receipt["preview"] = archived[:length]
+                        receipt["preview_chars"] = len(receipt["preview"])
+                        receipt["preview_incomplete"] = receipt["preview_chars"] < len(archived)
+                        msg["content"] = encode(receipt)
+                        return size(protected)[0]
+
+                    candidate_tokens = preview(min(240, len(archived)))
+                    if candidate_tokens < protected_tokens:
+                        # Once the batch fits, use the remaining space to show
+                        # as much of this observation as possible before hiding it.
+                        if candidate_tokens <= target_tokens:
+                            best_length = receipt["preview_chars"]
+                            lo, hi = best_length + 1, max(best_length, len(archived) - 1)
+                            while lo <= hi:
+                                mid = (lo + hi) // 2
+                                measured = preview(mid)
+                                if measured <= target_tokens:
+                                    best_length = mid
+                                    lo = mid + 1
+                                else:
+                                    hi = mid - 1
+                            candidate_tokens = preview(best_length)
+                        reduced_results.append({"seq": msg.get("_seq"), "ref": msg["_ref"],
+                                                "tool": msg.get("_tool_name"),
+                                                "before_chars": len(original),
+                                                "preview_chars": receipt["preview_chars"]})
+                        protected_tokens = candidate_tokens
+                    else:
+                        msg["content"] = original
+                        msg.pop("_reduced", None)
+            if protected_tokens > target_tokens:
+                # The hard input limit is never relaxed. This last resort is
+                # explicitly recorded because it leaves less growth space.
+                target_tokens = min(self.request_limit, max(target_tokens, protected_tokens))
+        if protected_tokens > target_tokens:
+            raise ValueError(
+                f"context_protected_content_exceeds_token_target: {protected_tokens}>{target_tokens}"
+            )
         catalog = []
-        for step in steps:
-            ss = self.summary(step, "SS")
-            available = {
-                level: (
-                    self.history.get_contract_summary(
-                        step["step_id"], step["source_version"], level, self.contract_id
-                    )
-                    or {}
-                ).get("token_count")
-                for level in LEVEL_TARGETS
-            }
-            # Cost of a raw step with the common base prompt included; this is
-            # an upper planning cue, not an additive cost. Final assembly is
-            # always measured as one complete request.
-            available["RAW_with_base"] = self.counter.count_request(
-                m._messages(raw_step(step), m._summary), tools
-            )
-            catalog.append(
-                {
-                    "step_id": step["step_id"],
-                    "status": step["status"],
-                    "ss": ss["content"],
-                    "degraded": bool(ss["degraded"]),
-                    "token_counts": available,
-                }
-            )
-        directory, directory_detail = self._directory(catalog, task, recent)
-        plan_data = {
-            "task": task,
-            "latest_user_input": m.last_user(),
-            "task_plan": m.runtime.get("task_plan", []),
-            "directory": directory,
-            "already_preserved": sorted(recent),
-            "remaining_local_tokens": target_tokens - protected_tokens,
-        }
+        directory = []
+        directory_detail = {"mode": "no_older_steps", "total_steps": len(steps), "expanded_steps": 0}
         by_id = {s["step_id"]: s for s in steps}
-        allowed = {d["step_id"] for d in directory}
-        planner = "model"
-        try:
-            answer = self._ask("context_plan", PLANNER_SYSTEM, plan_data)
-            choices = answer.get("selections")
-            if not isinstance(choices, list):
-                raise ValueError("context_invalid_plan")
-            seen = set()
-            for entry in choices:
-                if (
-                    not isinstance(entry, dict)
-                    or set(entry) != {"step_id", "level"}
-                    or entry["step_id"] not in allowed
-                    or entry["step_id"] in seen
-                    or entry["level"] not in (*LEVEL_TARGETS, "RAW")
-                ):
-                    raise ValueError("context_invalid_plan_reference")
-                seen.add(entry["step_id"])
-        except (Exception, SystemExit):
-            planner = "deterministic_fallback"
-            query = _terms(task + " " + (m.last_user() or ""))
-            ranked = sorted(
-                directory,
-                key=lambda e: (len(query & _terms(e["ss"])), catalog.index(e)),
-                reverse=True,
-            )
-            choices = [
-                {"step_id": e["step_id"], "level": "SS"}
-                for e in ranked
-                if e["step_id"] not in recent
-            ]
+        planner = "not_needed"
+        choices = []
+        if any(s["step_id"] not in recent for s in steps):
+            for step in steps:
+                ss = self.summary(step, "SS")
+                available = {
+                    level: (
+                        self.history.get_contract_summary(
+                            step["step_id"], step["source_version"], level, self.contract_id
+                        )
+                        or {}
+                    ).get("token_count")
+                    for level in LEVEL_TARGETS
+                }
+                # Cost of a raw step with the common base prompt included; this is
+                # an upper planning cue, not an additive cost. Final assembly is
+                # always measured as one complete request.
+                available["RAW_with_base"] = self.counter.count_request(
+                    m._messages(raw_step(step), m._summary), tools
+                )
+                catalog.append(
+                    {
+                        "step_id": step["step_id"],
+                        "status": step["status"],
+                        "ss": ss["content"],
+                        "degraded": bool(ss["degraded"]),
+                        "token_counts": available,
+                    }
+                )
+            directory, directory_detail = self._directory(catalog, task, recent)
+            plan_data = {
+                "task": task,
+                "latest_user_input": m.last_user(),
+                "task_plan": m.runtime.get("task_plan", []),
+                "directory": directory,
+                "already_preserved": sorted(recent),
+                "remaining_local_tokens": target_tokens - protected_tokens,
+            }
+            allowed = {d["step_id"] for d in directory}
+            planner = "model"
+            try:
+                answer = self._ask("context_plan", PLANNER_SYSTEM, plan_data)
+                choices = answer.get("selections")
+                if not isinstance(choices, list):
+                    raise ValueError("context_invalid_plan")
+                seen = set()
+                for entry in choices:
+                    if (
+                        not isinstance(entry, dict)
+                        or set(entry) != {"step_id", "level"}
+                        or entry["step_id"] not in allowed
+                        or entry["step_id"] in seen
+                        or entry["level"] not in (*LEVEL_TARGETS, "RAW")
+                    ):
+                        raise ValueError("context_invalid_plan_reference")
+                    seen.add(entry["step_id"])
+            except (Exception, SystemExit):
+                planner = "deterministic_fallback"
+                query = _terms(task + " " + (m.last_user() or ""))
+                ranked = sorted(
+                    directory,
+                    key=lambda e: (len(query & _terms(e["ss"])), catalog.index(e)),
+                    reverse=True,
+                )
+                choices = [
+                    {"step_id": e["step_id"], "level": "SS"}
+                    for e in ranked
+                    if e["step_id"] not in recent
+                ]
         built = list(protected)
         selected = {}
         omitted = []
@@ -553,7 +627,11 @@ class ContextConstructor:
             "target_chars_diagnostic": target_chars,
             "before_local_tokens": before_tokens,
             "input_budget_tokens": self.request_limit,
+            "preferred_target_tokens": preferred_target_tokens,
             "target_tokens": target_tokens,
+            "protected_tokens_before_reduction": original_protected_tokens,
+            "protected_tokens_after_reduction": protected_tokens,
+            "reduced_tool_results": reduced_results,
             "local_input_tokens": local_tokens,
             "token_count_kind": "exact_local_serialized_json",
             "tokenizer": self.counter.identifier,

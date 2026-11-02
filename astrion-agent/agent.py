@@ -487,7 +487,7 @@ def run(
         # Cheap five-layer cleanup remains available for oversized individual
         # results. A full step-based rebuild starts at the 80% watermark.
         local_request_tokens = strict_counter.count_request(memory.for_model(), selected_tools) if strict_counter else None
-        full_rebuild = bool(memory.archive.path and len(history.steps()) >= 2 and (
+        full_rebuild = bool(memory.archive.path and len(history.steps()) >= 1 and (
             memory.chars() >= int(memory.budget_chars * 0.8)
             or (input_budget_tokens is not None and local_request_tokens >= int(input_budget_tokens * 0.8))))
         if memory.needs_compaction() or full_rebuild:
@@ -511,6 +511,8 @@ def run(
                 )
 
             compaction_started = perf_counter()
+            rebuild_error = None
+            rebuild_detail = None
             try:
                 compacted = False
                 if full_rebuild:
@@ -528,13 +530,15 @@ def run(
                                                          model=getattr(llm, 'model', None),
                                                          usage=lambda: getattr(llm, 'last_usage', None),
                                                          token_counter=strict_counter)
-                        constructor.rebuild(task, tools=selected_tools, input_budget_tokens=input_budget_tokens)
+                        rebuild_detail = constructor.rebuild(
+                            task, tools=selected_tools, input_budget_tokens=input_budget_tokens
+                        )
                         compacted = True
                     except (Exception, SystemExit) as exc:
                         # Failed plans/summaries never replace the last good view.
-                        history.record_build({'status': 'failed', 'reason': str(exc)[:300],
-                                              'error_type': type(exc).__name__})
-                        print(dim(f"  [记忆] Step 重构未完成，沿用已有压缩：{type(exc).__name__}"))
+                        rebuild_error = {'reason': str(exc)[:300], 'error_type': type(exc).__name__}
+                        history.record_build({'status': 'failed', **rebuild_error})
+                        print(dim(f"  [记忆] Step 重构未完成，沿用已有压缩：{type(exc).__name__}: {str(exc)[:300]}"))
                 if not compacted and memory.needs_compaction():
                     compacted = memory.compact(summarize, force=False)
             except BaseException as exc:
@@ -552,9 +556,15 @@ def run(
                 "after_chars": memory.chars(),
                 "duration_seconds": perf_counter() - compaction_started,
                 "compactions_after": memory.compactions,
-                "reason": memory.compaction_reason,
+                "reason": ("step_context_rebuild_failed" if rebuild_error and not compacted
+                           else memory.compaction_reason),
+                "rebuild_error": rebuild_error,
+                "rebuild": rebuild_detail,
                 "protected_evidence_count": memory.protected_evidence_count,
                 "over_budget": memory.chars() > memory.budget_chars,
+                "local_input_tokens": (strict_counter.count_request(memory.for_model(), selected_tools)
+                                       if strict_counter else None),
+                "local_input_budget_tokens": input_budget_tokens,
                 "layers": memory.layer_reports,
                 "archive_scope": memory.archive.scope,
             })
