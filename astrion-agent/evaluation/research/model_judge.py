@@ -83,9 +83,13 @@ def judge(report_path, llm, output):
                           {'role':'user','content':json.dumps(data,ensure_ascii=False)}],tools=[])
         verdict=validate_response(message.get('content'),case_by_id(report['case_id']),data['answer'])
         # A fabricated/unread or missing citation is never upgraded by an LLM judge.
-        if not data['citations'] or any(not c['in_retrieved_range'] for c in data['citations']):
+        if not data['citations']:
             verdict['citation_support']='fail'
-            verdict['citation_reason']+='；程序检查发现无引用或引用位置未完整读到。'
+            verdict['citation_reason']+='；程序检查发现无引用。'
+        elif any(not c['in_retrieved_range'] for c in data['citations']):
+            if verdict['citation_support'] == 'pass':
+                verdict['citation_support']='unknown'
+            verdict['citation_reason']+='；部分行号未被工具返回范围覆盖，可能包含示例或否定说明，需人工核对。'
         if any(c['truncated'] for c in data['citations']) and verdict['citation_support']=='pass':
             verdict['citation_support']='unknown'
             verdict['citation_reason']+='；引用过长或截断，不能自动判为支持。'

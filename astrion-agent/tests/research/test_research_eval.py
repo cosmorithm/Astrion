@@ -162,6 +162,12 @@ class ExamTests(unittest.TestCase):
             result=model_judge.judge(report['report_path'],judge,self.root/'judged')
         self.assertEqual(result['model_review']['provisional_outcome'],'pass')
         self.assertEqual(result['case_outcome'],'pending')
+        data['citations'][0]['in_retrieved_range'] = False
+        judge=ScriptedLLM([{'role':'assistant','content':json.dumps(verdict)}])
+        with patch.object(model_judge,'inputs',return_value=data):
+            uncertain=model_judge.judge(report['report_path'],judge,self.root/'judged')
+        self.assertEqual(uncertain['model_review']['provisional_outcome'],'unknown')
+        data['citations'][0]['in_retrieved_range'] = True
         verdict['points'][0]['answer_quote']='从未出现'
         judge=ScriptedLLM([{'role':'assistant','content':json.dumps(verdict)}])
         with patch.object(model_judge,'inputs',return_value=data):

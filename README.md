@@ -178,6 +178,8 @@ CLI and research runs persist each agent's own execution steps, observable event
 
 The CLI, research parent, and research workers use the five-layer `legacy` compaction pipeline by default. Each agent retains its own persisted history, snapshots and evidence. Continuing an existing session keeps its archived history and existing summaries; future compactions use the five-layer pipeline. The SS planner remains available only when explicitly selected by the Python API or comparison experiments. Local token budgets remain enforced before model requests; five-layer compaction is not guaranteed to shrink every request below that limit. See the [agent guide](astrion-agent/README.md) and [long research evaluation](astrion-agent/evaluation/long_research/README.md) for details. Local counts use a fixed JSON representation and do not guarantee the provider uses the same hidden chat template.
 
+New research runs expose bounded source excerpts for individual citations, with the reading tool and agent identity, in the report's evidence panel. A tool returning text does not prove the model saw all of it after compaction, and a matching location does not prove semantic support. Older reports may lack excerpts. The [evidence review](astrion-agent/evaluation/research/EVIDENCE_REVIEW.md) records the initial real-model samples and a scoring change for citation-shaped examples.
+
 ## Repository layout
 
 ```text

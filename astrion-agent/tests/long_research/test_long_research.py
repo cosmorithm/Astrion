@@ -178,7 +178,7 @@ class FixedHistoryTests(unittest.TestCase):
                 call_id=f'call{step}'
                 memory.add_assistant({'content':None,'tool_calls':[{'id':call_id,'type':'function',
                     'function':{'name':'read_knowledge','arguments':'{}'}}]})
-                body=json.dumps({'results':[{'document_id':step,'start_line':1,'end_line':2,'truncated':False}],
+                body=json.dumps({'results':[{'document_id':step,'start_line':1,'end_line':2,'truncated':False, 'excerpt':'line 1\nline 2'}],
                                  'secret':'future-only' if step==3 else 'past'})
                 memory.add_tool(call_id,body)
                 history.record({'type':'tool.call.finished','event_id':f'e{step}','sequence':step,

@@ -99,9 +99,9 @@ class ResearchTests(unittest.TestCase):
     def test_citations_can_span_adjacent_evidence_but_not_unread_gaps(self):
         trace = [{'event': {'type': 'tool.call.finished', 'payload': {
             'name': 'read_knowledge', 'outcome': 'success', 'content': json.dumps({'results': [
-                {'document_id': 1, 'start_line': 1, 'end_line': 10, 'truncated': False},
-                {'document_id': 1, 'start_line': 11, 'end_line': 20, 'truncated': False},
-                {'document_id': 1, 'start_line': 22, 'end_line': 25, 'truncated': False},
+                {'document_id': 1, 'start_line': 1, 'end_line': 10, 'truncated': False, 'excerpt': '\n'.join(['line'] * 10)},
+                {'document_id': 1, 'start_line': 11, 'end_line': 20, 'truncated': False, 'excerpt': '\n'.join(['line'] * 10)},
+                {'document_id': 1, 'start_line': 22, 'end_line': 25, 'truncated': False, 'excerpt': '\n'.join(['line'] * 4)},
             ]})}}}]
         result = audit_citations('[D1:L8-L15] [D1:L19-L23]', trace)
         self.assertEqual([c['in_retrieved_range'] for c in result['checks']], [True, False])

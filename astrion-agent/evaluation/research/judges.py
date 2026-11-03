@@ -13,9 +13,11 @@ def citations(case, record, spec):
     audit = record.get('citation_audit') or {}
     state = audit.get('status')
     if state == 'locations_found':
-        return {'status': 'pass', 'reason': '引用位置已读；不判断语义支持', 'evidence': audit}
-    if state in {'invalid_locations', 'no_citations'}:
-        return {'status': 'fail', 'reason': '没有可核验引用，或引用范围未完整读到', 'evidence': audit}
+        return {'status': 'pass', 'reason': '工具返回范围覆盖引用；不证明模型完整看到原文或语义得到支持', 'evidence': audit}
+    if state == 'no_citations':
+        return {'status': 'fail', 'reason': '没有可核验的行号引用', 'evidence': audit}
+    if state == 'invalid_locations':
+        return {'status': 'pending', 'reason': '部分行号未被工具返回范围覆盖；格式示例或否定性说明也可能被识别，需人工核对', 'evidence': audit}
     return {'status': 'unknown', 'reason': '没有可用引用检查'}
 
 

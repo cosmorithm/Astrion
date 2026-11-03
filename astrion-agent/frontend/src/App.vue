@@ -6,6 +6,7 @@ import ExternalSources from './components/ExternalSources.vue'
 import SourceLibrary from './components/SourceLibrary.vue'
 import ResearchHistory from './components/ResearchHistory.vue'
 import ResearchTrace from './components/ResearchTrace.vue'
+import CitationEvidence from './components/CitationEvidence.vue'
 import { renderMarkdown } from './markdown.js'
 
 const projects = ref([])
@@ -238,6 +239,7 @@ onMounted(() => action(async () => {
                     <span>引用检查：{{ result.citation_audit?.status || '未检查' }}</span>
                     <small v-if="result.parent_run_id">续写自 {{ result.parent_run_id }}；旧版本可在研究历史中查看。</small>
                     <small>引用位置检查不判断原文是否支持结论。</small>
+                    <CitationEvidence :audit="result.citation_audit" />
                     <small v-if="result.report_error">报告文件保存失败；回答和事件记录仍已保留。</small>
                     <a v-if="result.report_artifact" :href="`/api/projects/${projectId}/artifacts/${result.report_artifact.id}/download`">下载研究报告</a>
                   </div>

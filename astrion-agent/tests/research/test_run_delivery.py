@@ -76,6 +76,7 @@ class DeliveryTests(unittest.TestCase):
                                         "start_line": 3,
                                         "end_line": 3,
                                         "truncated": False,
+                                        "excerpt": "第三行",
                                     }
                                 ]
                             }
