@@ -86,20 +86,23 @@ class ClaimLedgerTests(unittest.TestCase):
         self.assertEqual(review_claims(self.memory, 'Unrelated answer', Judge())['review']['status'], 'not_reviewed')
 
     def test_truncated_review_context_cannot_be_marked_supported(self):
-        evidence = self.memory.archive.put('document', 'x'*4100 + 'Sample was 128.', {
+        evidence = self.memory.archive.put('document', 'x'*8100 + 'Sample was 128.', {
             'document_id': 4, 'name': 'paper.txt', 'sha256': 'b'*64, 'start_line': 1,
             'end_line': 1, 'truncated': False})
         self.ledger.record('The sample was 128.', [{'ref': evidence, 'quote': 'Sample was 128.'}])
         class Judge:
+            def __init__(self, verdict): self.verdict = verdict
             def chat(self, messages, tools=None):
                 data = json.loads(messages[1]['content'])
                 self.assert_truncated = data[0]['sources'][0]['context_truncated']
                 return {'content': json.dumps({'claims': [{'claim_id': data[0]['claim_id'],
-                    'verdict': 'supported', 'reason': 'matching'}]})}
-        judge = Judge()
-        reviewed = review_claims(self.memory, 'The sample was 128. [D4:L1]', judge)
-        self.assertTrue(judge.assert_truncated)
-        self.assertEqual(reviewed['claims'][0]['semantic_support'], 'unknown')
+                    'verdict': self.verdict, 'reason': 'model assessment'}]})}
+        for verdict in ('supported', 'partial', 'unsupported'):
+            with self.subTest(verdict=verdict):
+                judge = Judge(verdict)
+                reviewed = review_claims(self.memory, 'The sample was 128. [D4:L1]', judge)
+                self.assertTrue(judge.assert_truncated)
+                self.assertEqual(reviewed['claims'][0]['semantic_support'], 'unknown')
 
     def test_five_layer_summary_keeps_immutable_claim_ids(self):
         result = self.ledger.record('The sample was 128.', [{'ref': self.evidence, 'quote': 'Sample was 128.'}])

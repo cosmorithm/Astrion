@@ -11,7 +11,7 @@ import re
 from time import perf_counter
 
 from context_tokenizer import load_token_counter
-from .claims import ClaimLedger, MAX_CLAIMS
+from .claims import ClaimLedger, MAX_CLAIMS, prefer_cited_sources
 
 SYSTEM = (
     'Identify important factual claims written verbatim in the provided report excerpt and link them '
@@ -59,7 +59,7 @@ def register_report_claims(memory, answer, llm, *, input_budget_tokens=4096):
     started = perf_counter()
     before = _usage(llm)
     result = {'status': 'not_started', 'coverage': 'unknown', 'model': getattr(llm, 'model', None),
-              'registered_claim_ids': [], 'errors': [], 'batches': [], 'skipped': {},
+              'registered_claim_ids': [], 'source_rebindings': [], 'errors': [], 'batches': [], 'skipped': {},
               'note': '仅补登记部分候选；引用定位与语义支持须独立检查，未登记结论覆盖未知。'}
     try:
         if not isinstance(answer, str) or not answer.strip():
@@ -161,10 +161,13 @@ def register_report_claims(memory, answer, llm, *, input_budget_tokens=4096):
                             raise ValueError('invalid_registration_sources')
                         if any(not isinstance(s, dict) or set(s) != {'ref', 'quote'} or s['ref'] not in allowed for s in sources):
                             raise ValueError('source_not_in_registration_batch')
+                        sources, rebindings = prefer_cited_sources(memory, answer, statement, sources)
                         prior = set(memory._claim_ids)
                         stored = ClaimLedger(memory).record(statement, sources)
                         if stored['claim_id'] not in prior:
                             result['registered_claim_ids'].append(stored['claim_id'])
+                            result['source_rebindings'].extend({'claim_id': stored['claim_id'], **change}
+                                                               for change in rebindings)
                             batch['registered_count'] += 1
                     except (Exception, SystemExit) as exc:
                         result['errors'].append({'type': type(exc).__name__, 'reason': str(exc)[:120], 'batch': len(result['batches']) - 1})

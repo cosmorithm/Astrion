@@ -6,6 +6,7 @@ import re
 
 from context_store import encode
 from .citations import covers_range
+from .claim_citations import local_citations, cited_observations
 
 MAX_CLAIMS = 20
 MAX_INDEX_CHARS = 7000
@@ -103,28 +104,90 @@ def assess_claims(memory, answer):
     claims = []
     for ref in memory._claim_ids:
         item = ledger.get(ref)
-        position = answer.find(item['statement'])
-        # Only citations immediately following the exact registered statement
-        # may bind it; a later paragraph's citation must not be borrowed.
-        nearby = answer[position + len(item['statement']):position + len(item['statement']) + 350] if position >= 0 else ''
-        # Only a sequence of adjacent citations may bind this claim. Never borrow
-        # a citation following an intervening sentence or clause.
-        block = re.match(r'^[ \t。.!！?？]*(?:\[D\d+:L\d+(?:-L\d+)?\][ \t,，;；]*)*', nearby).group()
-        # Markdown blockquotes may place a citation by itself on the next quoted line.
-        # Do not cross paragraphs or consume intervening prose.
-        line_start = answer.rfind('\n', 0, position) + 1
-        if not re.search(r'\[D\d+:', block) and answer[line_start:position].lstrip().startswith('>'):
-            quoted = re.match(r'^[ \t]*\n>[ \t]*(?:\[D\d+:L\d+(?:-L\d+)?\][ \t,，;；]*)+', nearby)
-            if quoted:
-                block = quoted.group()
-        cited = [(int(a), int(b), int(c or b)) for a, b, c in re.findall(r'\[D(\d+):L(\d+)(?:-L(\d+))?\]', block)]
-        sources = item['sources']
-        location_valid = bool(cited) and all(covers_range(cited, s['document_id'], s['start_line'], s['end_line'])
-                                               for s in sources)
-        claims.append({**item, 'in_answer': position >= 0, 'location_valid': location_valid,
+        positions = [match.start() for match in re.finditer(re.escape(item['statement']), answer)]
+        overflow = len(positions) > 20
+        occurrences = []
+        for position in positions[:20]:
+            cited, candidates, binding = local_citations(answer, item['statement'], position)
+            observations, complete = cited_observations(memory, cited or candidates, item['sources'])
+            matched = []
+            for source in item['sources']:
+                if covers_range(cited, source['document_id'], source['start_line'], source['end_line']):
+                    matched.append(source)
+                    continue
+                alternatives = []
+                for obs in observations:
+                    if (obs['context_truncated'] or not cited or obs['document_id'] != source['document_id']
+                            or obs['cited_excerpt'].count(source['quote']) != 1):
+                        continue
+                    for obs_ref in obs['refs']:
+                        try:
+                            alternate = _source(memory, {'ref': obs_ref, 'quote': source['quote']})
+                        except ValueError:
+                            continue
+                        if covers_range(cited, alternate['document_id'], alternate['start_line'], alternate['end_line']):
+                            alternatives.append(alternate)
+                unique = {(s['document_id'], s['start_line'], s['end_line']): s for s in alternatives}
+                if len(unique) == 1:
+                    matched.append(next(iter(unique.values())))
+            occurrences.append({'position': position, 'binding': binding, 'citations': cited,
+                'candidate_citations': candidates, 'cited_observations': observations,
+                'cited_observations_complete': complete if cited or candidates else None,
+                'matched_sources': matched,
+                'location_valid': bool(cited) and complete and len(matched) == len(item['sources'])})
+        # When a statement appears repeatedly, all occurrences must be bound.
+        location_valid = bool(occurrences) and not overflow and all(x['location_valid'] for x in occurrences)
+        first = occurrences[0] if occurrences else {}
+        all_observations = {}
+        for occurrence in occurrences:
+            for obs in occurrence['cited_observations']:
+                all_observations[(obs['ref'], obs['start_line'], obs['end_line'])] = obs
+        observation_overflow = len(all_observations) > 6
+        claims.append({**item, 'in_answer': bool(occurrences), 'location_valid': location_valid,
+                       'occurrences': occurrences, 'matched_sources': first.get('matched_sources', []),
+                       'cited_observations': list(all_observations.values())[:6],
+                       'citation_context_overflow': overflow or observation_overflow,
                        'semantic_support': 'unknown'})
     return {'claims': claims, 'unregistered_claim_coverage': 'unknown',
             'note': '仅检查显式登记且逐字出现的结论；位置不证明语义支持，也不保证发现全部重要结论。'}
+
+
+def prefer_cited_sources(memory, answer, statement, requested_sources):
+    """Prefer an exact quote at the claim's citation without changing old records."""
+    resolved = [_source(memory, source) for source in requested_sources]
+    positions = [m.start() for m in re.finditer(re.escape(statement), answer)]
+    if len(positions) != 1:
+        return requested_sources, []
+    cited, _, _ = local_citations(answer, statement, positions[0])
+    if not cited:
+        return requested_sources, []
+    observations, _ = cited_observations(memory, cited, resolved)
+    output, changes = [], []
+    for original, raw in zip(resolved, requested_sources):
+        if covers_range(cited, original['document_id'], original['start_line'], original['end_line']):
+            output.append(raw)
+            continue
+        alternatives = []
+        for obs in observations:
+            if (obs['context_truncated'] or obs['document_id'] != original['document_id']
+                    or obs['cited_excerpt'].count(original['quote']) != 1):
+                continue
+            for obs_ref in obs['refs']:
+                try:
+                    alternative = _source(memory, {'ref': obs_ref, 'quote': original['quote']})
+                except ValueError:
+                    continue
+                if covers_range(cited, alternative['document_id'], alternative['start_line'], alternative['end_line']):
+                    alternatives.append(alternative)
+        unique = {(s['document_id'], s['start_line'], s['end_line']): s for s in alternatives}
+        if len(unique) == 1:
+            alternate = next(iter(unique.values()))
+            output.append({'ref': alternate['ref'], 'quote': original['quote']})
+            changes.append({'from_ref': original['ref'], 'to_ref': alternate['ref'],
+                            'reason': 'exact_quote_in_cited_same_version_observation'})
+        else:
+            output.append(raw)
+    return output, changes
 
 
 def validate_review(data, expected):
