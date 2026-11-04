@@ -70,7 +70,9 @@ def check_base(path):
 
 
 def evaluate(case_id, mode, llm_factory, output, *, base=DEFAULT_BASE, steps=DEFAULT_STEPS,
-             worker_steps=DEFAULT_WORKER_STEPS, workers=DEFAULT_WORKERS, budget_chars=12000):
+             worker_steps=DEFAULT_WORKER_STEPS, workers=DEFAULT_WORKERS, budget_chars=12000,
+             tool_allowlist=None):
+    allowed = set(ALLOWED if tool_allowlist is None else tool_allowlist)
     started = perf_counter()
     if mode not in {'single','multi'}: raise ValueError('invalid_mode')
     validate_workers(workers)
@@ -103,13 +105,13 @@ def evaluate(case_id, mode, llm_factory, output, *, base=DEFAULT_BASE, steps=DEF
             record = run_research(store, project, question, llm, max_steps=steps,
                                   max_workers=0 if mode == 'single' else workers,
                                   worker_steps=worker_steps, budget_chars=budget_chars,
-                                  tool_allowlist=ALLOWED)
+                                  tool_allowlist=allowed)
             if case.get('continuation') and record.get('result', {}).get('answer'):
                 first = record
                 second = run_research(store, project, case['continuation']['follow_up'], llm,
                                       max_steps=steps, max_workers=0 if mode == 'single' else workers,
                                       worker_steps=worker_steps, budget_chars=budget_chars,
-                                      continue_run_id=first['run_id'], tool_allowlist=ALLOWED)
+                                      continue_run_id=first['run_id'], tool_allowlist=allowed)
                 a, b = first['usage'], second['usage']
                 totals = {k: a['totals'].get(k, 0) + b['totals'].get(k, 0)
                           for k in set(a['totals']) | set(b['totals'])}
@@ -133,7 +135,7 @@ def evaluate(case_id, mode, llm_factory, output, *, base=DEFAULT_BASE, steps=DEF
                   'provider_hostname':urlsplit(getattr(llm,'base_url','') or '').hostname,
                   'code_version':code_version(), 'settings':{'steps':steps,'worker_steps':worker_steps,
                     'max_workers':0 if mode == 'single' else workers,'budget_chars':budget_chars,
-                    'allowed_tools':sorted(ALLOWED)},
+                    'allowed_tools':sorted(allowed)},
                   'paper_mapping':{p:ids[p] for p in case['paper_ids']},
                   'visible_paper_ids': sorted(split_ids),
                   'run':{k:v for k,v in record.items() if k != 'trace'},'judgments':judgments,

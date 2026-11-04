@@ -64,6 +64,7 @@ def extract_tool_evidence(name: str, content: str) -> list[dict]:
                     **{
                         k: item[k]
                         for k in (
+                            "text_sha256",
                             "pages",
                             "sections",
                             "warnings",

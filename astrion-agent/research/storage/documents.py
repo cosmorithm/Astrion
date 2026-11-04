@@ -97,6 +97,7 @@ class Documents:
             "name": row["name"],
             "source": row["source"],
             "sha256": row["sha256"],
+            "text_sha256": json.loads(row["metadata"] or "{}").get("text_sha256"),
             "start_line": start,
             "end_line": end,
             "excerpt": excerpt,

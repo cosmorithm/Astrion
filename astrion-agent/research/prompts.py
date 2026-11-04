@@ -30,8 +30,11 @@ FINAL_STEP_PROMPT = """已到本次运行预算内的最后一轮，所有工具
 如果没有找到证据，说明没有找到，不得编造结论或引用；确需用户补充信息时直接提出问题。"""
 
 
-def run_prompt(max_steps, worker_steps, max_workers):
-    return RESEARCH_PROMPT + (
+def run_prompt(max_steps, worker_steps, max_workers, *, claims_enabled=True):
+    claims = ("\n准备写入报告的重要事实结论，先调用 record_claim 登记结论与已归档 evidence_refs 的连续原文；"
+              "使用工具返回的行号引用，报告逐字保留登记结论。不能登记时说明证据不足，不得捏造原文或引用。"
+              "登记只证明原文关联，不证明结论受支持；用 list_claims 重读已有登记。" if claims_enabled else "")
+    return RESEARCH_PROMPT + claims + (
         f"\n本次主 Agent 最多 {max_steps} 轮，每个子 Agent 最多 {worker_steps} 轮，累计最多 {max_workers} 个子 Agent。"
         "主 Agent 遇到互不依赖的阅读任务可用 run_workers 一次并发委派，等待本批返回后再综合；"
         "有依赖的任务依次调用 run_worker。仅在可用工具中有委派工具时使用；子 Agent 不能再委派。"

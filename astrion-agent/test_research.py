@@ -21,6 +21,10 @@ class ScriptedLLM:
         self.responses = iter(responses)
         self.inputs = []
     def chat(self, messages, tools=None):
+        # A post-run registration request is independent of the scripted
+        # task decisions and must not consume a parent's next response.
+        if messages[0]['content'].startswith('Identify important factual claims'):
+            return {'content': '{"claims":[]}'}
         self.inputs.append((copy.deepcopy(messages), copy.deepcopy(tools)))
         return next(self.responses)
 

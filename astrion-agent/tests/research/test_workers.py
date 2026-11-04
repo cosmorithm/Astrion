@@ -78,8 +78,11 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(all(e['status'] == 'completed' for e in result['workers']))
         self.assertEqual(len({e['context_archive']['scope'] for e in result['workers']}), 5)
         self.assertEqual([e['worker_id'] for e in result['workers']], [f'worker_{i}' for i in range(1, 6)])
-        self.assertEqual(result['usage']['totals']['total_tokens'], 130)  # 3 root + 5*2 child calls
-        self.assertEqual(result['usage']['calls'], 13)
+        # The child registration pass is separately reported and included in total usage.
+        registration = [e['claim_audit']['registration']['usage'] for e in result['workers']]
+        self.assertEqual(result['usage']['totals']['total_tokens'],
+                         130 + sum(x['totals'].get('total_tokens', 0) for x in registration))
+        self.assertEqual(result['usage']['calls'], 13 + sum(x['calls'] or 0 for x in registration))
         self.assertEqual(model.usage_calls, 3)
         starts = [e for e in result['trace'] if e['event']['type'] == 'run.started']
         self.assertEqual(len(starts), 6)

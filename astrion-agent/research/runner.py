@@ -13,6 +13,8 @@ from .store import Store
 
 from .prompts import FINAL_STEP_PROMPT, run_prompt
 from .citations import audit_citations, covers_range, observed_ranges
+from .claim_review import review_claims
+from .claim_autoregister import register_report_claims
 from tools.research import build_tools
 from .runs import RunLog
 from .config import DEFAULT_STEPS, DEFAULT_WORKERS, MAX_CONTEXT_CHARS, validate_budgets, context_policy
@@ -52,7 +54,8 @@ def run_research(
         budget_chars = context['budget_chars']
     if type(budget_chars) is not int or not 1 <= budget_chars <= MAX_CONTEXT_CHARS:
         raise ValueError("上下文字符预算须为 1–786432")
-    prompt = run_prompt(max_steps, worker_steps, max_workers)
+    prompt = run_prompt(max_steps, worker_steps, max_workers,
+                        claims_enabled=tool_allowlist is None or 'record_claim' in tool_allowlist)
     parent, root_memory, inherited_ranges = None, None, []
     if continue_run_id:
         parent, root_memory, inherited_ranges = fork_parent(
@@ -84,12 +87,12 @@ def run_research(
     pool = WorkerPool(store, project_id, llm, limit=max_workers, steps=worker_steps,
                       new_memory=new_memory, record=record, run_id=journal.run_id,
                       tool_allowlist=tool_allowlist, context_strategy=context_strategy)
-    root_specs, root_impl = build_tools(store, project_id, delegate=pool.run_one, batch_delegate=pool.run_many,
-                                        allowlist=tool_allowlist)
     started = perf_counter()
     try:
         if root_memory is None:
             root_memory = new_memory()
+        root_specs, root_impl = build_tools(store, project_id, delegate=pool.run_one, batch_delegate=pool.run_many,
+                                            allowlist=tool_allowlist, memory=root_memory)
         result = agent.run(
             root_memory.runtime.get("task", parent["task"]) if parent else task,
             llm,
@@ -156,6 +159,23 @@ def run_research(
     if invalid:
         result.update(status="error", answer=None, error=invalid)
         output["citation_audit"] = audit_citations(None, trace)
+    registration = None
+    if tool_allowlist is None or 'record_claim' in tool_allowlist:
+        registration = register_report_claims(root_memory, result.get('answer'), llm,
+                                             input_budget_tokens=min(4096, root_memory.budget_chars))
+        if registration['registered_claim_ids']:
+            try:
+                root_memory.checkpoint()
+            except Exception as exc:
+                registration['checkpoint_error'] = type(exc).__name__
+    try:
+        output['claim_audit'] = review_claims(root_memory, result.get('answer'), llm)
+    except Exception as exc:
+        output['claim_audit'] = {'claims': [], 'unregistered_claim_coverage': 'unknown',
+                                 'review': {'status': 'error', 'error_type': type(exc).__name__}}
+    if registration is not None:
+        output['claim_audit']['registration'] = registration
+    output["usage_including_root_review"] = pool.usage()
     if result.get("answer"):
         try:
             output["report_artifact"] = Artifacts(store).put(
@@ -173,5 +193,6 @@ def run_research(
         except (ValueError, OSError) as exc:
             # Delivery failure must not discard the already completed run facts.
             output["report_error"] = {"code": "report_save_failed", "type": type(exc).__name__}
+    output['duration_seconds'] = perf_counter() - started
     journal.finish(output)
     return output

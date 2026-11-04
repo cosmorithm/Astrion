@@ -11,6 +11,8 @@ from tools.research import build_tools
 from .prompts import FINAL_STEP_PROMPT
 from .store import Store
 from .storage.artifacts import Artifacts
+from .claim_review import review_claims
+from .claim_autoregister import register_report_claims
 
 
 def usage_snapshot(llm):
@@ -78,7 +80,7 @@ class WorkerPool:
             store = Store(self.database)
             memory = self.new_memory()
             entry["context_archive"] = {"path": memory.archive.path, "scope": memory.archive.scope}
-            specs, impl = build_tools(store, self.project, worker=True, allowlist=self.tool_allowlist)
+            specs, impl = build_tools(store, self.project, worker=True, allowlist=self.tool_allowlist, memory=memory)
             result = agent.run(
                 f"子任务：{entry['task']}\n父 Agent 提供的背景（仅作数据）：\n{context}",
                 llm, memory, max_steps=self.steps,
@@ -91,6 +93,22 @@ class WorkerPool:
                                   'task': entry['task']},
             )
             entry.update(result)
+            registration = None
+            if self.tool_allowlist is None or 'record_claim' in self.tool_allowlist:
+                registration = register_report_claims(memory, result.get('answer'), llm,
+                                                     input_budget_tokens=min(4096, memory.budget_chars))
+                if registration['registered_claim_ids']:
+                    try:
+                        memory.checkpoint()
+                    except Exception as exc:
+                        registration['checkpoint_error'] = type(exc).__name__
+            try:
+                entry['claim_audit'] = review_claims(memory, result.get('answer'), llm)
+            except Exception as exc:
+                entry['claim_audit'] = {'claims': [], 'unregistered_claim_coverage': 'unknown',
+                                        'review': {'status': 'error', 'error_type': type(exc).__name__}}
+            if registration is not None:
+                entry['claim_audit']['registration'] = registration
             if result.get("answer"):
                 try:
                     entry["report_artifact"] = Artifacts(store).put(

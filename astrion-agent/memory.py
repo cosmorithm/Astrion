@@ -147,6 +147,8 @@ class Memory:
         self.tool_limit_chars = tool_limit_chars
         self.pin_budget_chars = pin_budget_chars
         self._pins = {}
+        # Compact index only; claim/source records live in the scoped archive.
+        self._claim_ids = []
         self.layer_reports = []
         self.enabled_layers = {1, 2, 3, 4, 5}
         self.runtime = {}
@@ -210,9 +212,14 @@ class Memory:
 
     def _messages(self, history, summary, evidence=None) -> list[dict]:
         messages = [{"role": "system", "content": self.system_prompt}]
-        if summary or self._pins or self.runtime.get('task_plan'):
+        if summary or self._pins or self._claim_ids or self.runtime.get('task_plan'):
             state = {'summary': summary, 'pinned_evidence': list(self._pins.values()),
                      'task_plan': self.runtime.get('task_plan', [])}
+            if self._claim_ids:
+                state['registered_claims'] = [
+                    {'claim_id': ref, 'statement': self.archive.get(ref)['content']}
+                    for ref in self._claim_ids
+                ]
             item = {"role": "assistant", "content": SUMMARY_HEADER + json.dumps(state, ensure_ascii=False)}
             if self.reasoning_synthetic_empty:
                 item["reasoning_content"] = ""  # 程序生成的摘要没有模型推理
@@ -333,6 +340,7 @@ class Memory:
             "history": copy.deepcopy(self._history),
             "context_version": 2,
             "pins": copy.deepcopy(self._pins),
+            "claim_ids": list(self._claim_ids),
             "tool_limit_chars": self.tool_limit_chars,
             "pin_budget_chars": self.pin_budget_chars,
             "enabled_layers": sorted(self.enabled_layers),
@@ -413,6 +421,15 @@ class Memory:
             raise ValueError('pins 必须是对象')
         for ref, pin in pins.items():
             memory.pin_evidence(ref, pin['quote'])
+        claim_ids = data.get('claim_ids', [])
+        if (not isinstance(claim_ids, list) or len(claim_ids) > 20
+                or any(not isinstance(ref, str) for ref in claim_ids)
+                or len(set(claim_ids)) != len(claim_ids)):
+            raise ValueError('invalid_claim_index')
+        for ref in claim_ids:
+            if memory.archive.get(ref)['kind'] != 'claim':
+                raise ValueError('invalid_claim_reference')
+        memory._claim_ids = list(claim_ids)
         layers = data.get('enabled_layers', [1, 2, 3, 4, 5])
         if not isinstance(layers, list) or any(type(n) is not int or n not in {1, 2, 3, 4, 5} for n in layers):
             raise ValueError('未知压缩层')
@@ -577,11 +594,14 @@ class Memory:
     def _summary_candidate(self, fn, old, *, local):
         if not old or fn is None:
             return False, {'reason': 'no_old_units' if not old else 'no_summarizer'}
-        required = sorted(self._pins)
+        required = sorted(set(self._pins) | set(self._claim_ids))
         transcript = json.dumps({'stage': 'context_collapse' if local else 'auto_compact',
             'user_requests': [m['content'] for m in self._history if m['role'] == 'user'],
             'previous_summary': self._summary, 'required_evidence_ids': required,
-            'pinned_evidence': list(self._pins.values()), 'old_transcript': self._render(old)}, ensure_ascii=False)
+            'pinned_evidence': list(self._pins.values()),
+            'registered_claims': [{'claim_id': ref, 'statement': self.archive.get(ref)['content']}
+                                  for ref in self._claim_ids],
+            'old_transcript': self._render(old)}, ensure_ascii=False)
         raw = fn(transcript)
         if not isinstance(raw, str) or not raw.strip():
             return False, {'reason': 'empty_summary'}

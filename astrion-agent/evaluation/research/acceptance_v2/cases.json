@@ -1,0 +1,531 @@
+{
+  "schema_version": 1,
+  "id": "astrion-research-acceptance-v2",
+  "status": "assistant_reviewed_human_pending",
+  "review_method": "逐页渲染原始 PDF 目视核对和检查本地提取行；尚未由独立人类审定。",
+  "source": "evaluation/research/cases.json + 一个需求更新案例",
+  "papers": {
+    "P01": {
+      "name": "01_2402.01680_llm-multi-agents-survey.pdf",
+      "sha256": "d3410856f2b8629ab7365af3bd62fe8291b1a595ec954f1feb859a2688c7179c",
+      "text_sha256": "454188cfbff772370806d7d1768c782f4ba4c144f5c52f0f1294fe4087dc94cf",
+      "document_id": 1
+    },
+    "P02": {
+      "name": "02_2501.06322_collaboration-mechanisms-survey.pdf",
+      "sha256": "badaf8bb47535df96252be38c5a5b81d979478b860ed67c2c4ac0ebaa4483ae5",
+      "text_sha256": "b55909459904f512d0ddc364cc5bb8b1c1d8e7a2ed2ce53eea82e6ad799ebf94",
+      "document_id": 2
+    },
+    "P03": {
+      "name": "03_2605.14892_life-survey.pdf",
+      "sha256": "07a860559c6424a0cf0ae1e9f33db35e428f3f2d8d64f6235c0c47172827cbbd",
+      "text_sha256": "3dd060ebf94b2b8e618ef89158a00aa3ff0b47c9dc9b5bada7f1ea6ca4e74060",
+      "document_id": 3
+    },
+    "P07": {
+      "name": "07_2303.17760_camel.pdf",
+      "sha256": "926c73c2ae9f9abc7612ab58373e428476f4de55db78646ed59de09810db7777",
+      "text_sha256": "2ed4eb4e779a5b6b78107ed28b3884df072b57707a49aad75987bb5d23c8383f",
+      "document_id": 7
+    },
+    "P08": {
+      "name": "08_2308.00352_metagpt.pdf",
+      "sha256": "17582e47647fac8eaa3681feade41c8408310c4133acc5c6823565fbe880e1ac",
+      "text_sha256": "2f200eb8d5cb508381488f4cfe627327615feb00c6a590496ca8ac6b9145fe09",
+      "document_id": 8
+    },
+    "P09": {
+      "name": "09_2308.08155_autogen.pdf",
+      "sha256": "fcf8b1acae6b1bd6f14c92463caa9726828bf998234ba9f10c2411087897c96b",
+      "text_sha256": "28940e25e367854c95abcf13134053635b663f07faa462d9532b9c016745bb58",
+      "document_id": 9
+    },
+    "P19": {
+      "name": "19_2406.07155_macnet.pdf",
+      "sha256": "218988f7944195a66d57383f4089b01151a3babf86e5e13a3d65b146baddda4f",
+      "text_sha256": "5f6ef88c48310bb688934f18d1b63a3fc42b1888033701b4a09aa9e6ba5253a6",
+      "document_id": 19
+    },
+    "P20": {
+      "name": "20_2503.13657_why-mas-fail.pdf",
+      "sha256": "1b9e317a2a421e60ca2b2eda4a30844557a01e63286a790890c0ecef32d25460",
+      "text_sha256": "3f6d48b9ce260fb79ef97742ac0731b6ddd8d1418e92445e097526cfa3ea253b",
+      "document_id": 20
+    },
+    "P24": {
+      "name": "24_2610.27027_hallucination-clinical.pdf",
+      "sha256": "9449355210b43bc017601310cb1c39902067ea438d3698f7fbf5b6b2f5bca028",
+      "text_sha256": "856dd6f3f422ae0f72026c8494a8a7d456b4b0d12a5eadbfaf4cf8e8f3c1a866",
+      "document_id": 24
+    },
+    "P25": {
+      "name": "25_2610.29292_credit-attribution-topology.pdf",
+      "sha256": "e431d4f6588992efa7116e66ae2e5eaf14812461d664be73266fe3e6b1e8df90",
+      "text_sha256": "c4aa7f4e44902c86175eea51d9929edbefbfab21a94b570667c558b480dfa751",
+      "document_id": 25
+    },
+    "P05": {
+      "name": "05_2607.26212_multi-agent-debate-survey.pdf",
+      "sha256": "8e07e677271669a4296cd05169851c295a59f53aeb337a87fdfcaa75ebf2074b",
+      "text_sha256": "0ac7a63711555c1ac8c07a392f6134842d0b0ac833063aff0e8faec2c6a5f72b",
+      "document_id": 5
+    },
+    "P23": {
+      "name": "23_2610.30769_herding-cascades.pdf",
+      "sha256": "ab247cd1916ce8fec27447ef557b7c80c0cb08522de03b54581a501f756054c7",
+      "text_sha256": "db02607df918315e1a0c717ae0d439f50ad14249aa169a790d890a389dd34e77",
+      "document_id": 23
+    },
+    "P21": {
+      "name": "21_2610.32060_communication-failures.pdf",
+      "sha256": "a3280f55451e0795fa67a0fbddec4234a4e29a4dd37cb782d212c0bddee68f6c",
+      "text_sha256": "df15c7f20afaaa82824fd8e35b2e7d97c97feb991ea4280777351ead1354131b",
+      "document_id": 21
+    }
+  },
+  "cases": [
+    {
+      "id": "R01",
+      "type": "cross",
+      "split": "dev",
+      "task": "比较论文 P01、P02、P03 的综述关注点和主要组织方式，各指出一个可由原文支持的差别。 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P01",
+        "P02",
+        "P03"
+      ],
+      "continuation": null,
+      "checks": [
+        {
+          "id": "R01-01",
+          "expected": "概述环境、智能体画像、通信与能力等问题。",
+          "evidence": [
+            {
+              "paper_id": "P01",
+              "pdf_page": 1,
+              "start_line": 22,
+              "end_line": 29
+            }
+          ],
+          "overreach": "不能据此声称覆盖所有系统或给出实验优劣。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        },
+        {
+          "id": "R01-02",
+          "expected": "聚焦协作机制，以参与者、类型、结构、策略等维度组织。",
+          "evidence": [
+            {
+              "paper_id": "P02",
+              "pdf_page": 1,
+              "start_line": 16,
+              "end_line": 19
+            }
+          ],
+          "overreach": "不能把分类框架当成实验性能证明。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        },
+        {
+          "id": "R01-03",
+          "expected": "将协作、故障归因与自演化串成 LIFE 生命周期。",
+          "evidence": [
+            {
+              "paper_id": "P03",
+              "pdf_page": 1,
+              "start_line": 20,
+              "end_line": 32
+            }
+          ],
+          "overreach": "不能从综述框架推断任意系统必然实现自我修复。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R03",
+      "type": "cross",
+      "split": "dev",
+      "task": "比较 P07、P08、P09 分别采用何种方式组织或定义多智能体协作。 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P07",
+        "P08",
+        "P09"
+      ],
+      "continuation": null,
+      "checks": [
+        {
+          "id": "R03-01",
+          "expected": "CAMEL 使用角色扮演与 inception prompting。",
+          "evidence": [
+            {
+              "paper_id": "P07",
+              "pdf_page": 1,
+              "start_line": 11,
+              "end_line": 17
+            }
+          ],
+          "overreach": "不能声称所有场景只有两个固定角色或普遍最优。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        },
+        {
+          "id": "R03-02",
+          "expected": "MetaGPT 将 SOP 编码为提示序列并安排角色分工。",
+          "evidence": [
+            {
+              "paper_id": "P08",
+              "pdf_page": 1,
+              "start_line": 17,
+              "end_line": 23
+            }
+          ],
+          "overreach": "论文声称减少错误不等于已独立验证实际效果。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        },
+        {
+          "id": "R03-03",
+          "expected": "AutoGen 提供可定制的对话智能体，可结合模型、人和工具。",
+          "evidence": [
+            {
+              "paper_id": "P09",
+              "pdf_page": 1,
+              "start_line": 50,
+              "end_line": 60
+            }
+          ],
+          "overreach": "不能声称规定唯一拓扑或全面优于其他框架。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R07",
+      "type": "single",
+      "split": "dev",
+      "task": "P19 使用怎样的图结构组织多智能体？它报告可以支持何种规模？ 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P19"
+      ],
+      "continuation": null,
+      "checks": [
+        {
+          "id": "R07-01",
+          "expected": "MacNet 使用有向无环图组织智能体。",
+          "evidence": [
+            {
+              "paper_id": "P19",
+              "pdf_page": 1,
+              "start_line": 12,
+              "end_line": 16
+            }
+          ],
+          "overreach": "有向无环不等于必须为树，也不能推断所有任务都有效。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        },
+        {
+          "id": "R07-02",
+          "expected": "作者报告支持超过一千个智能体。",
+          "evidence": [
+            {
+              "paper_id": "P19",
+              "pdf_page": 1,
+              "start_line": 15,
+              "end_line": 17
+            }
+          ],
+          "overreach": "这是论文实验声称，不是任意部署均可保证。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R08",
+      "type": "single",
+      "split": "dev",
+      "task": "P20 的 MAST 将失效模式归为哪三个类别？ 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P20"
+      ],
+      "continuation": null,
+      "checks": [
+        {
+          "id": "R08-01",
+          "expected": "MAST 三类为系统设计问题、智能体间错位、任务验证。",
+          "evidence": [
+            {
+              "paper_id": "P20",
+              "pdf_page": 1,
+              "start_line": 15,
+              "end_line": 20
+            }
+          ],
+          "overreach": "不要将 14 个具体模式误称为三个类别。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R11",
+      "type": "numeric",
+      "split": "holdout",
+      "task": "P24 的摘要比较了多少种系统、模型和临床任务？分别说明含义，不要混淆。 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P24"
+      ],
+      "continuation": null,
+      "checks": [
+        {
+          "id": "R11-01",
+          "expected": "四种系统：一个单模型基线与三个多智能体拓扑。",
+          "evidence": [
+            {
+              "paper_id": "P24",
+              "pdf_page": 1,
+              "start_line": 14,
+              "end_line": 18
+            }
+          ],
+          "overreach": "四种系统、四个模型和三项临床任务不是同一计数。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        },
+        {
+          "id": "R11-02",
+          "expected": "研究比较四个模型和三项临床任务。",
+          "evidence": [
+            {
+              "paper_id": "P24",
+              "pdf_page": 1,
+              "start_line": 15,
+              "end_line": 18
+            }
+          ],
+          "overreach": "不能从摘要推出患者姓名或逐人诊疗结论。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R12",
+      "type": "numeric",
+      "split": "dev",
+      "task": "P25 在 BigCodeBench 上报告多少准确率百分点变化和部署 token 变化？请说明比较基准，不要混淆百分点与百分比。 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P25"
+      ],
+      "continuation": null,
+      "checks": [
+        {
+          "id": "R12-01",
+          "expected": "在小型开放权重模型及匹配的候选评估次数条件下，BigCodeBench 相对 score-only heuristic search 的平均准确率提高 5.3 个百分点。",
+          "evidence": [
+            {
+              "paper_id": "P25",
+              "pdf_page": 1,
+              "start_line": 18,
+              "end_line": 20
+            }
+          ],
+          "overreach": "5.3 个百分点不是 5.3% 的相对提升；不能换基线。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        },
+        {
+          "id": "R12-02",
+          "expected": "在小型开放权重模型及匹配的候选评估次数的同一比较条件下，部署 token 减少 54%。",
+          "evidence": [
+            {
+              "paper_id": "P25",
+              "pdf_page": 1,
+              "start_line": 18,
+              "end_line": 20
+            }
+          ],
+          "overreach": "不能称所有 token 或所有任务成本都减少 54%。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R13",
+      "type": "numeric",
+      "split": "holdout",
+      "task": "P05 综述了多少项关于多智能体辩论的初级研究？分类的三个维度是什么？ 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P05"
+      ],
+      "continuation": null,
+      "checks": [
+        {
+          "id": "R13-01",
+          "expected": "综述 141 项初级研究，三维为参与者、交互机制和达成一致的协议。",
+          "evidence": [
+            {
+              "paper_id": "P05",
+              "pdf_page": 1,
+              "start_line": 9,
+              "end_line": 11
+            }
+          ],
+          "overreach": "141 指研究数量，不是 agent 数或实验任务数量。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R15",
+      "type": "insufficient",
+      "split": "dev",
+      "task": "仅依据 P23 的 PDF 第 1 页，能否列出试验中每一首歌的歌名和逐首推荐次数？说明依据与不足。 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P23"
+      ],
+      "continuation": null,
+      "checks": [
+        {
+          "id": "R15-01",
+          "expected": "首页讨论陌生歌曲推荐与累计推荐数；不能据此列出逐首歌名和推荐次数。",
+          "evidence": [
+            {
+              "paper_id": "P23",
+              "pdf_page": 1,
+              "start_line": 5,
+              "end_line": 17
+            }
+          ],
+          "overreach": "不能把首页缺失等同于论文全文没有这些数据。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R17",
+      "type": "insufficient",
+      "split": "holdout",
+      "task": "仅依据 P21 的 PDF 第 1 页，能否给出每个数据集中每一种失败类型的精确次数？说明有哪些信息、缺少哪些信息。 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P21"
+      ],
+      "continuation": null,
+      "checks": [
+        {
+          "id": "R17-01",
+          "expected": "首页报告 3,211 条失败多轮轨迹并概述失败类型。",
+          "evidence": [
+            {
+              "paper_id": "P21",
+              "pdf_page": 1,
+              "start_line": 13,
+              "end_line": 27
+            }
+          ],
+          "overreach": "首页不足以给出每个数据集、每类失败的精确次数；不可凭空推算。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R20",
+      "type": "long",
+      "split": "dev",
+      "task": "阅读 P25 的 PDF 第 1、2 页：概括 CATS 目标，以及方法如何对候选团队的 agent 归因。 请使用项目资料并引用可定位的原文；证据不足时说明。",
+      "paper_ids": [
+        "P25"
+      ],
+      "continuation": {
+        "initial_task": "仅阅读 P25 的 PDF 第 1 页，写一份初稿，说明 CATS 的目标，并引用原文。",
+        "follow_up": "基于初稿补读 P25 的 PDF 第 2 页，说明 CATS 如何对候选团队的 agent 归因；保留初稿中有依据的目标说明，输出完整修订版和原文引用。"
+      },
+      "checks": [
+        {
+          "id": "R20-01",
+          "expected": "初稿：CATS 在固定候选图（supergraph）中寻找紧凑团队。",
+          "evidence": [
+            {
+              "paper_id": "P25",
+              "pdf_page": 1,
+              "start_line": 13,
+              "end_line": 18
+            }
+          ],
+          "overreach": "续写不得覆盖或遗失已有有依据的目标说明。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        },
+        {
+          "id": "R20-02",
+          "expected": "续写：attributer 比较同任务候选轨迹，为参与智能体分配贡献分数。",
+          "evidence": [
+            {
+              "paper_id": "P25",
+              "pdf_page": 2,
+              "start_line": 200,
+              "end_line": 207
+            }
+          ],
+          "overreach": "不能把归因分数声称为精确因果证明。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ]
+    },
+    {
+      "id": "R21",
+      "type": "requirement_update",
+      "split": "dev",
+      "task": "根据 P25 只回答 BigCodeBench 上的准确率变化。",
+      "paper_ids": [
+        "P25"
+      ],
+      "scheduled_user_updates": {
+        "3": "补充要求：同时说明比较基准及部署 token 变化；明确百分点与百分比的区别。"
+      },
+      "checks": [
+        {
+          "id": "R21-01",
+          "expected": "在小型开放权重模型及匹配的候选评估次数条件下，BigCodeBench 相对 score-only heuristic search 的平均准确率提高 5.3 个百分点。",
+          "evidence": [
+            {
+              "paper_id": "P25",
+              "pdf_page": 1,
+              "start_line": 18,
+              "end_line": 20
+            }
+          ],
+          "overreach": "5.3 个百分点不是 5.3% 的相对提升；不能换基线。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        },
+        {
+          "id": "R21-02",
+          "expected": "在小型开放权重模型及匹配的候选评估次数的同一比较条件下，部署 token 减少 54%。",
+          "evidence": [
+            {
+              "paper_id": "P25",
+              "pdf_page": 1,
+              "start_line": 18,
+              "end_line": 20
+            }
+          ],
+          "overreach": "不能称所有 token 或所有任务成本都减少 54%。",
+          "assistant_visual_review": "reviewed_original_page",
+          "independent_human_review": "pending"
+        }
+      ],
+      "update_note": "若第 3 轮前已结束，更新未送达，不能判其违反未来要求。"
+    }
+  ]
+}
