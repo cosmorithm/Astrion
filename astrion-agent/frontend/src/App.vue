@@ -5,6 +5,7 @@ import Artifacts from './components/Artifacts.vue'
 import ExternalSources from './components/ExternalSources.vue'
 import SourceLibrary from './components/SourceLibrary.vue'
 import ResearchHistory from './components/ResearchHistory.vue'
+import ResearchDag from './components/ResearchDag.vue'
 import ResearchTrace from './components/ResearchTrace.vue'
 import CitationEvidence from './components/CitationEvidence.vue'
 import ClaimAudit from './components/ClaimAudit.vue'
@@ -28,7 +29,10 @@ const progress = ref([])
 const traceEvents = ref([])
 const result = ref(null)
 const historyPanel = ref(null)
+const dagPanel = ref(null)
 const historyLoading = ref(false)
+const dagOpening = ref(false)
+let dagRequestNumber = 0
 const continueRunId = ref('')
 const budgets = ref(null)
 const runError = ref('')
@@ -123,7 +127,7 @@ function describeEvent(item) {
   return ''
 }
 async function startResearch() {
-  if (!projectId.value || !task.value.trim() || busy.value || historyLoading.value || !budgets.value) return
+  if (!projectId.value || !task.value.trim() || busy.value || historyLoading.value || dagOpening.value || !budgets.value) return
   error.value = ''; runError.value = ''; notice.value = ''; result.value = null
   progress.value = []; traceEvents.value = []; pendingAnswer.value = ''; progressText.value = ''; busy.value = true
   try {
@@ -153,10 +157,13 @@ async function startResearch() {
     })
   } catch (e) { error.value = e.message; runError.value = e.message } finally {
     busy.value = false
-    await historyPanel.value?.refresh()
+    await Promise.all([historyPanel.value?.refresh(), dagPanel.value?.refresh()])
   }
 }
 function openRun(run) {
+  dagRequestNumber++
+  dagOpening.value = false
+  notice.value = ''
   result.value = run
   continueRunId.value = run?.context_archive ? run.run_id : ''
   runError.value = run?.error_type
@@ -165,7 +172,28 @@ function openRun(run) {
   if (run && !run.result) result.value = { ...run, result: { status: run.status || 'error' } }
   progress.value = []; traceEvents.value = []; pendingAnswer.value = ''; progressText.value = ''
 }
+async function openDagRun(id, continuationStatus) {
+  if (busy.value || historyLoading.value || dagOpening.value) return
+  const project = projectId.value
+  const generation = ++dagRequestNumber
+  dagOpening.value = true
+  try {
+    const run = await request(`/api/projects/${encodeURIComponent(project)}/runs/${encodeURIComponent(id)}`)
+    if (generation !== dagRequestNumber || project !== projectId.value) return
+    openRun(run)
+    if (continuationStatus === 'unavailable') {
+      continueRunId.value = ''
+      notice.value = '该版本没有可用的恢复记录；仍可查看其报告。'
+    }
+  } catch (e) {
+    if (generation === dagRequestNumber) error.value = e.message
+  } finally {
+    if (generation === dagRequestNumber) dagOpening.value = false
+  }
+}
 watch(projectId, () => {
+  dagRequestNumber++
+  dagOpening.value = false
   continueRunId.value = ''
   result.value = null; runError.value = ''; progress.value = []; traceEvents.value = []; pendingAnswer.value = ''; progressText.value = ''
   action(loadProjectData)
@@ -211,7 +239,8 @@ onMounted(() => action(async () => {
           <p class="hero-copy">选择项目、导入资料并提出研究问题。</p>
           <div v-if="!projectId" class="empty-project"><div><strong>请先创建项目</strong><p>在左侧输入项目名称。</p></div></div>
           <template v-else>
-            <ResearchHistory ref="historyPanel" :project-id="projectId" :busy="busy" :selected="result?.run_id || continueRunId" @open="openRun" @error="error = $event" @loading="historyLoading = $event" />
+            <ResearchHistory ref="historyPanel" :project-id="projectId" :busy="busy || dagOpening" :selected="result?.run_id || continueRunId" @open="openRun" @error="error = $event" @loading="historyLoading = $event" />
+            <ResearchDag ref="dagPanel" :project-id="projectId" :selected="result?.run_id || continueRunId" :busy="busy || historyLoading || dagOpening" @open="openDagRun" @error="error = $event" />
             <form class="question-card" @submit.prevent="startResearch">
               <div class="card-top"><div><strong>{{ continueRunId ? '补充研究要求' : '研究问题' }}</strong></div><span class="hint-pill">{{ continueRunId ? '继承上下文 · 另存新版本' : '基于项目资料研究' }}</span></div>
               <textarea v-model="task" class="form-control question-input" rows="4" placeholder="你想探索什么？例如：多 Agent 在什么情况下能改善研究任务？" :disabled="busy"></textarea>
@@ -225,7 +254,7 @@ onMounted(() => action(async () => {
                 <label class="d-block mt-2">上下文压缩阈值（字符，非 token）<input v-model.number="budgets.context.budget_chars" class="form-control" type="number" min="1" :max="budgets.context.max_budget_chars" required :disabled="busy"></label>
                 <small>模型窗口：{{ budgets.context.window_tokens ? budgets.context.window_tokens.toLocaleString() + ' tokens' : '未知，请核对模型服务' }}。字符阈值是软触发条件，不是 token 上限；调高可能增加费用。独立子任务可并发。</small>
               </details>
-              <div class="question-bottom"><span>{{ continueRunId ? '保留旧报告、已读证据与待办；本次计量独立记录。' : '基于当前项目资料进行研究' }}</span><button class="btn primary-btn" :disabled="busy || historyLoading || !task.trim() || !budgets">{{ busy ? '研究中…' : continueRunId ? '继续研究' : '开始研究' }}</button></div>
+              <div class="question-bottom"><span>{{ continueRunId ? '保留旧报告、已读证据与待办；本次计量独立记录。' : '基于当前项目资料进行研究' }}</span><button class="btn primary-btn" :disabled="busy || historyLoading || dagOpening || !task.trim() || !budgets">{{ busy ? '研究中…' : continueRunId ? '继续研究' : '开始研究' }}</button></div>
             </form>
             <div class="research-grid">
               <section class="panel report-panel">

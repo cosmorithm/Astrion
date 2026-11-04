@@ -217,3 +217,5 @@ See the [agent guide](astrion-agent/README.md) for detailed commands, the [bench
 ### Traceable research claims
 
 Research agents can register important report claims against exact excerpts from their own archived document observations. Document version, page and line locations are derived by the program and retained through context compression and research continuation. A bounded model pass may also propose links after drafting, with exact-match validation and separate usage accounting. Delivery records distinguish citation location checks from a provisional model review of semantic support; neither establishes factual correctness, and unregistered claim coverage remains unknown. See the [research documentation](astrion-agent/README.md#结论与证据的显式关联) and the [candidate acceptance set](astrion-agent/evaluation/research/acceptance_v2/README.md). Independent human review is still pending.
+
+The research workbench can display saved continuation versions as a project-scoped graph. Selecting a version opens its report and, when a valid checkpoint is available, lets you continue from it. See the [research workbench documentation](astrion-agent/README.md#研究版本关系图).

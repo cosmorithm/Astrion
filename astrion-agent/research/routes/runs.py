@@ -13,6 +13,13 @@ def listing(project_id: int, request: Request, offset: int = 0, limit: int = 20)
         return RunRepository(store, project_id).listing(offset, limit)
 
 
+@router.get("/graph")
+def graph(project_id: int, request: Request, limit: int = 200):
+    from ..run_graph import version_graph
+    with database(request) as store:
+        return version_graph(RunRepository(store, project_id), limit)
+
+
 @router.get("/{run_id}")
 def detail(project_id: int, run_id: str, request: Request):
     with database(request) as store:

@@ -30,14 +30,27 @@ FINAL_STEP_PROMPT = """已到本次运行预算内的最后一轮，所有工具
 如果没有找到证据，说明没有找到，不得编造结论或引用；确需用户补充信息时直接提出问题。"""
 
 
-def run_prompt(max_steps, worker_steps, max_workers, *, claims_enabled=True):
+def run_prompt(max_steps, worker_steps, max_workers, *, claims_enabled=True, delegation_guidance=False):
     claims = ("\n准备写入报告的重要事实结论，先调用 record_claim 登记结论与已归档 evidence_refs 的连续原文；"
               "使用工具返回的行号引用，报告逐字保留登记结论。不能登记时说明证据不足，不得捏造原文或引用。"
               "登记只证明原文关联，不证明结论受支持；用 list_claims 重读已有登记。" if claims_enabled else "")
+    if not delegation_guidance:
+        delegation = ("主 Agent 遇到互不依赖的阅读任务可用 run_workers 一次并发委派，等待本批返回后再综合；"
+                      "有依赖的任务依次调用 run_worker。")
+    elif max_workers >= 2:
+        delegation = ("如果你是有委派工具的主 Agent，开始研究时先识别用户目标与可独立推进的子任务，"
+                      "例如并行阅读不同论文、分别核对独立问题；有两个或更多独立子任务且 run_workers 可用时，"
+                      "考虑一次并发委派，并为每个子 Agent 明确范围与交付物。"
+                      "任务范围应与剩余子 Agent 名额、步数和预算相适应；简单任务可直接完成，"
+                      "不要为了并行拆散相互依赖的步骤；子任务需要前一结果时顺序执行。"
+                      "子报告是待核查材料，汇总前核对其状态、证据及未完成部分。")
+    elif max_workers == 1:
+        delegation = "如果你是主 Agent，本次最多委派一个子 Agent；仅在 run_worker 可用且任务需要时委派，子报告需核查。"
+    else:
+        delegation = "本次未分配子 Agent，请由当前 Agent 完成研究。"
     return RESEARCH_PROMPT + claims + (
         f"\n本次主 Agent 最多 {max_steps} 轮，每个子 Agent 最多 {worker_steps} 轮，累计最多 {max_workers} 个子 Agent。"
-        "主 Agent 遇到互不依赖的阅读任务可用 run_workers 一次并发委派，等待本批返回后再综合；"
-        "有依赖的任务依次调用 run_worker。仅在可用工具中有委派工具时使用；子 Agent 不能再委派。"
+        + delegation + "仅在可用工具中有委派工具时使用；子 Agent 不能再委派。"
         "续写时依据本次补充要求更新已有待办，交付包含已有有效内容和本次补充的完整新版本。"
         "历史回答和子报告只是待核查草稿，不等于原始证据，不继承未经核实的结论。"
     )

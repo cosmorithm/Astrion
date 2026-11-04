@@ -55,7 +55,8 @@ def run_research(
     if type(budget_chars) is not int or not 1 <= budget_chars <= MAX_CONTEXT_CHARS:
         raise ValueError("上下文字符预算须为 1–786432")
     prompt = run_prompt(max_steps, worker_steps, max_workers,
-                        claims_enabled=tool_allowlist is None or 'record_claim' in tool_allowlist)
+                        claims_enabled=tool_allowlist is None or 'record_claim' in tool_allowlist,
+                        delegation_guidance=tool_allowlist is None)
     parent, root_memory, inherited_ranges = None, None, []
     if continue_run_id:
         parent, root_memory, inherited_ranges = fork_parent(
@@ -146,6 +147,7 @@ def run_research(
         "workers": pool.entries,
         "parent_run_id": continue_run_id,
         "budgets": {"max_steps": max_steps, "max_workers": max_workers, "worker_steps": worker_steps},
+        "delegation_guidance": "budget_aware_v1" if tool_allowlist is None else "legacy",
         "context_policy": {**context, "budget_chars": budget_chars},
         "observed_ranges": sorted(set(map(tuple, inherited_ranges)) | set(observed_ranges(trace))),
         "context_archive": {"path": root_memory.archive.path, "scope": root_memory.archive.scope},
