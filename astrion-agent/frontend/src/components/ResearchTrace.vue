@@ -8,12 +8,12 @@ const loading = ref(false)
 const error = ref('')
 let requestNumber = 0
 const shown = computed(() => props.busy || !props.runId ? (props.live || []) : events.value)
-const relevant = new Set(['model.call.started', 'model.call.finished', 'model.call.failed', 'tool.call.started', 'tool.call.finished', 'memory.compaction.finished'])
+const relevant = new Set(['model.call.started', 'model.call.finished', 'model.call.failed', 'tool.call.started', 'tool.call.finished', 'memory.compaction.finished', 'decision.finished'])
 const visible = computed(() => shown.value.filter(item => relevant.has(item.event?.type)))
-const kinds = { 'model.call.started': '模型输入', 'model.call.finished': '模型输出', 'model.call.failed': '模型失败', 'tool.call.started': '工具输入', 'tool.call.finished': '工具输出', 'memory.compaction.finished': '上下文压缩' }
+const kinds = { 'model.call.started': '模型输入', 'model.call.finished': '模型输出', 'model.call.failed': '模型失败', 'tool.call.started': '工具输入', 'tool.call.finished': '工具输出', 'memory.compaction.finished': '上下文压缩', 'decision.finished': '决策结果' }
 function title(item) {
   const e = item.event; const p = e.payload || {}
-  return `${item.role === 'root' ? '主 Agent' : item.worker_id} · 第 ${e.step ?? '—'} 轮 · ${kinds[e.type]}${p.name ? ' · ' + p.name : ''}${p.purpose ? ' · ' + p.purpose : ''}`
+  return `${item.role === 'root' ? '主 Agent' : item.role === 'router' ? '委派路由器' : item.worker_id} · 第 ${e.step ?? '—'} 轮 · ${kinds[e.type]}${p.name ? ' · ' + p.name : ''}${p.purpose ? ' · ' + p.purpose : ''}`
 }
 function detail(item) {
   const e = item.event; const p = e.payload || {}

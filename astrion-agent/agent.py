@@ -4,10 +4,9 @@
 Astrion Agent —— 以智慧，奔赴星海。
 Intelligence bound for the stars.
 
-一个可以完整看懂的最小智能体（零依赖，标准库实现）。
+Astrion Agent 的核心运行入口（标准库实现）。
 
-它只做一件事：把「模型 + 工具 + 循环」跑通，并把每一步打印出来，
-让你能亲眼看见 ReAct 的三段式：think → act → obs。
+核心循环连接模型、工具和记忆，并记录每一步的决策、行动与观察。
 
 用法:
     python3 agent.py "看看 data.txt 里数字的和是多少"   # 调真模型
@@ -31,6 +30,7 @@ import json
 import operator as _op
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
@@ -51,6 +51,11 @@ from session import load_session, save_session, validate_task_plan
 from response_contract import answer_error, finalization_messages
 from tooling import ToolCall, ToolRegistry, ToolResult, ToolSpec
 from decision import enhanced_decision
+from agent_runtime.request_view import recent_tool_request_view
+from agent_runtime.model_calls import ModelCallRecorder, error_data
+from agent_runtime.tool_batch import execute_tool_batch
+from agent_runtime.compaction import maybe_compact_context
+
 
 # ---------------------------------------------------------------- 终端样式
 
@@ -157,9 +162,28 @@ evidence_ids 必须逐项复制输入 required_evidence_ids，不得增加或遗
 
 # ---------------------------------------------------------------- 模型客户端
 
+# 一次研究要连续几十次请求；瞬时断网或服务端抖动不该报废整轮。
+# 只重试「请求还没产生任何可见输出」的失败，避免把半截流重复播给界面。
+NETWORK_RETRY_DELAYS = (1.0, 3.0)
+RETRIABLE_HTTP_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+MAX_RETRY_AFTER = 10.0
+
+
+def retry_after_seconds(headers, *, limit: float = MAX_RETRY_AFTER) -> float | None:
+    """读取服务端 Retry-After；非法值不采用，过大值压到上限，避免一直等下去。"""
+    try:
+        value = float((headers or {}).get("Retry-After"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    return min(value, limit)
+
 
 class ChatLLM:
     """OpenAI 兼容的 /chat/completions 客户端（DeepSeek、OpenAI、通义等都适用）。"""
+
+    retry_delays = NETWORK_RETRY_DELAYS
 
     def __init__(self, key: str, base_url: str, model: str):
         self.key = key
@@ -211,6 +235,18 @@ class ChatLLM:
         print(dim(f"  [token] {label}：输入 {totals['prompt_tokens']}"
                   f" / 输出 {totals['completion_tokens']} / 合计 {totals['total_tokens']}{note}"))
 
+    def _sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def _wait_before_retry(self, attempt: int, attempts: int, reason: str, headers=None) -> None:
+        delay = self.retry_delays[attempt - 1]
+        retry_after = retry_after_seconds(headers)
+        if retry_after is not None:
+            delay = retry_after
+        print(dim(f"  [模型] 请求失败（{reason}），{delay:.1f}s 后重试"
+                  f"（第 {attempt + 1}/{attempts} 次）"))
+        self._sleep(delay)
+
     def _post(self, payload: dict, purpose: str = "决策") -> dict:
         # 请求失败时不能沿用上一次成功调用的 usage。
         self.last_usage = None
@@ -223,14 +259,30 @@ class ChatLLM:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", "replace")[:500]
-            raise SystemExit(red(f"API 报错 {e.code}: {body}"))
-        except urllib.error.URLError as e:
-            raise SystemExit(red(f"连不上 API: {e.reason}"))
+        attempts = len(self.retry_delays) + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", "replace")[:500]
+                if e.code in RETRIABLE_HTTP_STATUS and attempt < attempts:
+                    self._wait_before_retry(attempt, attempts, f"HTTP {e.code}",
+                                            getattr(e, "headers", None))
+                    continue
+                raise SystemExit(red(f"API 报错 {e.code}: {body}"))
+            except (urllib.error.URLError, OSError) as e:
+                reason = getattr(e, "reason", None) or type(e).__name__
+                if attempt < attempts:
+                    self._wait_before_retry(attempt, attempts, f"{type(e).__name__}: {reason}")
+                    continue
+                raise SystemExit(red(f"连不上 API: {reason}"))
+            except (UnicodeError, ValueError) as e:
+                if attempt < attempts:
+                    self._wait_before_retry(attempt, attempts, type(e).__name__)
+                    continue
+                raise SystemExit(red(f"API 响应无法解析: {type(e).__name__}"))
         self._record_usage(data.get("usage"), purpose)
         return data["choices"][0]["message"]
 
@@ -291,6 +343,7 @@ def run(
     history_identity: dict | None = None,
     context_strategy: str = "legacy",
     scheduled_user_updates: dict[int, str] | None = None,
+    request_budget_guard: Callable | None = None,
 ) -> dict:
     """运行任务；可选独立目录、事件记录和会话持久化。
 
@@ -308,6 +361,8 @@ def run(
     memory.reasoning_synthetic_empty = bool(getattr(llm, "reasoning_synthetic_empty", False))
     if context_strategy not in {"ss", "legacy"}:
         raise ValueError("context_strategy 必须是 ss 或 legacy")
+    if request_budget_guard is not None and not callable(request_budget_guard):
+        raise ValueError('request_budget_guard 必须可调用或为 None')
     if scheduled_user_updates is None:
         scheduled_user_updates = {}
     if (not isinstance(scheduled_user_updates, dict) or any(
@@ -396,7 +451,6 @@ def run(
     input_budget_tokens = (int(token_budget_raw) if token_budget_raw else
                            memory.budget_chars if durable_client else None)
     strict_counter = load_token_counter(getattr(llm, 'model', None)) if input_budget_tokens else None
-    model_call_count = 0
 
     def emit(event_type: str, *, step: int | None = None,
              payload: dict | None = None) -> dict:
@@ -404,64 +458,17 @@ def run(
         history.record(event)
         return event
 
-    def error_data(exc: BaseException) -> dict:
-        return {"type": type(exc).__name__, "message": str(exc)}
-
-    def call_model(fn: Callable[[], object], *, purpose: str, step: int,
-                   input_metadata: dict, request_snapshot=None) -> object:
-        """记录一次模型调用；不在 Event 中重复保存完整输入上下文。"""
-        nonlocal model_call_count
-        model_call_count += 1
-        call_id = f"{event_emitter.run_id}:model:{model_call_count:04d}"
-        common = {
-            "model_call_id": call_id,
-            "purpose": purpose,
-            "model": getattr(llm, "model", None),
-        }
-        local_tokens = None
-        if strict_counter is not None and isinstance(request_snapshot, dict) and isinstance(request_snapshot.get('messages'), list):
-            local_tokens = strict_counter.count_request(request_snapshot['messages'], request_snapshot.get('tools') or [])
-        metadata = dict(input_metadata)
-        if local_tokens is not None:
-            metadata.update(local_input_tokens=local_tokens, local_input_budget_tokens=input_budget_tokens,
-                            token_counter=strict_counter.identifier)
-        payload = {**common, "input": metadata}
-        if capture_model_input and request_snapshot is not None:
-            payload["request_snapshot"] = request_snapshot
-        emit("model.call.started", step=step, payload=payload)
-        started = perf_counter()
-        try:
-            if strict_counter is not None:
-                if not isinstance(request_snapshot, dict) or not isinstance(request_snapshot.get('messages'), list):
-                    raise ValueError('context_request_snapshot_required_for_token_budget')
-                if local_tokens > input_budget_tokens:
-                    raise ValueError(f'context_input_token_budget_exceeded: {local_tokens}>{input_budget_tokens}')
-            response = fn()
-        except BaseException as exc:
-            failed_usage = getattr(llm, "last_usage", None)
-            if not isinstance(failed_usage, dict):
-                failed_usage = None
-            emit("model.call.failed", step=step, payload={
-                **common,
-                "duration_seconds": perf_counter() - started,
-                "usage": failed_usage,
-                "error": error_data(exc),
-            })
-            raise
-        usage = getattr(llm, "last_usage", None)
-        if not isinstance(usage, dict):
-            usage = None
-        emit("model.call.finished", step=step, payload={
-            **common,
-            "duration_seconds": perf_counter() - started,
-            "usage": usage,
-            "response": response,
-        })
-        return response
+    call_model = ModelCallRecorder(
+        llm, event_emitter.run_id, emit, token_counter=strict_counter,
+        input_budget_tokens=input_budget_tokens, capture_model_input=capture_model_input,
+        clock=perf_counter,
+    ).call
 
     def persist(status: str) -> None:
+        routing = ({'delegation_observation': memory.runtime['delegation_observation']}
+                   if memory.runtime.get('delegation_observation') else {})
         memory.checkpoint(task=task, status=status, steps=steps_taken,
-                          model=getattr(llm, 'model', None), task_plan=plan)
+                          model=getattr(llm, 'model', None), task_plan=plan, **routing)
         if session_path is not None:
             save_session(session_path, memory=memory, task=task, status=status,
                          steps=steps_taken, model=getattr(llm, "model", None), task_plan=plan)
@@ -501,117 +508,44 @@ def run(
             emit("user.message.added", step=event_step,
                  payload={"content": update, "source": "scheduled"})
             persist("running")
-        # Cheap five-layer cleanup remains available for oversized individual
-        # results. A full step-based rebuild starts at the 80% watermark.
-        local_request_tokens = strict_counter.count_request(memory.for_model(), selected_tools) if strict_counter else None
-        if context_strategy == "ss" and input_budget_tokens is not None:
-            # A measured token budget is the SS strategy's watermark. Mixing
-            # it with the independent character threshold can immediately undo
-            # a valid half-window rebuild and trigger another model call.
-            full_rebuild = bool(memory.archive.path and len(history.steps()) >= 1
-                                and local_request_tokens >= int(input_budget_tokens * 0.8))
-            check_compaction = full_rebuild
-        else:
-            full_rebuild = bool(memory.archive.path and len(history.steps()) >= 1 and (
-                memory.chars() >= int(memory.budget_chars * 0.8)
-                or (input_budget_tokens is not None and local_request_tokens >= int(input_budget_tokens * 0.8))))
-            check_compaction = memory.needs_compaction() or full_rebuild
-        if check_compaction:
-            before_chars = memory.chars()
-            print(dim(f"  [记忆] 当前 {before_chars} 字符，预算 {memory.budget_chars}；检查五层压缩…"))
-            emit("memory.compaction.started", step=event_step, payload={
-                "before_chars": before_chars,
-                "budget_chars": memory.budget_chars,
-                "compactions_before": memory.compactions,
-            })
-
-            def summarize(transcript: str) -> str:
-                return call_model(
-                    lambda: llm.summarize(transcript),
-                    purpose="compaction",
-                    step=event_step,
-                    input_metadata={"transcript_chars": len(transcript)},
-                    request_snapshot={"messages": [{"role": "system", "content": SUMMARIZE_PROMPT},
-                                                   {"role": "user", "content": transcript}],
-                                      "tools": []},
-                )
-
-            compaction_started = perf_counter()
-            rebuild_error = None
-            rebuild_detail = None
-            try:
-                compacted = False
-                if full_rebuild and context_strategy == "ss":
-                    def context_model_call(purpose, request_messages):
-                        return call_model(
-                            lambda: llm.chat(request_messages, tools=[]), purpose=purpose,
-                            step=event_step,
-                            input_metadata={"message_count": len(request_messages),
-                                            "message_chars": len(json.dumps(request_messages, ensure_ascii=False)),
-                                            "tool_count": 0},
-                            request_snapshot={"messages": request_messages, "tools": []},
-                        )
-                    try:
-                        constructor = ContextConstructor(memory, history, context_model_call,
-                                                         model=getattr(llm, 'model', None),
-                                                         usage=lambda: getattr(llm, 'last_usage', None),
-                                                         token_counter=strict_counter)
-                        rebuild_detail = constructor.rebuild(
-                            task, tools=selected_tools, input_budget_tokens=input_budget_tokens
-                        )
-                        compacted = True
-                    except (Exception, SystemExit) as exc:
-                        # Failed plans/summaries never replace the last good view.
-                        rebuild_error = {'reason': str(exc)[:300], 'error_type': type(exc).__name__}
-                        history.record_build({'status': 'failed', **rebuild_error})
-                        print(dim(f"  [记忆] Step 重构未完成，沿用已有压缩：{type(exc).__name__}: {str(exc)[:300]}"))
-                if not compacted and (memory.needs_compaction() or
-                                      (full_rebuild and context_strategy == "legacy")):
-                    compacted = memory.compact(summarize,
-                                               force=bool(full_rebuild and context_strategy == "legacy"))
-            except BaseException as exc:
-                emit("memory.compaction.failed", step=event_step, payload={
-                    "before_chars": before_chars,
-                    "after_chars": memory.chars(),
-                    "duration_seconds": perf_counter() - compaction_started,
-                    "error": error_data(exc),
-                    "layers": memory.layer_reports,
-                })
-                raise
-            emit("memory.compaction.finished", step=event_step, payload={
-                "compacted": compacted,
-                "before_chars": before_chars,
-                "after_chars": memory.chars(),
-                "duration_seconds": perf_counter() - compaction_started,
-                "compactions_after": memory.compactions,
-                "reason": ("step_context_rebuild_failed" if rebuild_error and not compacted
-                           else memory.compaction_reason),
-                "rebuild_error": rebuild_error,
-                "rebuild": rebuild_detail,
-                "protected_evidence_count": memory.protected_evidence_count,
-                "over_budget": memory.chars() > memory.budget_chars,
-                "local_input_tokens": (strict_counter.count_request(memory.for_model(), selected_tools)
-                                       if strict_counter else None),
-                "local_input_budget_tokens": input_budget_tokens,
-                "layers": memory.layer_reports,
-                "archive_scope": memory.archive.scope,
-            })
-            if compacted:
-                print(dim(f"  [记忆] 压缩后 {memory.chars()} 字符"))
-            else:
-                print(dim(f"  [记忆] 保留原记录：{memory.compaction_reason}"))
+        if (request_budget_guard is not None and strict_counter is not None
+                and strict_counter.count_request(memory.for_model(), selected_tools) > input_budget_tokens):
+            adjustment = request_budget_guard(memory, selected_tools, strict_counter, input_budget_tokens, None)
+            if adjustment:
+                persist('running')
+                emit('decision.finished', step=event_step,
+                     payload={'kind': 'request_budget_adjustment', **adjustment})
+        maybe_compact_context(
+            memory=memory, history=history, task=task, llm=llm,
+            context_strategy=context_strategy, selected_tools=selected_tools,
+            strict_counter=strict_counter, input_budget_tokens=input_budget_tokens,
+            event_step=event_step, emit=emit, call_model=call_model, error_data=error_data,
+            context_constructor=ContextConstructor, summarize_prompt=SUMMARIZE_PROMPT,
+            perf_counter=perf_counter, dim=dim,
+        )
 
         print(bold(f"[{step}]"))
         history.begin_step(event_step)
 
-        messages = memory.for_model()
         finalizing = final_step_prompt is not None and step == max_steps
-        active_tools = selected_tools
-        active_registry = registry
-        if finalizing:
-            active_tools = []
-            active_registry = ToolRegistry([], {})
-            messages = finalization_messages(messages, final_step_prompt)
+        active_tools = [] if finalizing else selected_tools
+        active_registry = ToolRegistry([], {}) if finalizing else registry
+        messages, restored_results, unavailable_results = recent_tool_request_view(
+            memory, final_prompt=final_step_prompt if finalizing else None,
+            tools=active_tools, token_counter=strict_counter, token_budget=input_budget_tokens,
+        )
+        if (request_budget_guard is not None and strict_counter is not None
+                and strict_counter.count_request(messages, active_tools) > input_budget_tokens):
+            adjustment = request_budget_guard(memory, active_tools, strict_counter, input_budget_tokens,
+                                              final_step_prompt if finalizing else None)
+            if adjustment:
+                persist('running')
+                emit('decision.finished', step=event_step,
+                     payload={'kind': 'request_budget_adjustment', **adjustment})
+                messages, restored_results, unavailable_results = recent_tool_request_view(
+                    memory, final_prompt=final_step_prompt if finalizing else None,
+                    tools=active_tools, token_counter=strict_counter, token_budget=input_budget_tokens,
+                )
         if decision_mode == "enhanced" and not finalizing:
             def enhanced_call(request_messages, request_tools, purpose):
                 return call_model(
@@ -649,6 +583,8 @@ def run(
                     "message_chars": len(json.dumps(messages, ensure_ascii=False)),
                     "tool_count": len(active_tools),
                     "finalizing": finalizing,
+                    "restored_recent_results": restored_results,
+                    "unavailable_recent_results": unavailable_results,
                 },
                 request_snapshot={"messages": messages, "tools": (TOOLS if tool_specs is None and not finalizing else active_tools)},
             )
@@ -683,61 +619,10 @@ def run(
             })
             return {"status": "no_tool_call", "answer": thought, "steps": steps_taken}
 
-        terminal_answer = None
-        terminal_status = None
-        for call in calls:
-            name = call["function"]["name"]
-            tool_call_id = call["id"]
-
-            # finish 之后的调用不执行，但仍需写回结果，保持这批消息配对完整。
-            if terminal_status is not None:
-                skipped = ToolResult(tool_call_id, name, "skipped", "ERROR: 已调用终止工具，此工具未执行",
-                                     error={"code": "skipped_after_terminal", "message": "此工具未执行"})
-                observation = skipped.content
-                print(f"  {cyan('act:  ')} {name}（跳过）")
-                print(f"  {red('obs:  ')} {observation}")
-                emit("tool.call.finished", step=event_step, payload={
-                    "tool_call_id": tool_call_id,
-                    "name": name,
-                    "outcome": skipped.outcome,
-                    "duration_seconds": None,
-                    "content": observation,
-                    "raw_arguments": call["function"].get("arguments"),
-                    "error": skipped.error,
-                })
-                memory.add_tool(tool_call_id, observation, outcome='skipped')
-                continue
-
-            raw_args = call["function"].get("arguments")
-            if raw_args is None or raw_args == "":
-                raw_args = "{}"
-            print(f"  {cyan('act:  ')} {name}({raw_args})")
-
-            common = {
-                "tool_call_id": tool_call_id,
-                "name": name,
-            }
-            result = active_registry.execute(
-                ToolCall(tool_call_id, name, raw_args),
-                on_start=lambda args: emit("tool.call.started", step=event_step,
-                                           payload={**common, "arguments": args}),
-            )
-            observation = result.content
-            print(f"  {red('obs:  ') if result.outcome != 'success' else dim('obs:  ')} {observation}")
-            terminal_payload = {**common, "outcome": result.outcome,
-                                "duration_seconds": result.duration_seconds,
-                                "content": observation}
-            if result.outcome == "rejected":
-                terminal_payload["raw_arguments"] = raw_args
-            if result.error is not None:
-                terminal_payload["error"] = result.error
-            emit("tool.call.finished", step=event_step, payload=terminal_payload)
-            memory.add_tool(tool_call_id, observation, evidence=(
-                extract_tool_evidence(name, observation) if result.outcome == "success" else None
-            ), outcome=result.outcome)
-            if result.outcome == "success" and name in {"finish", "ask_user"}:
-                terminal_status = "completed" if name == "finish" else "needs_input"
-                terminal_answer = observation
+        terminal_status, terminal_answer = execute_tool_batch(
+            calls, registry=active_registry, memory=memory, emit=emit,
+            step=event_step, dim=dim, cyan=cyan, red=red,
+        )
 
         if terminal_status is not None:
             invalid = answer_error(terminal_answer)

@@ -43,6 +43,10 @@ class RunLifecycleTests(unittest.TestCase):
         capture.__enter__()
         self.addCleanup(capture.__exit__, None, None, None)
 
+    def test_request_view_remains_available_through_agent_compatibility_entry(self):
+        from agent_runtime.request_view import recent_tool_request_view
+        self.assertIs(agent.recent_tool_request_view, recent_tool_request_view)
+
     def test_finish_returns_completed_and_pairs_the_tool_result(self):
         llm = ScriptedLLM([
             tool_message(tool_call("finish-1", "finish", '{"answer":"计算完成"}')),
@@ -126,6 +130,95 @@ class RunLifecycleTests(unittest.TestCase):
         self.assertNotIn('请根据已有结果收尾', self.memory.system_prompt)
         self.assertEqual(self.memory.check(), [])
 
+    def test_recent_compacted_tool_result_reaches_final_request_and_snapshot(self):
+        self.memory = Memory("规则", budget_chars=20000, tool_limit_chars=256)
+        marker = '正文结尾样本量128'
+        body = '正文' * 1000 + marker
+        spec = agent.ToolSpec(name='probe', description='读取', input_schema={
+            'type': 'object', 'properties': {}, 'additionalProperties': False})
+        llm = ScriptedLLM([tool_message(tool_call('p', 'probe', '{}')),
+                           {'role': 'assistant', 'content': '完成'}])
+        recorder = EventRecorder()
+        with patch.dict(agent.TOOL_IMPL, {'probe': lambda: body}), patch.object(
+                agent, 'TOOL_SPECS', [*agent.TOOL_SPECS, spec]):
+            agent.run('读取证据', llm, self.memory, max_steps=2, event_sink=recorder,
+                      final_step_prompt='收尾', capture_model_input=True)
+        self.assertIn(marker, json.dumps(llm.inputs[-1], ensure_ascii=False))
+        self.assertEqual(llm.tools[-1], [])
+        snapshots = [e for e in recorder.events if e['type'] == 'model.call.started']
+        self.assertIn(marker, json.dumps(snapshots[-1], ensure_ascii=False))
+        self.assertTrue(snapshots[-1]['payload']['input']['restored_recent_results'])
+        self.assertTrue(self.memory._history[-2].get('_reduced'))
+
+    def test_parallel_recent_reads_reach_final_request_together(self):
+        self.memory = Memory('规则', budget_chars=40000, tool_limit_chars=256)
+        spec = agent.ToolSpec(name='probe', description='读取', input_schema={
+            'type': 'object', 'properties': {'name': {'type': 'string'}},
+            'required': ['name'], 'additionalProperties': False})
+        calls = [tool_call(name, 'probe', json.dumps({'name': name})) for name in ('D7', 'D8', 'D9')]
+        llm = ScriptedLLM([tool_message(*calls), {'role': 'assistant', 'content': '完成'}])
+        recorder = EventRecorder()
+        with patch.dict(agent.TOOL_IMPL, {'probe': lambda name: '文' * 1000 + '末尾_' + name}), patch.object(
+                agent, 'TOOL_SPECS', [*agent.TOOL_SPECS, spec]):
+            agent.run('读取三篇', llm, self.memory, max_steps=2, event_sink=recorder,
+                      final_step_prompt='收尾', capture_model_input=True)
+        final = json.dumps(llm.inputs[-1], ensure_ascii=False)
+        for name in ('D7', 'D8', 'D9'):
+            self.assertIn('末尾_' + name, final)
+        event = [e for e in recorder.events if e['type'] == 'model.call.started'][-1]
+        self.assertEqual(len(event['payload']['input']['restored_recent_results']), 3)
+        self.assertEqual(event['payload']['input']['unavailable_recent_results'], [])
+
+    def test_recent_result_reaches_next_nonfinal_request(self):
+        self.memory = Memory('规则', budget_chars=20000, tool_limit_chars=256)
+        marker = '下一轮应看到的原文'
+        spec = agent.ToolSpec(name='probe', description='读取', input_schema={
+            'type': 'object', 'properties': {}, 'additionalProperties': False})
+        llm = ScriptedLLM([tool_message(tool_call('p', 'probe', '{}')),
+                           {'role': 'assistant', 'content': '完成'}])
+        with patch.dict(agent.TOOL_IMPL, {'probe': lambda: '文' * 2000 + marker}), patch.object(
+                agent, 'TOOL_SPECS', [*agent.TOOL_SPECS, spec]):
+            agent.run('读取证据', llm, self.memory, max_steps=3)
+        self.assertIn(marker, json.dumps(llm.inputs[-1], ensure_ascii=False))
+
+    def test_consumed_batch_is_not_restored_after_later_assistant_message(self):
+        memory = Memory('规则', budget_chars=20000, tool_limit_chars=256)
+        memory.add_user('读取')
+        memory.add_assistant(tool_message(tool_call('p', 'probe', '{}')))
+        memory.add_tool('p', '已消费正文' * 500)
+        memory.compact(force=False)
+        memory.add_assistant({'role': 'assistant', 'content': '我已处理结果'})
+        memory.add_user('继续')
+        messages, restored, unavailable = agent.recent_tool_request_view(memory)
+        self.assertEqual(restored, [])
+        self.assertEqual(unavailable, [])
+        self.assertNotIn('已消费正文' * 100, json.dumps(messages, ensure_ascii=False))
+
+    def test_recent_result_remains_receipt_if_token_budget_insufficient(self):
+        self.memory = Memory('规则', budget_chars=20000, tool_limit_chars=256)
+        marker = '不能塞进预算的原文尾部'
+        spec = agent.ToolSpec(name='probe', description='读取', input_schema={
+            'type': 'object', 'properties': {}, 'additionalProperties': False})
+        llm = ScriptedLLM([tool_message(tool_call('p', 'probe', '{}')),
+                           {'role': 'assistant', 'content': '资料不足'}])
+        recorder = EventRecorder()
+        class Counter:
+            identifier = 'test-counter'
+            def count_request(self, messages, tools):
+                return len(json.dumps(messages, ensure_ascii=False))
+        with patch.dict(agent.TOOL_IMPL, {'probe': lambda: '文' * 5000 + marker}), patch.object(
+                agent, 'TOOL_SPECS', [*agent.TOOL_SPECS, spec]), patch.dict(
+                'os.environ', {'ASTRION_CONTEXT_INPUT_BUDGET_TOKENS': '3000'}), patch.object(
+                agent, 'load_token_counter', return_value=Counter()):
+            agent.run('读取证据', llm, self.memory, max_steps=2, event_sink=recorder,
+                      final_step_prompt='收尾')
+        final_input = json.dumps(llm.inputs[-1], ensure_ascii=False)
+        self.assertNotIn(marker, final_input)
+        self.assertIn('不代表已看到原文', final_input)
+        self.assertLessEqual(len(final_input), 3000)
+        event = [e for e in recorder.events if e['type'] == 'model.call.started'][-1]
+        self.assertTrue(event['payload']['input']['unavailable_recent_results'])
+
     def test_last_step_rejects_more_actions_and_keeps_incomplete_status(self):
         llm = ScriptedLLM([tool_message(tool_call('extra', 'calculator', '{"expression":"2+3"}'))])
         recorder = EventRecorder()
@@ -192,6 +285,24 @@ class RunLifecycleTests(unittest.TestCase):
         self.assertEqual([event["type"] for event in bad_events], ["tool.call.finished"])
         self.assertEqual(bad_events[0]["payload"]["outcome"], "rejected")
         self.assertIsNone(bad_events[0]["payload"]["duration_seconds"])
+
+    def test_rejected_finish_does_not_skip_later_call_in_same_batch(self):
+        executions = []
+        recorder = EventRecorder()
+        spec = agent.ToolSpec(name='probe', description='测试工具', input_schema={
+            'type': 'object', 'properties': {}, 'additionalProperties': False})
+        llm = ScriptedLLM([
+            tool_message(tool_call('bad-finish', 'finish', '{}'), tool_call('probe', 'probe', '{}')),
+            {'role': 'assistant', 'content': '已处理'},
+        ])
+        with patch.dict(agent.TOOL_IMPL, {'probe': lambda: executions.append(True) or 'ok'}), patch.object(
+                agent, 'TOOL_SPECS', [*agent.TOOL_SPECS, spec]):
+            result = agent.run('测试', llm, self.memory, max_steps=2, event_sink=recorder)
+        self.assertEqual(result['status'], 'no_tool_call')
+        self.assertEqual(executions, [True])
+        self.assertEqual(self.memory.check(), [])
+        events = [e for e in recorder.events if e['type'] == 'tool.call.finished']
+        self.assertEqual([e['payload']['outcome'] for e in events], ['rejected', 'success'])
 
     def test_calls_after_finish_are_skipped_but_all_tool_results_are_recorded(self):
         executions = []

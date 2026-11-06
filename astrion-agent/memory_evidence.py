@@ -118,6 +118,7 @@ def extract_tool_evidence(name: str, content: str) -> list[dict]:
             {
                 "kind": "worker_report",
                 **{k: data[k] for k in ("worker_id", "task", "status", "answer")},
+                **{k: data[k] for k in ("truncated", "report_artifact_id") if k in data},
             }
         ]
     return []

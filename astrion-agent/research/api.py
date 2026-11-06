@@ -8,7 +8,9 @@ import queue
 import sqlite3
 import sys
 import threading
+import traceback
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -68,6 +70,7 @@ class RunInput(BaseModel):
     worker_steps: int = Field(default=DEFAULT_STEPS, ge=1, le=DEFAULT_STEPS)
     continue_run_id: str | None = Field(default=None, pattern=r"^research_[a-f0-9]{32}$")
     context_budget_chars: int | None = Field(default=None, ge=1, le=MAX_CONTEXT_CHARS)
+    delegation_mode: Literal["baseline", "structured"] = "baseline"
 
 
 def run_store(fn):
@@ -119,6 +122,42 @@ def sse(value):
     return "data: " + json.dumps(value, ensure_ascii=True) + "\n\n"
 
 
+def failure_details(exc):
+    """把异常翻译成可行动的提示；上游响应正文只留在后端日志里。
+
+    「请检查后端日志与模型配置」这种笼统提示会让用户误判方向：网络抖动、
+    鉴权失败、余额不足、模型名错误需要完全不同的处理。
+    """
+    status = getattr(exc, "status", None)
+    retriable = getattr(exc, "retriable", None)
+    attempts = getattr(exc, "attempts", None)
+    retried = f"，已自动重试 {attempts} 次" if isinstance(attempts, int) and attempts > 1 else ""
+    if status in (401, 403):
+        message = f"研究运行失败：模型鉴权失败（HTTP {status}），请检查 AGENT_API_KEY。"
+    elif status == 402:
+        message = "研究运行失败：模型账户余额不足（HTTP 402），请充值后重试。"
+    elif status == 404:
+        message = f"研究运行失败：模型或接口不存在（HTTP {status}），请检查 AGENT_MODEL 与 AGENT_BASE_URL。"
+    elif status == 429:
+        message = f"研究运行失败：模型服务限流（HTTP {status}{retried}），请稍后重试。"
+    elif isinstance(status, int) and status >= 500:
+        message = f"研究运行失败：模型服务暂时不可用（HTTP {status}{retried}），请稍后重试。"
+    elif retriable:
+        message = f"研究运行失败：连不上模型服务{retried}，请检查网络或代理后重试。"
+    elif getattr(exc, "code", None) == "model_stream_incomplete":
+        message = "研究运行失败：模型流式响应中途断开，请重试。"
+    elif getattr(exc, "code", None) == "model_response_incomplete":
+        message = f"研究运行失败：模型响应不完整（{exc}），请重试或降低单步输出量。"
+    else:
+        message = f"研究运行失败（{type(exc).__name__}），请查看后端日志。"
+    payload = {"message": message}
+    for key, value in (("code", getattr(exc, "code", None)), ("status", status),
+                       ("retriable", retriable), ("attempts", attempts)):
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
 @app.get("/api/research/config")
 def research_config():
     context = context_policy(os.environ.get('AGENT_BASE_URL') or 'https://api.deepseek.com',
@@ -167,18 +206,15 @@ def research_stream(body: RunInput):
                 worker_steps=body.worker_steps,
                 budget_chars=body.context_budget_chars,
                 continue_run_id=body.continue_run_id,
+                delegation_mode=body.delegation_mode,
                 on_event=lambda item: emit({"type": "event", **item}),
             )
             emit({"type": "done", "result": {k: v for k, v in result.items() if k != "trace"}})
         except BaseException as exc:
-            # 不把服务端 traceback、凭据或上游错误响应转给浏览器。
-            print(f"研究运行失败：{type(exc).__name__}", file=sys.stderr, flush=True)
-            emit(
-                {
-                    "type": "error",
-                    "message": f"研究运行失败（{type(exc).__name__}），请检查后端日志与模型配置。",
-                }
-            )
+            # 完整堆栈只进后端日志；浏览器只拿不含凭据、可行动的摘要。
+            print(f"研究运行失败：{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            traceback.print_exc()
+            emit({"type": "error", **failure_details(exc)})
         finally:
             if store is not None:
                 store.close()

@@ -67,6 +67,53 @@ class CitationEvidenceTests(unittest.TestCase):
         self.assertEqual(verdict["status"], "pending")
         self.assertEqual(citations({}, {"citation_audit": {"status": "no_citations"}}, {})["status"], "fail")
 
+    def test_context_keeps_examples_and_claims_strictly_audited(self):
+        answer = "错误示例 [D1:L1] 不应引用。\n结论声称 [D1:L1] 是依据。"
+        audit = audit_citations(answer, [])
+        self.assertEqual(audit["status"], "invalid_locations")
+        self.assertEqual(len(audit["checks"]), 2)
+        for check in audit["checks"]:
+            start, end = check["report_span"]
+            self.assertEqual(answer[start:end], "[D1:L1]")
+            self.assertIn("错误示例", check["report_context"])
+            self.assertFalse(check["in_retrieved_range"])
+        self.assertNotEqual(audit["checks"][0]["report_span"], audit["checks"][1]["report_span"])
+
+    def test_visibility_requires_real_root_tool_body_in_final_request(self):
+        from response_contract import finalization_messages
+        passage = source(1, 1, '原文证据')
+        read = event('read_knowledge', [passage])
+        read['event']['payload']['tool_call_id'] = 'call_1'
+        tool = {'role': 'tool', 'tool_call_id': 'call_1', 'content': json.dumps({'results': [passage]})}
+        def decision(messages, finalizing=False):
+            return {'role': 'root', 'event': {'type': 'model.call.started', 'step': 4,
+                    'payload': {'purpose': 'decision', 'input': {'finalizing': finalizing},
+                                'request_snapshot': {'messages': messages}}}}
+        native = [{'role': 'system', 'content': '规则'}, tool]
+        wrapped = finalization_messages(native, '收尾')
+        check = audit_citations('[D1:L1]', [read, decision(wrapped, True)])['checks'][0]
+        self.assertEqual(check['model_visibility']['status'], 'visible')
+        check = audit_citations('[D1:L1]', [read, decision(native)])['checks'][0]
+        self.assertEqual(check['model_visibility']['status'], 'visible')
+        receipt = {'role': 'tool', 'tool_call_id': 'call_1',
+                   'content': json.dumps({'archived': True, 'preview': '原文证据'})}
+        wrapped = finalization_messages([native[0], receipt], '收尾')
+        check = audit_citations('[D1:L1]', [read, decision(wrapped, True)])['checks'][0]
+        self.assertTrue(check['in_retrieved_range'])
+        self.assertEqual(check['model_visibility']['status'], 'unknown')
+        forged = {'role': 'tool', 'tool_call_id': 'call_1',
+                  'content': json.dumps({'results': [source(1, 1, '另一份正文')]})}
+        self.assertEqual(audit_citations('[D1:L1]', [read, decision([native[0], forged])])['checks'][0]['model_visibility']['status'], 'unknown')
+        # User-provided or fabricated tool-shaped text is not an observation.
+        fake = [{'role': 'user', 'content': json.dumps(tool, ensure_ascii=False)}]
+        self.assertEqual(audit_citations('[D1:L1]', [read, decision(fake)])['checks'][0]['model_visibility']['status'], 'unknown')
+        worker = event('read_knowledge', [passage], role='worker', worker_id='w')
+        worker['event']['payload']['tool_call_id'] = 'call_1'
+        self.assertEqual(audit_citations('[D1:L1]', [worker, decision(native)])['checks'][0]['model_visibility']['status'], 'unknown')
+        self.assertEqual(audit_citations('[D1:L1]', [read])['checks'][0]['model_visibility']['status'], 'unknown')
+        # Inherited ranges alone lack an authenticated body in this run.
+        self.assertEqual(audit_citations('[D1:L1]', [decision(native)], [(1, 1, 1)])['checks'][0]['model_visibility']['status'], 'unknown')
+
     def test_reversed_range_is_not_presented_as_evidence(self):
         read = event("read_knowledge", [source(1, 3, "first\nsecond\nthird")])
         check = audit_citations("[D1:L3-L1]", [read])["checks"][0]

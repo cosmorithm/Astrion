@@ -89,6 +89,69 @@ class AcceptanceV2Tests(unittest.TestCase):
         self.assertEqual(report['acceptance_v2']['semantic_review'], 'pending')
         self.assertTrue(Path(report['report_path']).exists())
 
+    def test_structured_flag_and_reader_are_forwarded_without_changing_default(self):
+        data = dict(self.data)
+        data['cases'] = [{'id': 'R01', 'task': 'task', 'paper_ids': ['P25'], 'checks': [{'id': 'R01-01'}]}]
+        (self.dir / 'cases.json').write_text(json.dumps(data))
+        legacy = {'task': 'task', 'paper_ids': ['P25']}
+        with patch('evaluation.research.acceptance_v2.run_case.HERE', self.dir), \
+             patch('evaluation.research.acceptance_v2.run_case.validate', return_value={'valid': True}), \
+             patch('evaluation.research.acceptance_v2.run_case.case_by_id', return_value=legacy), \
+             patch('evaluation.research.acceptance_v2.run_case.evaluate',
+                   return_value={'report_path': 'original.json', 'case_outcome': 'pending'}) as evaluate:
+            report = run_case('R01', object, self.root / 'out', source=self.root, base=self.db,
+                              mode='multi', delegation_mode='structured', include_worker_reader=True)
+        self.assertEqual(evaluate.call_args.kwargs['delegation_mode'], 'structured')
+        self.assertIn('read_worker_report', evaluate.call_args.kwargs['tool_allowlist'])
+        self.assertEqual(report['acceptance_v2']['delegation_mode'], 'structured')
+        self.assertEqual(report['acceptance_v2']['semantic_review'], 'pending')
+
+    def test_routing_pair_runs_both_with_same_tool_options_and_no_semantic_pass(self):
+        from evaluation.research.acceptance_v2.routing_compare import compare_routing
+        seen = []
+        def fake_case(case_id, factory, output, **kwargs):
+            seen.append(kwargs)
+            return {'report_path': kwargs['delegation_mode'] + '.json', 'semantic_assessment': 'pending',
+                    'settings': {'allowed_tools': ['finish', 'read_worker_report']},
+                    'run': {'run_id': kwargs['delegation_mode'], 'result': {'status': 'no_tool_call', 'answer': 'done'},
+                            'duration_seconds': 2.0, 'workers': []}}
+        with patch('evaluation.research.acceptance_v2.routing_compare.run_case', side_effect=fake_case):
+            pair = compare_routing('R01', object, self.root / 'out', source=self.root, base=self.db)
+        self.assertEqual([x['delegation_mode'] for x in seen], ['baseline', 'structured'])
+        self.assertTrue(all(x['include_worker_reader'] for x in seen))
+        self.assertTrue(pair['same_allowed_tools'])
+        self.assertEqual(pair['semantic_assessment'], 'pending')
+        self.assertEqual(pair['modes']['baseline']['token_completeness'], 'unknown_or_partial')
+        self.assertTrue(Path(pair['report_path']).exists())
+
+    def test_continuation_pair_counts_workers_from_both_stages(self):
+        from evaluation.research.acceptance_v2.routing_compare import _observation
+        run = {'result': {'status': 'completed', 'answer': 'done'},
+               'workers': [{'status': 'completed'}],
+               'continuation_stages': [
+                   {'workers': [{'status': 'no_tool_call'}, {'status': 'error'}],
+                    'delegation_routing': {'mode': 'structured', 'status': 'dispatched'}},
+                   {'workers': [{'status': 'completed'}],
+                    'delegation_routing': {'mode': 'structured', 'status': 'skipped'}},
+               ]}
+        item = _observation({'run': run})
+        self.assertEqual(item['worker_count'], 3)
+        self.assertEqual(item['worker_statuses'], ['no_tool_call', 'error', 'completed'])
+        self.assertEqual([x['status'] for x in item['delegation_routing']], ['dispatched', 'skipped'])
+
+    def test_routing_pair_preserves_a_failed_side(self):
+        from evaluation.research.acceptance_v2.routing_compare import compare_routing
+        def fake_case(case_id, factory, output, **kwargs):
+            if kwargs['delegation_mode'] == 'baseline':
+                raise ValueError('potentially sensitive diagnostic')
+            return {'report_path': 'structured.json', 'run': {'result': {'status': 'error'}}}
+        with patch('evaluation.research.acceptance_v2.routing_compare.run_case', side_effect=fake_case):
+            pair = compare_routing('R01', object, self.root / 'out', source=self.root, base=self.db)
+        self.assertEqual(pair['modes']['baseline']['status'], 'experiment_error')
+        self.assertEqual(pair['modes']['baseline']['error_type'], 'ValueError')
+        self.assertNotIn('potentially sensitive', json.dumps(pair))
+        self.assertIsNone(pair['same_allowed_tools'])
+
     def test_scheduled_update_reaches_real_loop(self):
         from test_research import ScriptedLLM, call
         model = ScriptedLLM([call('list_documents', {}, 'c1'),

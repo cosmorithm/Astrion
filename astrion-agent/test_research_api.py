@@ -88,6 +88,43 @@ class ApiTests(unittest.TestCase):
             response = self.client.post('/api/research/stream', json={'project_id': project, 'task': 'test', **options})
             self.assertEqual(response.status_code, 422)
 
+    def test_history_visibility_replay_is_bounded_scoped_and_read_only(self):
+        from research.runs import RunLog
+        from research.store import Store
+        project = self.client.post('/api/projects', json={'name': '历史'}).json()['id']
+        other = self.client.post('/api/projects', json={'name': '其他'}).json()['id']
+        store = Store(api.DB_PATH)
+        self.addCleanup(store.close)
+        journal = RunLog(store, project)
+        run_id = journal.run_id
+        journal.finish({'run_id': run_id, 'project': store.project(project),
+                        'result': {'answer': '结论 [D1:L1]'}, 'citation_audit': {'status': 'locations_found'}})
+        path = journal.directory / 'result.json'
+        original = path.read_bytes()
+        url = f'/api/projects/{project}/runs/{run_id}/citation-visibility'
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['reason'], 'event_log_missing')
+        self.assertEqual(response.json()['checks'][0]['model_visibility']['status'], 'unknown')
+        self.assertEqual(self.client.get(f'/api/projects/{other}/runs/{run_id}/citation-visibility').status_code, 400)
+        journal.append({'role': 'root', 'event': {'type': 'model.call.started', 'payload': {'purpose': 'decision'}}})
+        response = self.client.get(url)
+        self.assertEqual(response.json()['checks'][0]['model_visibility']['status'], 'unknown')
+        source = {'document_id': 1, 'start_line': 1, 'end_line': 1, 'excerpt': '原文', 'truncated': False}
+        content = json.dumps({'results': [source]}, ensure_ascii=False)
+        journal.append({'role': 'root', 'event': {'type': 'tool.call.finished', 'payload': {
+            'name': 'read_knowledge', 'tool_call_id': 'c', 'outcome': 'success', 'content': content}}})
+        journal.append({'role': 'root', 'event': {'type': 'model.call.started', 'payload': {
+            'purpose': 'decision', 'request_snapshot': {'messages': [{'role': 'tool', 'tool_call_id': 'c', 'content': content}]}}}})
+        self.assertEqual(self.client.get(url).json()['checks'][0]['model_visibility']['status'], 'visible')
+        with journal.path.open('wb') as f:
+            f.seek(32 * 1024 * 1024)
+            f.write(b'x')
+        response = self.client.get(url)
+        self.assertEqual(response.json()['reason'], 'event_log_too_large')
+        self.assertEqual(response.json()['checks'][0]['model_visibility']['status'], 'unknown')
+        self.assertEqual(path.read_bytes(), original)
+
     def test_leaked_protocol_stream_ends_as_error_without_report(self):
         from test_response_contract import RAW
         class Upstream:

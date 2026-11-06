@@ -63,13 +63,15 @@ def validate(source, base):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['validate', 'run-case', 'run-update'])
+    parser.add_argument('command', choices=['validate', 'run-case', 'run-update', 'compare-routing'])
     parser.add_argument('--source', default='/Users/apple/Desktop/科研/Agent Test Paper')
     parser.add_argument('--base', default='research_data/research_eval_v1/corpus.sqlite3')
     parser.add_argument('--output', default='research_data/research_eval_v1/acceptance_v2')
     parser.add_argument('--steps', type=int, default=10)
     parser.add_argument('--case', help='题号；R21 使用单 Agent 及第 3 轮注入需求')
     parser.add_argument('--mode', choices=['single', 'multi'], default='single')
+    parser.add_argument('--delegation-mode', choices=['baseline', 'structured'], default='baseline')
+    parser.add_argument('--with-worker-reader', action='store_true', help='显式开放子报告分页工具')
     parser.add_argument('--workers', type=int, default=3)
     parser.add_argument('--worker-steps', type=int, default=6)
     parser.add_argument('--toolset', choices=['baseline', 'claims'], default='claims')
@@ -91,7 +93,16 @@ def main():
         case_id = 'R21' if args.command == 'run-update' else args.case
         if not case_id:
             parser.error('run-case requires --case')
-        if case_id == 'R21':
+        if args.command == 'compare-routing':
+            if case_id == 'R21' or args.mode != 'multi':
+                parser.error('compare-routing requires --mode multi and a non-R21 case')
+            from .routing_compare import compare_routing
+            result = compare_routing(case_id, factory, args.output, source=args.source, base=args.base,
+                                     steps=args.steps, workers=args.workers, worker_steps=args.worker_steps,
+                                     budget_chars=args.budget_chars, toolset=args.toolset)
+        elif case_id == 'R21':
+            if args.delegation_mode != 'baseline':
+                parser.error('R21 only supports baseline delegation')
             if args.mode != 'single':
                 parser.error('R21 currently supports only single mode')
             result = run_update(factory, args.output, source=args.source, base=args.base,
@@ -101,7 +112,8 @@ def main():
             result = run_case(case_id, factory, args.output, source=args.source, base=args.base,
                               mode=args.mode, steps=args.steps, workers=args.workers,
                               worker_steps=args.worker_steps, budget_chars=args.budget_chars,
-                              toolset=args.toolset)
+                              toolset=args.toolset, delegation_mode=args.delegation_mode,
+                              include_worker_reader=args.with_worker_reader)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if args.command == 'validate' and not result['valid']:
         raise SystemExit(1)

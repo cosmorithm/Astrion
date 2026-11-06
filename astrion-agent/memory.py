@@ -212,9 +212,12 @@ class Memory:
 
     def _messages(self, history, summary, evidence=None) -> list[dict]:
         messages = [{"role": "system", "content": self.system_prompt}]
-        if summary or self._pins or self._claim_ids or self.runtime.get('task_plan'):
+        if summary or self._pins or self._claim_ids or self.runtime.get('task_plan') or self.runtime.get('delegation_observation'):
             state = {'summary': summary, 'pinned_evidence': list(self._pins.values()),
                      'task_plan': self.runtime.get('task_plan', [])}
+            if self.runtime.get('delegation_observation'):
+                # Runtime-produced data, not a user instruction or a model tool call.
+                state['delegation_observation'] = self.runtime['delegation_observation']
             if self._claim_ids:
                 state['registered_claims'] = [
                     {'claim_id': ref, 'statement': self.archive.get(ref)['content']}

@@ -13,6 +13,47 @@ FIXTURES = Path(__file__).resolve().parents[2] / "fixtures/research"
 
 
 class LibraryTests(unittest.TestCase):
+    def test_read_knowledge_paginates_large_line_ranges(self):
+        from tools.knowledge import KnowledgeTools
+        doc = self.store.add_document_text(self.a, "lines.txt", "\n".join(f"line {i}" for i in range(1, 121)))
+        tool = KnowledgeTools(self.store, self.a)
+        first = json.loads(tool.read_knowledge(doc, 1, 104))
+        self.assertFalse(first["selection_complete"])
+        self.assertEqual(first["results"][0]["end_line"], 80)
+        self.assertEqual(first["next_page"], {"tool": "read_knowledge", "document_id": doc, "start_line": 81, "end_line": 104})
+        page = first["next_page"]
+        second = json.loads(tool.read_knowledge(doc, page["start_line"], page["end_line"]))
+        self.assertTrue(second["selection_complete"])
+        self.assertEqual(second["results"][0]["start_line"], 81)
+        self.assertEqual(second["results"][0]["end_line"], 104)
+        self.assertIn("line 104", second["results"][0]["excerpt"])
+        self.assertIsNone(second["next_page"])
+        beyond = json.loads(tool.read_knowledge(doc, 100, 200))
+        self.assertTrue(beyond["requested_end_outside_document"])
+        self.assertFalse(beyond["selection_complete"])
+        self.assertIsNone(beyond["next_page"])
+        with self.assertRaises(ValueError):
+            KnowledgeTools(self.store, self.b).read_knowledge(doc, 1, 104)
+
+    def test_read_knowledge_truncated_page_requires_character_continuation(self):
+        from tools.knowledge import KnowledgeTools
+        text = "\n".join(["a" * 7000] + [f"line {i}" for i in range(2, 101)])
+        doc = self.store.add_document_text(self.a, "long.txt", text)
+        tool = KnowledgeTools(self.store, self.a)
+        result = json.loads(tool.read_knowledge(doc, 1, 100))
+        item = result["results"][0]
+        self.assertTrue(item["truncated"])
+        self.assertFalse(result["selection_complete"])
+        self.assertIsNone(item["next_line"])
+        self.assertEqual(item["continuation"]["document_id"], doc)
+        self.assertEqual(item["continuation"]["offset"], 6000)
+        self.assertEqual(result["next_page"]["start_line"], 81)
+        self.assertIn("先使用 continuation", result["pagination_note"])
+        continuation = item["continuation"]
+        part = json.loads(tool.read_document(doc, start_line=continuation["start_line"], end_line=continuation["end_line"], offset=continuation["offset"]))
+        self.assertTrue(part["results"][0]["excerpt"].startswith("a" * 1000))
+        self.assertIsNone(part["results"][0]["next_offset"])
+
     def test_large_catalog_pages_survive_immediate_compaction_without_losing_entries(self):
         from tools.knowledge import KnowledgeTools
         from memory import Memory

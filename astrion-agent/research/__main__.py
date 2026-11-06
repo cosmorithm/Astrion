@@ -45,6 +45,8 @@ def main():
     run.add_argument("--project", type=int, required=True)
     run.add_argument("--steps", type=int, default=DEFAULT_STEPS)
     run.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    run.add_argument("--delegation-mode", choices=("baseline", "structured"), default="baseline",
+                     help="委派方式；structured 会先调用一次独立路由器，可能增加成本")
     run.add_argument("--worker-steps", type=int, default=DEFAULT_STEPS)
     run.add_argument("--context-budget-chars", type=int, help="软压缩触发阈值（字符，非 token）")
     run.add_argument("--continue-run", help="继承指定历史运行的上下文、证据与待办，另存新版本")
@@ -163,6 +165,7 @@ def main():
                     worker_steps=args.worker_steps,
                     budget_chars=args.context_budget_chars,
                     continue_run_id=args.continue_run,
+                    delegation_mode=args.delegation_mode,
                 )
                 if args.trace:
                     with args.trace.open("x", encoding="utf-8") as f:

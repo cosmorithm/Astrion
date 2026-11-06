@@ -16,7 +16,7 @@ SEARCH_DOCS = spec(
 )
 READ_DOC = spec(
     "read_knowledge",
-    "按行读原文，含首尾最多 80 行；大行可用 read_document 的 offset 接续。",
+    "按行读原文，每次最多返回 80 行和 6000 字符；范围过大时按 next_page 接续，截断时先按 continuation 接续。",
     {"document_id": I, "start_line": I, "end_line": I},
     ["document_id", "start_line", "end_line"],
 )
@@ -72,9 +72,29 @@ class KnowledgeTools:
         )
 
     def read_knowledge(self, document_id, start_line, end_line):
-        return self.observe(
-            {"results": [self.store.read_document(self.project, document_id, start_line, end_line)]}
-        )
+        # Keep each observation bounded; large selections require subsequent calls.
+        if any(type(n) is not int for n in (document_id, start_line, end_line)) or start_line < 1 or end_line < start_line:
+            raise ValueError("invalid_line_range: start_line 和 end_line 必须是有效的正整数范围")
+        page_end = min(end_line, start_line + 79)
+        result = self.store.read_document(self.project, document_id, start_line, page_end)
+        if result.get("continuation"):
+            result["continuation"]["document_id"] = document_id
+            # This line range has not been completely observed yet.
+            result["next_line"] = None
+        next_start = result["end_line"] + 1
+        next_page = None
+        if next_start <= min(end_line, result["total_lines"]):
+            next_page = {"tool": "read_knowledge", "document_id": document_id,
+                         "start_line": next_start, "end_line": end_line}
+        return self.observe({
+            "results": [result],
+            "requested_range": {"start_line": start_line, "end_line": end_line},
+            "selection_complete": next_page is None and not result["truncated"] and end_line <= result["total_lines"],
+            "requested_end_outside_document": end_line > result["total_lines"],
+            "next_page": next_page,
+            "pagination_note": "若结果截断，先使用 continuation 读完当前页，再使用 next_page。"
+            if result["truncated"] else "使用 next_page 继续读取请求范围。" if next_page else None,
+        })
 
     def read_document(
         self, document_id, page=0, section=0, start_line=1, end_line=0, offset=0, limit=4000

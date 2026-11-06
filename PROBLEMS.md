@@ -53,6 +53,7 @@
 | AST-015 | 档案重读页立即再次外置，模型读不到正文 | P1 | 已修复，保留回归 | 第 3 层：上下文与记忆 |
 | AST-016 | JSON 会话比磁盘日志旧时无法正常恢复 | P1 | 已修复，保留回归 | 第 4 层：恢复 |
 | AST-017 | 子 Agent 档案初始化失败后状态仍为 running | P2 | 已修复，保留回归 | 第 4 层：运行生命周期 |
+| AST-018 | 单次模型请求瞬时失败直接报废整轮研究 | P1 | 已修复，保留回归 | 第 4 层：运行时 |
 
 ## 3. 待解决问题
 
@@ -200,6 +201,14 @@
 - **修复**：将档案初始化纳入子任务异常处理，使失败结果正常写回，并恢复流式角色状态。
 - **验证依据**：`research/runner.py::run_worker` 与第 41 节实现记录；修复后全量离线回归通过。未记录独立的真实磁盘故障演练。
 - **保留回归**：档案不可写或初始化异常时，子任务必须结束为错误，父任务获得明确结果。
+
+### AST-018：单次模型请求瞬时失败直接报废整轮研究
+
+- **现象**：2026-11-01 14:18–14:20，`api-research-extension.log` 连续 17 次 `研究运行失败：RuntimeError`；失败事件为 `model.call.failed`，`error.message` 为 `模型流式请求失败：URLError`，耗时 0.001–0.003 秒、`usage: null`。同一时段另有运行连续 4 次调用成功（2.1–2.5 秒/次）后在第五步失败，说明是连接层瞬时失败，不是模型或密钥错误。
+- **原因**：`research/streaming.py::_post` 只调用一次 `urlopen`；`URLError` 被包装成 `RuntimeError` 后直接终止整轮。`research/api.py` 只记录异常类型，丢弃 `exc.reason` 与 traceback，界面统一显示「请检查后端日志与模型配置」，把网络问题误导成配置问题。
+- **修复**：网络/超时/429/5xx 按 `NETWORK_RETRY_DELAYS`（1s、3s）退避重试，最多 3 次；一旦已向界面输出可见内容就不再重试，避免重复播放半截流。失败分类 `ModelRequestError` 携带 `code`、`status`、`retriable`、`reason`、`attempts`，写入事件、`result.json` 与后端日志；SSE 错误按鉴权（401/403）、余额（402）、模型名（404）、限流（429）、5xx、网络分别给出可行动提示。
+- **验证依据**：`test_streaming.py::RetryTests`（5 例）覆盖重试成功、重试耗尽、已输出不重试、4xx 不重试、Retry-After；`tests/research/test_run_delivery.py::test_network_failure_records_detail_and_stays_resumable` 覆盖失败版本保留 `error_code/error_message` 且可从检查点续写。修复后离线 224 项、科研 51 项（4 项 Docker 跳过）通过。
+- **保留回归**：重试次数可配；已输出后仍失败的情况；上游错误正文只进后端日志；续写不改写失败版本。重试不保证结论正确，也不掩盖持续性的网络中断。
 
 ## 5. 修复顺序与验收纪律
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 
 from agent import ChatLLM
@@ -118,6 +119,89 @@ class WorkerTests(unittest.TestCase):
         self.assertGreater(len(full), 2500)
         self.assertIn('L1]', full)
         self.assertNotIn('do not leak', batch)
+
+    def test_batch_child_full_report_readable_when_artifact_save_fails(self):
+        model, children = self.make_model(count=2, long_answer=True)
+        model.responses = iter([
+            call('run_workers', {'tasks': [{'task': 'a', 'context': ''}, {'task': 'b', 'context': ''}]}, 'batch'),
+            call('read_worker_report', {'worker_id': 'worker_1', 'offset': 0, 'limit': 4000}, 'page1'),
+            call('read_worker_report', {'worker_id': 'worker_1', 'offset': 4000, 'limit': 4000}, 'page2'),
+            call('finish', {'answer': 'done'}, 'finish'),
+        ])
+        with patch.object(Artifacts, 'put', side_effect=ValueError('quota')):
+            result = self.run_model(model)
+        outputs = [e['event']['payload'] for e in result['trace'] if e['role'] == 'root' and e['event']['type'] == 'tool.call.finished']
+        batch = json.loads(next(e['content'] for e in outputs if e['name'] == 'run_workers'))
+        first = batch['workers'][0]
+        self.assertTrue(first['truncated'])
+        self.assertIsNone(first['report_artifact_id'])
+        self.assertEqual(first['read_report'], 'read_worker_report')
+        pages = [json.loads(e['content']) for e in outputs if e['name'] == 'read_worker_report']
+        self.assertEqual(len(pages), 2)
+        self.assertEqual(pages[0]['content'] + pages[1]['content'], result['workers'][0]['answer'])
+        self.assertIsNone(pages[1]['next_offset'])
+        self.assertEqual(pages[0]['status'], 'completed')
+        self.assertIn('待核查', pages[0]['note'])
+        parent_names = {t['function']['name'] for t in model.inputs[0][1]}
+        self.assertIn('read_worker_report', parent_names)
+        for child in children:
+            child_names = {t['function']['name'] for t in child.inputs[0][1]}
+            self.assertNotIn('read_worker_report', child_names)
+
+    def test_single_worker_bounded_and_reader_rejects_other_run_and_bad_offsets(self):
+        from research.workers import WorkerPool
+        model = CountedModel([])
+        pool = WorkerPool(self.store, self.project, model, limit=1, steps=2,
+                          new_memory=lambda: Memory('规则'), record=lambda *a: None, run_id='run')
+        answer = '子报告' * 3000
+        def execute(entry, llm, context):
+            entry.update(status='incomplete_plan', answer=answer, usage={}, duration_seconds=1.0,
+                         report_error={'code': 'report_save_failed'})
+            return entry
+        with patch.object(pool, '_execute', side_effect=execute):
+            result = json.loads(pool.run_one('阅读', ''))
+        self.assertLess(len(json.dumps(result, ensure_ascii=False)), 5000)
+        self.assertTrue(result['truncated'])
+        self.assertEqual(result['status'], 'incomplete_plan')
+        pages, offset = [], 0
+        while True:
+            page = json.loads(pool.read_report('worker_1', offset=offset, limit=4000))
+            pages.append(page['content'])
+            self.assertEqual(page['status'], 'incomplete_plan')
+            offset = page['next_offset']
+            if offset is None: break
+        self.assertEqual(''.join(pages), answer)
+        for kwargs in ({'worker_id': 'worker_2'}, {'worker_id': 'worker_1', 'offset': -1},
+                       {'worker_id': 'worker_1', 'offset': len(answer) + 1},
+                       {'worker_id': 'worker_1', 'limit': 4001}, {'worker_id': 'worker_1', 'limit': True}):
+            with self.assertRaises(ValueError): pool.read_report(**kwargs)
+
+    def test_encoded_delivery_and_pages_remain_bounded_and_recoverable(self):
+        from research.workers import WorkerPool
+        model = CountedModel([])
+        pool = WorkerPool(self.store, self.project, model, limit=5, steps=2,
+                          new_memory=lambda: Memory('规则'), record=lambda *a: None, run_id='run')
+        # Control characters expand sixfold in JSON; raw character limits alone are insufficient.
+        entries = [{'worker_id': f'worker_{i}', 'task': '\x01' * 500,
+                    'status': 'completed', 'answer': '\x01' * 5000,
+                    'usage': {}, 'duration_seconds': 1.0} for i in range(1, 6)]
+        pool.entries = entries
+        with patch.object(pool, '_reserve', return_value=[(e, model, '') for e in entries]), patch.object(
+                pool, '_execute', side_effect=lambda entry, llm, context: entry):
+            encoded = pool.run_many([{}] * 5)
+        self.assertLessEqual(len(encoded), 24000)
+        summaries = json.loads(encoded)['workers']
+        self.assertTrue(all(s['truncated'] and s['read_report'] == 'read_worker_report' for s in summaries))
+        parts, offset = [], 0
+        while True:
+            encoded_page = pool.read_report('worker_1', offset=offset, limit=4000)
+            self.assertLessEqual(len(encoded_page), 24000)
+            page = json.loads(encoded_page)
+            parts.append(page['content'])
+            offset = page['next_offset']
+            if offset is None:
+                break
+        self.assertEqual(''.join(parts), entries[0]['answer'])
 
     def test_invalid_batch_is_rejected_atomically_without_spawning(self):
         model, children = self.make_model()

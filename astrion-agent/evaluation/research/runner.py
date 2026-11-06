@@ -71,7 +71,8 @@ def check_base(path):
 
 def evaluate(case_id, mode, llm_factory, output, *, base=DEFAULT_BASE, steps=DEFAULT_STEPS,
              worker_steps=DEFAULT_WORKER_STEPS, workers=DEFAULT_WORKERS, budget_chars=12000,
-             tool_allowlist=None):
+             tool_allowlist=None, delegation_mode='baseline'):
+    if delegation_mode not in {'baseline', 'structured'}: raise ValueError('invalid_delegation_mode')
     allowed = set(ALLOWED if tool_allowlist is None else tool_allowlist)
     started = perf_counter()
     if mode not in {'single','multi'}: raise ValueError('invalid_mode')
@@ -105,22 +106,30 @@ def evaluate(case_id, mode, llm_factory, output, *, base=DEFAULT_BASE, steps=DEF
             record = run_research(store, project, question, llm, max_steps=steps,
                                   max_workers=0 if mode == 'single' else workers,
                                   worker_steps=worker_steps, budget_chars=budget_chars,
-                                  tool_allowlist=allowed)
+                                  tool_allowlist=allowed, delegation_mode=delegation_mode)
             if case.get('continuation') and record.get('result', {}).get('answer'):
                 first = record
                 second = run_research(store, project, case['continuation']['follow_up'], llm,
                                       max_steps=steps, max_workers=0 if mode == 'single' else workers,
                                       worker_steps=worker_steps, budget_chars=budget_chars,
-                                      continue_run_id=first['run_id'], tool_allowlist=allowed)
+                                      continue_run_id=first['run_id'], tool_allowlist=allowed,
+                                      delegation_mode=delegation_mode)
                 a, b = first['usage'], second['usage']
                 totals = {k: a['totals'].get(k, 0) + b['totals'].get(k, 0)
                           for k in set(a['totals']) | set(b['totals'])}
                 usage = {'totals': totals, **{k: a[k]+b[k] if a.get(k) is not None and b.get(k) is not None else None
                                             for k in ('calls','unknown_calls')}}
+                # Full usage is only comparable when both stages recorded it.
+                full_first, full_second = first.get('usage_including_root_review'), second.get('usage_including_root_review')
+                full_usage = None
+                if isinstance(full_first, dict) and isinstance(full_second, dict):
+                    keys = set(full_first.get('totals', {})) | set(full_second.get('totals', {}))
+                    full_usage = {'totals': {k: full_first.get('totals', {}).get(k, 0) + full_second.get('totals', {}).get(k, 0) for k in keys},
+                                  **{k: full_first[k]+full_second[k] if full_first.get(k) is not None and full_second.get(k) is not None else None for k in ('calls','unknown_calls')}}
                 record = {**second, 'duration_seconds': first['duration_seconds'] + second['duration_seconds'],
-                          'usage': usage, 'continuation_stages': [
-                              {k:first.get(k) for k in ('run_id','result','usage','duration_seconds')},
-                              {k:second.get(k) for k in ('run_id','result','usage','duration_seconds')}]}
+                          'usage': usage, 'usage_including_root_review': full_usage, 'continuation_stages': [
+                              {k:first.get(k) for k in ('run_id','result','usage','usage_including_root_review','duration_seconds','workers','delegation_routing')},
+                              {k:second.get(k) for k in ('run_id','result','usage','usage_including_root_review','duration_seconds','workers','delegation_routing')}]}
         except (Exception, SystemExit) as exc:
             records = list((directory / 'runs' / str(project)).glob('*/result.json'))
             record = json.loads(records[-1].read_text()) if records else {}
@@ -135,6 +144,7 @@ def evaluate(case_id, mode, llm_factory, output, *, base=DEFAULT_BASE, steps=DEF
                   'provider_hostname':urlsplit(getattr(llm,'base_url','') or '').hostname,
                   'code_version':code_version(), 'settings':{'steps':steps,'worker_steps':worker_steps,
                     'max_workers':0 if mode == 'single' else workers,'budget_chars':budget_chars,
+                    'delegation_mode':delegation_mode,
                     'allowed_tools':sorted(allowed)},
                   'paper_mapping':{p:ids[p] for p in case['paper_ids']},
                   'visible_paper_ids': sorted(split_ids),

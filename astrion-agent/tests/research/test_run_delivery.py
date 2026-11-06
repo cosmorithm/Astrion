@@ -13,6 +13,7 @@ from research.citations import audit_citations
 from research.runner import run_research
 from research.storage.artifacts import Artifacts
 from research.store import Store
+from research.streaming import ModelRequestError
 from test_research import ScriptedLLM, call
 
 
@@ -59,6 +60,42 @@ class DeliveryTests(unittest.TestCase):
             result = json.loads(next(Path(tmp).glob("runs/*/*/result.json")).read_text())
             self.assertEqual(result["status"], "error")
             self.assertEqual(result["error_type"], "RuntimeError")
+
+    def test_network_failure_records_detail_and_stays_resumable(self):
+        class Broken:
+            def chat(self, *args, **kwargs):
+                raise ModelRequestError(
+                    "模型流式请求失败：URLError（[Errno 8] nodename nor servname provided）",
+                    code="model_network_error", retriable=True, attempts=3,
+                    reason="URLError: [Errno 8] nodename nor servname provided",
+                )
+
+            def fork(self, role):
+                return self
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "db")
+            self.addCleanup(store.close)
+            project = store.create_project("resume")
+            with self.assertRaises(ModelRequestError), contextlib.redirect_stdout(io.StringIO()):
+                run_research(store, project, "问题", Broken())
+            failed_path = next(Path(tmp).glob("runs/*/*/result.json"))
+            failed = json.loads(failed_path.read_text())
+            self.assertEqual(failed["status"], "error")
+            self.assertEqual(failed["error_type"], "ModelRequestError")
+            self.assertEqual(failed["error_code"], "model_network_error")
+            self.assertTrue(failed["error_retriable"])
+            self.assertIn("nodename", failed["error_message"])
+            self.assertIsNotNone(failed["context_archive"])
+
+            continued = run_research(
+                store, project, "继续", ScriptedLLM([call("finish", {"answer": "完成"}, "finish1")]),
+                max_steps=2, continue_run_id=failed["run_id"],
+            )
+            self.assertEqual(continued["parent_run_id"], failed["run_id"])
+            self.assertEqual(continued["result"]["status"], "completed")
+            # 续写不改写失败版本的事实。
+            self.assertEqual(json.loads(failed_path.read_text())["status"], "error")
 
     def test_single_line_citation_is_checked_not_ignored(self):
         trace = [

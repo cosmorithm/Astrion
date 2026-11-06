@@ -6,6 +6,7 @@ import ExternalSources from './components/ExternalSources.vue'
 import SourceLibrary from './components/SourceLibrary.vue'
 import ResearchHistory from './components/ResearchHistory.vue'
 import ResearchDag from './components/ResearchDag.vue'
+import ResearchCompare from './components/ResearchCompare.vue'
 import ResearchTrace from './components/ResearchTrace.vue'
 import CitationEvidence from './components/CitationEvidence.vue'
 import ClaimAudit from './components/ClaimAudit.vue'
@@ -30,15 +31,32 @@ const traceEvents = ref([])
 const result = ref(null)
 const historyPanel = ref(null)
 const dagPanel = ref(null)
+const comparePanel = ref(null)
 const historyLoading = ref(false)
 const dagOpening = ref(false)
 let dagRequestNumber = 0
 const continueRunId = ref('')
 const budgets = ref(null)
+const delegationMode = ref('baseline')
 const runError = ref('')
 const fileInput = ref(null)
 const currentProject = computed(() => projects.value.find(item => item.id === Number(projectId.value)))
 const statusLabels = { completed: '已完成', needs_input: '需要补充信息', no_tool_call: '已返回回答', step_limit: '达到步数上限，未完成', incomplete_plan: '仍有未完成子任务', error: '研究失败，未完成' }
+const routeSkipLabels = { insufficient_steps_or_workers: '子 Agent 名额或轮数不足',
+  delegation_tools_unavailable: '委派工具未开放', worker_report_reader_unavailable_or_limit_mismatch: '子报告读取工具不可用或名额不匹配',
+  independent_client_unavailable: '没有独立模型客户端', worker_client_unavailable: '无法创建子 Agent 客户端', parallel_delegation_tool_unavailable: '并行委派工具未开放',
+  continuation_constraints_unavailable: '续写保留全部历史约束，交由主 Agent 决定',
+  root_input_token_budget: '主 Agent 上下文预算不足',
+  invalid_original_request: '原始任务不可用' }
+function routingSummary(routing) {
+  const proposal = routing?.proposal || {}
+  const dispatch = routing?.dispatch || {}
+  if (proposal.status === 'fallback') return `路由回退，主 Agent 继续${proposal.error_code ? `（${proposal.error_code}）` : ''}`
+  if (proposal.status === 'skipped') return `未启用路由派发（${routeSkipLabels[proposal.reason] || proposal.reason || '条件不足'}）`
+  if (proposal.mode === 'delegate' && dispatch.status === 'returned') return `已派发 ${dispatch.worker_count || 0} 个子任务，结果待核查`
+  if (proposal.mode === 'delegate') return `建议委派但未派发（${routeSkipLabels[dispatch.reason] || dispatch.reason || '条件不足'}）`
+  return '由主 Agent 直接处理'
+}
 const reportState = computed(() => busy.value ? '研究中' : runError.value ? '研究失败' : result.value ? (statusLabels[result.value.result.status] || '未完成') : '等待研究')
 const reportText = computed(() => {
   if (result.value) {
@@ -52,7 +70,7 @@ const reportText = computed(() => {
 })
 const reportHtml = computed(() => renderMarkdown(reportText.value))
 const usageText = computed(() => {
-  const usage = result.value?.usage
+  const usage = result.value?.usage_including_root_review ?? result.value?.usage
   if (!usage || usage.calls === null || usage.calls === usage.unknown_calls) return '未知'
   const total = usage.totals?.total_tokens ?? 0
   return usage.unknown_calls ? `已知 ${total}（另有 ${usage.unknown_calls} 次未知）` : String(total)
@@ -109,8 +127,11 @@ async function forgetMemory(id) {
 function describeEvent(item) {
   const e = item.event
   const p = e.payload || {}
-  const who = item.role === 'root' ? '主 Agent' : `子 Agent · ${item.worker_id}`
-  if (e.type === 'model.call.started') return `${who} · 第 ${e.step} 步 · ${p.input?.finalizing ? '正在整理最终回答' : p.purpose === 'compaction' ? '正在整理上下文' : '正在思考下一步'}`
+  const who = item.role === 'root' ? '主 Agent' : item.role === 'router' ? '委派路由器' : `子 Agent · ${item.worker_id}`
+  if (item.role === 'router' && e.type === 'decision.finished') {
+    return `委派路由器 · ${routingSummary(p)}`
+  }
+  if (e.type === 'model.call.started') return item.role === 'router' ? `${who} · 正在判断是否委派` : `${who} · 第 ${e.step} 步 · ${p.input?.finalizing ? '正在整理最终回答' : p.purpose === 'compaction' ? '正在整理上下文' : '正在思考下一步'}`
   if (e.type === 'tool.call.started') {
     const names = { search_knowledge: '检索资料', read_knowledge: '阅读原文', search_memory: '查询记忆', run_worker: '委派子任务', finish: '提交结果', ask_user: '请求补充信息' }
     return `${who} · ${names[p.name] || p.name}`
@@ -133,10 +154,14 @@ async function startResearch() {
   try {
     await streamResearch({ project_id: Number(projectId.value), task: task.value,
       max_steps: budgets.value.max_steps, worker_steps: budgets.value.worker_steps, max_workers: budgets.value.max_workers,
+      delegation_mode: delegationMode.value,
       continue_run_id: continueRunId.value || null, context_budget_chars: budgets.value.context.budget_chars }, message => {
       if (message.type === 'model_delta' && message.role === 'root') {
         if (message.kind === 'answer') pendingAnswer.value += message.text
         else progressText.value += message.text
+      } else if (message.type === 'model_retry') {
+        const who = message.role === 'root' ? '主 Agent' : message.role === 'router' ? '委派路由器' : '子 Agent'
+        progress.value.push(`${who} · 模型请求失败，${message.delay_seconds}s 后重试（第 ${message.attempt}/${message.attempts} 次）`)
       } else if (message.type === 'event') {
         traceEvents.value.push({ role: message.role, worker_id: message.worker_id, event: message.event })
         if (message.role === 'root' && message.event.type === 'model.call.started' && message.event.payload?.purpose === 'decision') {
@@ -157,7 +182,7 @@ async function startResearch() {
     })
   } catch (e) { error.value = e.message; runError.value = e.message } finally {
     busy.value = false
-    await Promise.all([historyPanel.value?.refresh(), dagPanel.value?.refresh()])
+    await Promise.all([historyPanel.value?.refresh(), dagPanel.value?.refresh(), comparePanel.value?.refresh()])
   }
 }
 function openRun(run) {
@@ -167,10 +192,17 @@ function openRun(run) {
   result.value = run
   continueRunId.value = run?.context_archive ? run.run_id : ''
   runError.value = run?.error_type
-    ? `该运行失败（${run.error_type}）。${run.context_archive ? '可从最近一次完整检查点继续。' : '缺少可恢复上下文。'}` : ''
+    ? `该运行失败：${run.error_message || run.error_type}${run.context_archive ? ' 可从最近一次完整检查点继续。' : ' 缺少可恢复上下文。'}` : ''
   // Legacy exception records may contain status at the top level.
   if (run && !run.result) result.value = { ...run, result: { status: run.status || 'error' } }
   progress.value = []; traceEvents.value = []; pendingAnswer.value = ''; progressText.value = ''
+}
+async function onRunDeleted({ projectId: deletedProject, runId }) {
+  if (projectId.value !== deletedProject) return
+  if (result.value?.run_id === runId || continueRunId.value === runId) openRun(null)
+  comparePanel.value?.removeRun(runId)
+  notice.value = '失败研究记录及运行日志已清理；项目资料、上下文归档和产物仍保留。'
+  await Promise.all([dagPanel.value?.refresh(), comparePanel.value?.refresh()])
 }
 async function openDagRun(id, continuationStatus) {
   if (busy.value || historyLoading.value || dagOpening.value) return
@@ -239,8 +271,9 @@ onMounted(() => action(async () => {
           <p class="hero-copy">选择项目、导入资料并提出研究问题。</p>
           <div v-if="!projectId" class="empty-project"><div><strong>请先创建项目</strong><p>在左侧输入项目名称。</p></div></div>
           <template v-else>
-            <ResearchHistory ref="historyPanel" :project-id="projectId" :busy="busy || dagOpening" :selected="result?.run_id || continueRunId" @open="openRun" @error="error = $event" @loading="historyLoading = $event" />
+            <ResearchHistory ref="historyPanel" :project-id="projectId" :busy="busy || dagOpening" :selected="result?.run_id || continueRunId" :selected-deletable="result?.can_delete === true" @open="openRun" @deleted="onRunDeleted" @error="error = $event" @loading="historyLoading = $event" />
             <ResearchDag ref="dagPanel" :project-id="projectId" :selected="result?.run_id || continueRunId" :busy="busy || historyLoading || dagOpening" @open="openDagRun" @error="error = $event" />
+            <ResearchCompare ref="comparePanel" :project-id="projectId" :busy="busy" />
             <form class="question-card" @submit.prevent="startResearch">
               <div class="card-top"><div><strong>{{ continueRunId ? '补充研究要求' : '研究问题' }}</strong></div><span class="hint-pill">{{ continueRunId ? '继承上下文 · 另存新版本' : '基于项目资料研究' }}</span></div>
               <textarea v-model="task" class="form-control question-input" rows="4" placeholder="你想探索什么？例如：多 Agent 在什么情况下能改善研究任务？" :disabled="busy"></textarea>
@@ -253,6 +286,13 @@ onMounted(() => action(async () => {
                 </div>
                 <label class="d-block mt-2">上下文压缩阈值（字符，非 token）<input v-model.number="budgets.context.budget_chars" class="form-control" type="number" min="1" :max="budgets.context.max_budget_chars" required :disabled="busy"></label>
                 <small>模型窗口：{{ budgets.context.window_tokens ? budgets.context.window_tokens.toLocaleString() + ' tokens' : '未知，请核对模型服务' }}。字符阈值是软触发条件，不是 token 上限；调高可能增加费用。独立子任务可并发。</small>
+                <label class="d-block mt-2">委派方式
+                  <select v-model="delegationMode" class="form-select" :disabled="busy">
+                    <option value="baseline">主 Agent 自主决定（默认）</option>
+                    <option value="structured">先由独立路由器判断</option>
+                  </select>
+                </label>
+                <small v-if="delegationMode === 'structured'">路由器会额外调用模型；预派发子任务只能读取本地资料，系统仍保存日志和子报告。续写时由主 Agent 决定是否委派；可能增加耗时和费用。</small>
               </details>
               <div class="question-bottom"><span>{{ continueRunId ? '保留旧报告、已读证据与待办；本次计量独立记录。' : '基于当前项目资料进行研究' }}</span><button class="btn primary-btn" :disabled="busy || historyLoading || dagOpening || !task.trim() || !budgets">{{ busy ? '研究中…' : continueRunId ? '继续研究' : '开始研究' }}</button></div>
             </form>
@@ -265,11 +305,12 @@ onMounted(() => action(async () => {
                   <div class="report-text" v-html="reportHtml"></div>
                   <div v-if="result" class="result-meta">
                     <span>状态：{{ result.result.status }}</span><span>耗时：{{ result.duration_seconds?.toFixed(1) }} s</span>
-                    <span>子 Agent：{{ result.workers?.length || 0 }}</span><span>Token：{{ usageText }}</span>
+                    <span>子 Agent：{{ result.workers?.length || 0 }}</span><span>{{ result.usage_including_root_review ? 'Token（含审查）' : 'Token（研究阶段）' }}：{{ usageText }}</span>
+                    <small v-if="result.delegation_mode === 'structured' && result.delegation_routing?.proposal">委派路由：{{ routingSummary(result.delegation_routing) }} · {{ result.delegation_routing.proposal.reason }}</small>
                     <span>引用检查：{{ result.citation_audit?.status || '未检查' }}</span>
                     <small v-if="result.parent_run_id">续写自 {{ result.parent_run_id }}；旧版本可在研究历史中查看。</small>
                     <small>引用位置检查不判断原文是否支持结论。</small>
-                    <CitationEvidence :audit="result.citation_audit" />
+                    <CitationEvidence :audit="result.citation_audit" :project-id="projectId" :run-id="result.run_id" />
                     <ClaimAudit :audit="result.claim_audit" />
                     <small v-if="result.report_error">报告文件保存失败；回答和事件记录仍已保留。</small>
                     <a v-if="result.report_artifact" :href="`/api/projects/${projectId}/artifacts/${result.report_artifact.id}/download`">下载研究报告</a>
